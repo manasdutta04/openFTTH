@@ -13,8 +13,9 @@ uv run openftth-engine design --area ../fixtures/gent/area.geojson --osm ../fixt
 uv run openftth-engine versions ../runs/gent
 ```
 
-Look at `runs/gent/deliverables/map.png`, `boq.csv`, `validation.json`, and
-`runs/gent/design/*.geojson` (open the folder in QGIS: each file is a layer).
+Look at `runs/gent/deliverables/`: `map.png`, `boq.csv`, `validation.json`,
+`splice_schedule.csv` and `design.gpkg` (open it in QGIS: one layer per element type plus the
+splice tables). `runs/gent/design/` holds the same as the versioned GeoJSON bundle.
 
 Tests (unit, property and determinism): `uv run pytest`.
 

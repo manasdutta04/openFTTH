@@ -6,6 +6,7 @@ project (which commits), and returns a `ToolResult`. `design_all` chains them fo
 
 from __future__ import annotations
 
+import json
 import math
 import shutil
 from dataclasses import dataclass, field
@@ -117,6 +118,10 @@ def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path)
     s.cache["osm"] = osm
     s.cache["homes_wgs"] = homes_wgs
     s.cache["area"] = area
+    s.project.meta["inputs"] = {
+        "area": str(Path(area_path).resolve()),
+        "osm": str(Path(osm_path).resolve()),
+    }
     result = ToolResult(
         tool="import_osm",
         summary=f"{len(osm.streets)} street segments, {len(osm.buildings)} buildings, {len(homes_wgs)} synthetic homes ({int(homes_wgs['units'].sum()) if not homes_wgs.empty else 0} units)",
@@ -929,8 +934,12 @@ def design_all(
         route_distribution(s),
         route_drops(s),
         place_chambers(s),
+        size_cables(s),
+        assign_fibers(s),
         validate_design(s),
         deliver(s),
+        splice_schedule(s),
+        export_gpkg(s),
     ]
     return results
 
@@ -939,8 +948,19 @@ def design_all(
 
 
 def _twin(s: Session) -> Twin:
+    """The twin, rebuilt from the project's recorded inputs when this session has none."""
     if s.twin is None:
-        raise RuntimeError("twin not built; call build_twin first")
+        inputs = s.project.meta.get("inputs") or {}
+        if not (inputs.get("area") and inputs.get("osm")):
+            raise RuntimeError("twin not built; call import_osm and build_twin first")
+        area = load_area(inputs["area"])
+        osm = import_osm(inputs["osm"], area)
+        homes_wgs, _ = homes_from_buildings(osm.buildings, s.rules)
+        s.cache.update({"osm": osm, "homes_wgs": homes_wgs, "area": area})
+        s.twin = build_twin(osm.streets, homes_wgs, s.rules)
+        pops = s.design.by_kind("pop")
+        if pops:
+            s.cache["pop_node"] = int(pops[0].openftth["node"])
     return s.twin
 
 
@@ -1037,6 +1057,695 @@ __all__ = [
     "place_chambers",
     "validate_design",
     "deliver",
+    "set_rule",
+    "size_cables",
+    "assign_fibers",
+    "splice_schedule",
+    "export_gpkg",
+    "generate_scenarios",
+    "apply_scenario",
     "design_all",
     "mapping",
 ]
+
+
+# ---- Rules --------------------------------------------------------------------------------
+
+
+def set_rule(s: Session, path: str, value: Any) -> ToolResult:
+    """Change one rulebook value (dotted path such as `fat.max_homes`), validated against the
+    schema and written to the project's rulebook.yaml. Solvers must be re-run afterwards."""
+    import yaml
+    from pydantic import ValidationError
+
+    from .solve.scenarios import parse_value, set_path
+
+    s.project.set_stage("rules")
+    parsed = parse_value(value)
+    data = s.rules.model_dump(by_alias=True)
+    try:
+        old = set_path(data, path, parsed)
+        new_rules = Rulebook.model_validate(data)
+    except KeyError:
+        return ToolResult(
+            tool="set_rule",
+            summary=f"rejected: no rule at {path!r}",
+            warnings=[f"unknown rule path {path!r}; use get_rulebook to see the paths"],
+        )
+    except ValidationError as exc:
+        msgs = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
+        return ToolResult(tool="set_rule", summary=f"rejected: {msgs}", warnings=[msgs])
+    s.rules = new_rules
+    (s.project.dir / "rulebook.yaml").write_text(
+        yaml.safe_dump(new_rules.model_dump(by_alias=True), sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    decisions = [
+        Decision(
+            stage="rules",
+            tool="set_rule",
+            reason=f"User set {path} from {old!r} to {parsed!r}; the rulebook re-validated.",
+            values={"path": path, "old": old, "new": parsed},
+            source="user",
+        )
+    ]
+    result = ToolResult(
+        tool="set_rule",
+        summary=f"{path}: {old!r} -> {parsed!r}",
+        decisions=decisions,
+        warnings=(
+            ["re-run the solvers (cluster_homes ... place_chambers) for the change to take effect"]
+            if s.design.by_kind("fat")
+            else []
+        ),
+        data={"path": path, "old": old, "new": parsed},
+    )
+    s.project.commit(result, s.design)
+    return result
+
+
+# ---- Solve: sizing and fibre assignment --------------------------------------------------
+
+
+def size_cables(s: Session) -> ToolResult:
+    """Re-size every feeder/distribution section from its downstream demand and the rulebook
+    ladders (parallel cables when one is not enough), with tubes, slack and total length."""
+    from .solve.fibers import FIBERS_PER_TUBE
+
+    s.project.set_stage("solve")
+    r = s.rules
+    before = s.design.copy()
+    n = 0
+    fibers_total = 0.0
+    for kind, ladder in (("feeder", r.fibers.feeder), ("distribution", r.fibers.distribution)):
+        for c in s.design.by_kind(kind):
+            demand = int(c.openftth.get("downstream_units", 0))
+            count, fibers = r.ladder_cables(ladder, demand)
+            length = float(c.props.get("length_m", 0.0))
+            c.props.update(
+                {
+                    "fiber_count": fibers,
+                    "cable_count": count,
+                    "tube_count": -(-fibers // FIBERS_PER_TUBE),
+                    "fibers_per_tube": FIBERS_PER_TUBE,
+                    "total_fibers": fibers * count,
+                    "slack_m": r.slack.per_closure_m,
+                    "total_length_m": round(length + r.slack.per_closure_m, 1),
+                    "color_standard": s.design.metadata.color_standard,
+                }
+            )
+            fibers_total += fibers * count * length
+            n += 1
+    for d in s.design.by_kind("drop"):
+        home_id = d.openftth.get("home")
+        home = s.design.get(home_id) if home_id in s.design else None
+        units = int(home.openftth.get("units", 1)) if home else 1
+        d.props["fiber_count"] = max(
+            r.fibers.drop, next((x for x in (2, 4, 12, 24, 48) if x >= units), 48)
+        )
+    decisions = [
+        Decision(
+            stage="solve",
+            tool="size_cables",
+            reason=(
+                f"Each section carries downstream units + {r.fibers.spare_pct:g}% spare rounded up "
+                f"the ladder (feeder {r.fibers.feeder}, distribution {r.fibers.distribution}); "
+                "demand above the largest cable becomes parallel cables of equal size; "
+                f"{FIBERS_PER_TUBE} fibres per tube; {r.slack.per_closure_m:g} m slack per section."
+            ),
+            values={"sections": n, "fibre_metres": round(fibers_total)},
+            source="rulebook",
+        )
+    ]
+    return _commit(
+        s,
+        ToolResult(
+            tool="size_cables",
+            summary=f"{n} sections sized, {fibers_total / 1000:,.0f} fibre-km",
+            decisions=decisions,
+            data={"sections": n},
+        ),
+        before,
+    )
+
+
+def assign_fibers(s: Session) -> ToolResult:
+    """Give every unit its fibre: splitter port in the FDH, fibre/tube on each distribution
+    section, drop fibre at the home; feeder fibre per PON. Writes the splice_point and
+    fiber_connection side tables."""
+    from .solve.fibers import Section as FSection
+    from .solve.fibers import assign_tree_fibers, tube_fiber
+
+    s.project.set_stage("solve")
+    r = s.rules
+    before = s.design.copy()
+    connections: list[dict[str, Any]] = []
+    points: dict[str, dict[str, Any]] = {}
+    chambers_at = {int(c.openftth["node"]): c for c in s.design.by_kind("chamber")}
+    fats = s.design.by_kind("fat")
+    homes = s.design.by_kind("home")
+    drops_by_home = {d.openftth.get("home"): d for d in s.design.by_kind("drop")}
+    homes_by_fat: dict[str, list[Feature]] = {}
+    for h in homes:
+        for fid in h.openftth.get("fat_ids") or [h.openftth.get("fat_id")]:
+            if fid:
+                homes_by_fat.setdefault(fid, []).append(h)
+    splice_loss = r.loss_db.splice
+
+    def point_for(tree: str, node: int, fallback_uuid: str) -> str:
+        pid = s.uid("splice_point", f"{tree}:{node}")
+        if pid not in points:
+            el = chambers_at.get(node)
+            points[pid] = {
+                "uuid": pid,
+                "element_uuid": el.element_uuid if el else fallback_uuid,
+                "port_count": 0,
+                "used_ports": 0,
+                "config_json": json.dumps({"tree": tree, "node": node}, sort_keys=True),
+                "notes": "",
+            }
+        return pid
+
+    def connect(pid: str, key: str, **fields: Any) -> None:
+        row: dict[str, Any] = {
+            "uuid": s.uid("fiber_connection", key),
+            "splice_point_uuid": pid,
+            "source_element_uuid": None,
+            "source_cable_uuid": None,
+            "source_tube": None,
+            "source_fiber": None,
+            "source_port": None,
+            "source_side": None,
+            "dest_element_uuid": None,
+            "dest_cable_uuid": None,
+            "dest_tube": None,
+            "dest_fiber": None,
+            "dest_port": None,
+            "dest_side": None,
+            "connection_type": "splice",
+            "loss_db": splice_loss,
+            "tray_ref": None,
+            "notes": None,
+        }
+        row.update(fields)
+        connections.append(row)
+        points[pid]["port_count"] += 1
+        points[pid]["used_ports"] += 1
+
+    def units_of(h: Feature, f: Feature) -> int:
+        return int(f.openftth["units"]) if h.openftth.get("mdu") else int(h.openftth["units"])
+
+    # ---- distribution: one tree per FDH ---------------------------------------------------
+    units_total = 0
+    for fdh in s.design.by_kind("fdh"):
+        fdh_node = int(fdh.openftth["node"])
+        secs = [
+            c
+            for c in s.design.by_kind("distribution")
+            if c.openftth.get("fdh_id") == fdh.element_uuid
+        ]
+        fsecs = [
+            FSection(c.element_uuid, _node_of(c.props["from_label"]), _node_of(c.props["to_label"]))
+            for c in secs
+        ]
+        my_fats = sorted(
+            (f for f in fats if f.openftth.get("fdh_id") == fdh.element_uuid),
+            key=lambda f: f.element_uuid,
+        )
+        demand_at: dict[int, int] = {}
+        for f in my_fats:
+            node = int(f.openftth["node"])
+            demand_at[node] = demand_at.get(node, 0) + int(f.openftth["units"])
+        tf = assign_tree_fibers(fdh_node, fsecs, demand_at)
+        for c in secs:
+            lo, hi = tf.section_range.get(c.element_uuid, (0, -1))
+            c.openftth["fiber_start"], c.openftth["fiber_end"] = lo, hi
+            c.openftth["fibers_used"] = max(0, hi - lo + 1)
+            if c.openftth["fibers_used"] > int(c.props.get("fiber_count", 0)) * int(
+                c.props.get("cable_count", 1)
+            ):
+                c.openftth["undersized"] = True
+        # Splitter ports: PON order as assign_pon used (FATs by distribution distance), homes by id.
+        port_of: dict[tuple[str, str, int], tuple[str, int]] = {}
+        pon_fill: dict[str, int] = {}
+        for f in sorted(
+            my_fats, key=lambda f: (f.openftth.get("distribution_est_m", 0.0), f.element_uuid)
+        ):
+            pon = f.openftth.get("pon_id", "")
+            for h in sorted(homes_by_fat.get(f.element_uuid, []), key=lambda h: h.element_uuid):
+                for k in range(1, units_of(h, f) + 1):
+                    pon_fill[pon] = pon_fill.get(pon, 0) + 1
+                    port_of[(f.element_uuid, h.element_uuid, k)] = (pon, pon_fill[pon])
+        # Terminal ranges -> FATs -> homes -> units.
+        for node, (lo, _hi) in sorted(tf.terminal_range.items()):
+            g = lo
+            node_fats = sorted(
+                (f for f in my_fats if int(f.openftth["node"]) == node),
+                key=lambda f: f.element_uuid,
+            )
+            in_sec = tf.incoming.get(node)
+            for f in node_fats:
+                f_lo = g
+                for h in sorted(homes_by_fat.get(f.element_uuid, []), key=lambda h: h.element_uuid):
+                    h_lo = g
+                    k_units = units_of(h, f)
+                    for k in range(1, k_units + 1):
+                        pon, port = port_of[(f.element_uuid, h.element_uuid, k)]
+                        drop = drops_by_home.get(h.element_uuid)
+                        if drop is not None and not h.openftth.get("mdu"):
+                            dest = {
+                                "dest_cable_uuid": drop.element_uuid,
+                                "dest_tube": 1,
+                                "dest_fiber": k,
+                            }
+                        else:
+                            dest = {
+                                "dest_element_uuid": f.element_uuid,
+                                "dest_port": k,
+                                "dest_side": "indoor",
+                            }
+                        out_sec = _section_carrying(tf, fdh_node, g)
+                        if out_sec:
+                            t, fb = tube_fiber(tf.local(out_sec, g))
+                            connect(
+                                point_for(fdh.element_uuid, fdh_node, fdh.element_uuid),
+                                f"{fdh.element_uuid}:fdh:{g}",
+                                source_element_uuid=fdh.element_uuid,
+                                source_port=port,
+                                source_side=pon,
+                                dest_cable_uuid=out_sec,
+                                dest_tube=t,
+                                dest_fiber=fb,
+                                connection_type="splitter",
+                                loss_db=r.splitter_loss(),
+                            )
+                        if in_sec:
+                            t, fb = tube_fiber(tf.local(in_sec, g))
+                            connect(
+                                point_for(fdh.element_uuid, node, f.element_uuid),
+                                f"{fdh.element_uuid}:fat:{g}",
+                                source_cable_uuid=in_sec,
+                                source_tube=t,
+                                source_fiber=fb,
+                                **dest,
+                            )
+                        elif node == fdh_node:
+                            # FAT standing at the FDH: splitter port straight to the drop.
+                            connect(
+                                point_for(fdh.element_uuid, node, fdh.element_uuid),
+                                f"{fdh.element_uuid}:fat:{g}",
+                                source_element_uuid=fdh.element_uuid,
+                                source_port=port,
+                                source_side=pon,
+                                connection_type="splitter",
+                                loss_db=r.splitter_loss(),
+                                **dest,
+                            )
+                        g += 1
+                    if not h.openftth.get("mdu") or h.openftth.get("fat_id") == f.element_uuid:
+                        h.openftth.update(
+                            {
+                                "fiber_start": h_lo,
+                                "fiber_end": g - 1,
+                                "splitter_port": port_of[(f.element_uuid, h.element_uuid, 1)][1],
+                            }
+                        )
+                    units_total += k_units
+                f.openftth.update({"fiber_start": f_lo, "fiber_end": g - 1})
+        # Pass-through splices at every inner node: incoming section -> each outgoing section.
+        for node, outs in tf.outgoing.items():
+            in_sec = tf.incoming.get(node)
+            if not in_sec or not outs:
+                continue
+            fallback = next(
+                (f.element_uuid for f in my_fats if int(f.openftth["node"]) == node),
+                fdh.element_uuid,
+            )
+            for out_sec in outs:
+                lo, hi = tf.section_range.get(out_sec, (0, -1))
+                for g in range(lo, hi + 1):
+                    ti, fi = tube_fiber(tf.local(in_sec, g))
+                    to, fo = tube_fiber(tf.local(out_sec, g))
+                    connect(
+                        point_for(fdh.element_uuid, node, fallback),
+                        f"{fdh.element_uuid}:thru:{node}:{g}",
+                        source_cable_uuid=in_sec,
+                        source_tube=ti,
+                        source_fiber=fi,
+                        dest_cable_uuid=out_sec,
+                        dest_tube=to,
+                        dest_fiber=fo,
+                    )
+
+    # ---- feeder: one fibre per PON ---------------------------------------------------------
+    pops = s.design.by_kind("pop")
+    if pops:
+        pop = pops[0]
+        pop_node = int(pop.openftth["node"])
+        secs = s.design.by_kind("feeder")
+        fsecs = [
+            FSection(c.element_uuid, _node_of(c.props["from_label"]), _node_of(c.props["to_label"]))
+            for c in secs
+        ]
+        fdhs = s.design.by_kind("fdh")
+        demand_at = {}
+        for f in fdhs:
+            node = int(f.openftth["node"])
+            demand_at[node] = demand_at.get(node, 0) + int(f.openftth.get("pons", 0))
+        tf = assign_tree_fibers(pop_node, fsecs, demand_at)
+        for c in secs:
+            lo, hi = tf.section_range.get(c.element_uuid, (0, -1))
+            c.openftth["fiber_start"], c.openftth["fiber_end"] = lo, hi
+            c.openftth["fibers_used"] = max(0, hi - lo + 1)
+        for node, (lo, _hi) in sorted(tf.terminal_range.items()):
+            g = lo
+            in_sec = tf.incoming.get(node)
+            for f in sorted(
+                (f for f in fdhs if int(f.openftth["node"]) == node), key=lambda f: f.element_uuid
+            ):
+                f_lo = g
+                for p in range(1, int(f.openftth.get("pons", 0)) + 1):
+                    out_sec = _section_carrying(tf, pop_node, g)
+                    if out_sec:
+                        t, fb = tube_fiber(tf.local(out_sec, g))
+                        connect(
+                            point_for("feeder", pop_node, pop.element_uuid),
+                            f"feeder:pop:{g}",
+                            source_element_uuid=pop.element_uuid,
+                            source_port=g,
+                            source_side="OLT",
+                            dest_cable_uuid=out_sec,
+                            dest_tube=t,
+                            dest_fiber=fb,
+                            connection_type="patch",
+                            loss_db=r.loss_db.connector,
+                        )
+                    if in_sec:
+                        t, fb = tube_fiber(tf.local(in_sec, g))
+                        connect(
+                            point_for("feeder", node, f.element_uuid),
+                            f"feeder:fdh:{g}",
+                            source_cable_uuid=in_sec,
+                            source_tube=t,
+                            source_fiber=fb,
+                            dest_element_uuid=f.element_uuid,
+                            dest_port=p,
+                            dest_side=f"{f.props['name']}-PON-{p:02d} splitter in",
+                        )
+                    elif node == pop_node:
+                        # FDH standing at the POP: OLT port patched straight to the splitter.
+                        connect(
+                            point_for("feeder", node, pop.element_uuid),
+                            f"feeder:fdh:{g}",
+                            source_element_uuid=pop.element_uuid,
+                            source_port=g,
+                            source_side="OLT",
+                            dest_element_uuid=f.element_uuid,
+                            dest_port=p,
+                            dest_side=f"{f.props['name']}-PON-{p:02d} splitter in",
+                            connection_type="patch",
+                            loss_db=r.loss_db.connector,
+                        )
+                    g += 1
+                f.openftth.update({"feeder_fiber_start": f_lo, "feeder_fiber_end": g - 1})
+        for node, outs in tf.outgoing.items():
+            in_sec = tf.incoming.get(node)
+            if not in_sec or not outs:
+                continue
+            fallback = next(
+                (f.element_uuid for f in fdhs if int(f.openftth["node"]) == node),
+                pop.element_uuid,
+            )
+            for out_sec in outs:
+                lo, hi = tf.section_range.get(out_sec, (0, -1))
+                for g in range(lo, hi + 1):
+                    ti, fi = tube_fiber(tf.local(in_sec, g))
+                    to, fo = tube_fiber(tf.local(out_sec, g))
+                    connect(
+                        point_for("feeder", node, fallback),
+                        f"feeder:thru:{node}:{g}",
+                        source_cable_uuid=in_sec,
+                        source_tube=ti,
+                        source_fiber=fi,
+                        dest_cable_uuid=out_sec,
+                        dest_tube=to,
+                        dest_fiber=fo,
+                    )
+
+    s.design.set_table("splice_point", list(points.values()))
+    s.design.set_table("fiber_connection", connections)
+    undersized = sum(1 for c in s.design.by_kind("distribution") if c.openftth.get("undersized"))
+    decisions = [
+        Decision(
+            stage="solve",
+            tool="assign_fibers",
+            reason=(
+                "Fibres numbered depth-first from each FDH so every section carries a contiguous "
+                "range; each unit gets a splitter port (PON order as assigned), a fibre/tube on every "
+                "section of its path and a drop fibre; one feeder fibre per PON from the OLT. "
+                "Splices recorded per closure as source->destination tube/fibre with the rulebook's loss."
+            ),
+            values={
+                "units": units_total,
+                "connections": len(connections),
+                "splice_points": len(points),
+            },
+            source="solver",
+        )
+    ]
+    warnings = (
+        [f"{undersized} distribution section(s) carry more fibres than sized for; run size_cables"]
+        if undersized
+        else []
+    )
+    return _commit(
+        s,
+        ToolResult(
+            tool="assign_fibers",
+            summary=(
+                f"{units_total} units assigned, {len(connections)} connections "
+                f"in {len(points)} splice points"
+            ),
+            decisions=decisions,
+            warnings=warnings,
+            data={"connections": len(connections), "splice_points": len(points)},
+        ),
+        before,
+    )
+
+
+def _node_of(label: str) -> int:
+    return int(str(label).lstrip("N"))
+
+
+def _section_carrying(tf: Any, node: int, g: int) -> str | None:
+    for out in tf.outgoing.get(node, []):
+        lo, hi = tf.section_range.get(out, (0, -1))
+        if lo <= g <= hi:
+            return out
+    return None
+
+
+# ---- Deliver: splice schedule, GeoPackage, scenarios ---------------------------------------
+
+
+def splice_schedule(s: Session) -> ToolResult:
+    from .deliver.splice import splice_schedule_csv, splice_schedule_rows, splice_summary
+
+    s.project.set_stage("deliver")
+    rows = splice_schedule_rows(s.design)
+    d = s.project.deliver_dir
+    (d / "splice_schedule.csv").write_text(splice_schedule_csv(rows), encoding="utf-8")
+    summary = splice_summary(rows)
+    (d / "splice_schedule.json").write_text(_json(summary), encoding="utf-8")
+    result = ToolResult(
+        tool="splice_schedule",
+        summary=(
+            f"{summary['connections']} connections in {summary['closures']} closures "
+            "-> splice_schedule.csv"
+        ),
+        decisions=[
+            Decision(
+                stage="deliver",
+                tool="splice_schedule",
+                reason=(
+                    "Schedule lists every connection per closure as cable/tube/fibre with "
+                    "TIA-598-C colours, from the fiber_connection table."
+                ),
+                values=summary,
+                source="solver",
+            )
+        ],
+        data=summary,
+    )
+    s.project.commit(result, s.design)
+    return result
+
+
+def export_gpkg(s: Session) -> ToolResult:
+    from .deliver.gpkg import export_gpkg as _export
+
+    s.project.set_stage("deliver")
+    info = _export(s.design, s.project.deliver_dir / "design.gpkg")
+    result = ToolResult(
+        tool="export_gpkg",
+        summary=(
+            f"design.gpkg with {len(info['layers'])} layers and {len(info['tables'])} tables "
+            f"({info['bytes'] / 1e6:.1f} MB)"
+        ),
+        decisions=[
+            Decision(
+                stage="deliver",
+                tool="export_gpkg",
+                reason=(
+                    "One GeoPackage layer per element type/placement in EPSG:4326, openFTTH "
+                    "attributes as extra_json, side tables as attribute tables."
+                ),
+                values={"layers": info["layers"], "tables": info["tables"]},
+                source="solver",
+            )
+        ],
+        data=info,
+    )
+    s.project.commit(result, s.design)
+    return result
+
+
+SOLVE_CHAIN = (
+    "cluster_homes",
+    "place_fdh",
+    "assign_pon",
+    "route_feeder",
+    "route_distribution",
+    "route_drops",
+    "place_chambers",
+    "size_cables",
+)
+SOLVE_KINDS = ("fat", "fdh", "feeder", "distribution", "drop", "chamber")
+
+
+def _run_chain(s: Session, time_limit_s: float) -> list[ToolResult]:
+    out: list[ToolResult] = []
+    for name in SOLVE_CHAIN:
+        fn = globals()[name]
+        out.append(fn(s, time_limit_s) if name in ("cluster_homes", "place_fdh") else fn(s))
+    return out
+
+
+def generate_scenarios(s: Session, n: int = 3, time_limit_s: float = 10.0) -> ToolResult:
+    """Solve the current twin under rulebook variants and price each; nothing is applied."""
+    import tempfile
+
+    from .solve.scenarios import SCENARIOS, apply_overrides, resolve_overrides
+
+    _twin(s)
+    s.project.set_stage("solve")
+    names = list(SCENARIOS)[: max(1, n)]
+    table: list[dict[str, Any]] = []
+    for name in names:
+        overrides = resolve_overrides(s.rules, SCENARIOS[name])
+        variant = apply_overrides(s.rules, overrides)
+        tmp = Path(tempfile.mkdtemp(prefix=f"openftth-scn-{name}-"))
+        try:
+            scratch = Session(
+                project=Project(tmp, project_id=f"{s.pid}-{name}"),
+                rules=variant,
+                design=s.design.copy(),
+                twin=s.twin,
+                trees={},
+                cache=dict(s.cache),
+            )
+            for kind in SOLVE_KINDS:
+                scratch.design.remove_where(kind=kind)
+            scratch.design.tables = {}
+            results = _run_chain(scratch, time_limit_s)
+            boq = build_boq(scratch.design, variant)
+            trench = sum(
+                line.qty
+                for line in boq.lines
+                if line.category == "civil" and line.item.startswith("trench")
+            )
+            violations, stats = run_all_checks(scratch.design, variant)
+            table.append(
+                {
+                    "name": name,
+                    "overrides": overrides,
+                    "fats": len(scratch.design.by_kind("fat")),
+                    "fdhs": len(scratch.design.by_kind("fdh")),
+                    "trench_m": round(trench, 1),
+                    "boq_total": boq.grand_total,
+                    "cost_per_unit": boq.cost_per_unit,
+                    "currency": boq.currency,
+                    "violations": violation_summary(violations),
+                    "worst_odn_db": stats.get("worst_db"),
+                    "fallbacks": sum(
+                        1 for r in results if any("fallback" in w for w in r.warnings)
+                    ),
+                }
+            )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    (s.project.deliver_dir / "scenarios.json").write_text(_json(table), encoding="utf-8")
+    best = min(table, key=lambda t: t["boq_total"])
+    decisions = [
+        Decision(
+            stage="solve",
+            tool="generate_scenarios",
+            reason=(
+                "Each scenario re-ran the placement and routing solvers on the same twin with the "
+                "listed rulebook overrides and priced the result; the design was not changed. "
+                "Use apply_scenario to adopt one."
+            ),
+            values={
+                "scenarios": [
+                    {
+                        k: t[k]
+                        for k in ("name", "overrides", "fats", "fdhs", "boq_total", "cost_per_unit")
+                    }
+                    for t in table
+                ],
+                "cheapest": best["name"],
+            },
+            source="solver",
+        )
+    ]
+    result = ToolResult(
+        tool="generate_scenarios",
+        summary=" | ".join(
+            f"{t['name']}: {t['fats']} FATs, {t['fdhs']} FDHs, "
+            f"{t['boq_total']:,.0f} {t['currency']} ({t['cost_per_unit']:,.0f}/unit)"
+            for t in table
+        ),
+        decisions=decisions,
+        data={"scenarios": table, "cheapest": best["name"]},
+    )
+    s.project.commit(result, s.design)
+    return result
+
+
+def apply_scenario(s: Session, name: str, time_limit_s: float = 20.0) -> ToolResult:
+    """Adopt a scenario: apply its rulebook overrides, then re-run the solve chain."""
+    from .solve.scenarios import SCENARIOS, resolve_overrides
+
+    if name not in SCENARIOS:
+        return ToolResult(
+            tool="apply_scenario",
+            summary=f"unknown scenario {name!r}",
+            warnings=[f"known: {', '.join(SCENARIOS)}"],
+        )
+    overrides = resolve_overrides(s.rules, SCENARIOS[name])
+    applied = [set_rule(s, path, value) for path, value in overrides.items()]
+    results = _run_chain(s, time_limit_s)
+    results.append(assign_fibers(s))
+    results.append(validate_design(s))
+    summary = "; ".join(
+        r.summary for r in results if r.tool in ("cluster_homes", "place_fdh", "check_rules")
+    )
+    return ToolResult(
+        tool="apply_scenario",
+        summary=f"{name} applied: {summary}",
+        decisions=[d for r in applied + results for d in r.decisions],
+        warnings=[w for r in results for w in r.warnings],
+        version=results[-1].version,
+        data={"overrides": overrides, "steps": [r.tool for r in applied + results]},
+    )

@@ -10,7 +10,14 @@
         "name": "Surveyor",
         "title": "Ingest, perceive, twin",
         "instructions": "folks/surveyor.md",
-        "tools": ["import_osm", "build_twin", "design_summary", "list_assumptions", "get_rulebook", "versions"],
+        "tools": [
+          "import_osm",
+          "build_twin",
+          "design_summary",
+          "list_assumptions",
+          "get_rulebook",
+          "versions"
+        ],
         "color": "green"
       },
       {
@@ -18,7 +25,28 @@
         "name": "Planner",
         "title": "Rules and solve",
         "instructions": "folks/planner.md",
-        "tools": ["get_rulebook", "explain_rule", "set_rule", "list_presets_tool", "set_pop", "cluster_homes", "place_fdh", "assign_pon", "route_feeder", "route_distribution", "route_drops", "place_chambers", "generate_scenarios", "design_summary", "explain_element", "versions", "diff_versions"],
+        "tools": [
+          "get_rulebook",
+          "explain_rule",
+          "set_rule",
+          "list_presets_tool",
+          "set_pop",
+          "cluster_homes",
+          "place_fdh",
+          "assign_pon",
+          "route_feeder",
+          "route_distribution",
+          "route_drops",
+          "place_chambers",
+          "size_cables",
+          "assign_fibers",
+          "generate_scenarios",
+          "apply_scenario",
+          "design_summary",
+          "explain_element",
+          "versions",
+          "diff_versions"
+        ],
         "color": "blue"
       },
       {
@@ -26,7 +54,14 @@
         "name": "Checker",
         "title": "Validate",
         "instructions": "folks/checker.md",
-        "tools": ["check_rules", "design_summary", "explain_element", "get_rulebook", "versions", "diff_versions"],
+        "tools": [
+          "check_rules",
+          "design_summary",
+          "explain_element",
+          "get_rulebook",
+          "versions",
+          "diff_versions"
+        ],
         "color": "orange"
       },
       {
@@ -34,7 +69,17 @@
         "name": "Drafter",
         "title": "Explain and deliver",
         "instructions": "folks/drafter.md",
-        "tools": ["explain_element", "list_assumptions", "boq", "design_summary", "versions", "diff_versions", "get_rulebook"],
+        "tools": [
+          "explain_element",
+          "list_assumptions",
+          "boq",
+          "splice_schedule",
+          "export_gpkg",
+          "design_summary",
+          "versions",
+          "diff_versions",
+          "get_rulebook"
+        ],
         "color": "purple"
       }
     ],

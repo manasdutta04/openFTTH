@@ -95,7 +95,8 @@ def capacitated_sites(
         statuses.append(status)
         objective += obj
         sites.extend(cell_sites)
-    sites.sort(key=lambda s: (s.node, s.units))
+    sites = _merge_same_node(sites, capacity)
+    sites.sort(key=lambda s: (s.node, s.slot, s.units))
     return sites, ClusterStats(len(cells), statuses, objective, n_cand, fallbacks)
 
 
@@ -235,3 +236,33 @@ def _greedy(cell: list[Demand], reach: dict[str, dict[int, float]], capacity: in
         target.members.append(d)
         target.distances_m[d.key] = reach[d.key][target.node]
     return list(sites.values())
+
+
+def _merge_same_node(sites: list[Site], capacity: int) -> list[Site]:
+    """Cells are solved independently, so two cells may open a site on the same node. Merge
+    them while the capacity allows; otherwise keep separate sites with distinct slots."""
+    by_node: dict[int, list[Site]] = {}
+    for s in sites:
+        by_node.setdefault(s.node, []).append(s)
+    out: list[Site] = []
+    for node in sorted(by_node):
+        group = sorted(by_node[node], key=lambda s: (-s.units, s.slot))
+        bins: list[Site] = []
+        for s in group:
+            target = next((b for b in bins if b.units + s.units <= capacity), None)
+            if target is None:
+                bins.append(
+                    Site(
+                        node=node,
+                        members=list(s.members),
+                        distances_m=dict(s.distances_m),
+                        slot=len(bins),
+                    )
+                )
+            else:
+                target.members.extend(s.members)
+                target.distances_m.update(s.distances_m)
+        for b in bins:
+            b.members.sort(key=lambda m: m.key)
+        out.extend(bins)
+    return out

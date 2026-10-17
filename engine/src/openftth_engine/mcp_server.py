@@ -237,6 +237,54 @@ def boq() -> dict[str, Any]:
     return _out(pipeline.deliver(_s()))
 
 
+@mcp.tool()
+def set_rule(path: str, value: str) -> dict[str, Any]:
+    """Change one rulebook value by dotted path (e.g. 'fat.max_homes', '24'); validated and
+    saved. Re-run the solvers afterwards."""
+    return _out(pipeline.set_rule(_s(), path, value))
+
+
+@mcp.tool()
+def size_cables() -> dict[str, Any]:
+    """Re-size feeder/distribution sections from downstream demand and the rulebook ladders
+    (tubes, slack, parallel cables)."""
+    return _out(pipeline.size_cables(_s()))
+
+
+@mcp.tool()
+def assign_fibers() -> dict[str, Any]:
+    """Assign splitter ports, section fibres/tubes and drop fibres per unit; write splice
+    points and fibre connections."""
+    return _out(pipeline.assign_fibers(_s()))
+
+
+@mcp.tool()
+def splice_schedule() -> dict[str, Any]:
+    """Write the per-closure splice schedule (CSV) from the fibre connections."""
+    return _out(pipeline.splice_schedule(_s()))
+
+
+@mcp.tool()
+def export_gpkg() -> dict[str, Any]:
+    """Export the design as a GeoPackage (one layer per element type, side tables as attribute
+    tables)."""
+    return _out(pipeline.export_gpkg(_s()))
+
+
+@mcp.tool()
+def generate_scenarios(n: int = 3, time_limit_s: float = 10.0) -> dict[str, Any]:
+    """Solve the twin under rulebook variants (baseline, larger-fats, shorter-drops,
+    lean-spares) and price each. Nothing is applied."""
+    return _out(pipeline.generate_scenarios(_s(), n, time_limit_s))
+
+
+@mcp.tool()
+def apply_scenario(name: str, time_limit_s: float = 20.0) -> dict[str, Any]:
+    """Adopt a scenario from generate_scenarios: apply its rulebook overrides and re-run the
+    solve chain."""
+    return _out(pipeline.apply_scenario(_s(), name, time_limit_s))
+
+
 # ---- risky tools (never on an allow-list; need an approval_id) ---------------------------------
 
 

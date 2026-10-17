@@ -50,9 +50,27 @@ Each feature carries `element_type`, `placement` (indoor | outdoor | pole | clos
 
 Element types available: lines `route`, `cable.aerial`, `cable.underground`, `duct.pe`,
 `duct.transition`; points `pole`, `manhole`, `closure.joint`, `odf`, `otb`, `to`, `tb`,
-`patch_panel`, `slack`, `fiber_break`; polygons `service_area`, `building`. Later phases add
-side tables for splice points, fibre connections (1-based tube/fibre, `loss_db`), cable path
-stops and extensions, and a GeoPackage export of the same layers for GIS tools.
+`patch_panel`, `slack`, `fiber_break`; polygons `service_area`, `building`.
+
+## Side tables
+
+`<name>.table.json` files next to the layers, one row per line sorted by `uuid`:
+
+| Table | Row | Written by |
+|---|---|---|
+| `splice_point` | `uuid, element_uuid` (chamber, FAT, FDH or POP), `port_count, used_ports, config_json {tree, node}, notes` | `assign_fibers` |
+| `fiber_connection` | `uuid, splice_point_uuid, source_{element_uuid, cable_uuid, tube, fiber, port, side}, dest_{…}, connection_type` (splice, splitter or patch), `loss_db, tray_ref, notes` | `assign_fibers` |
+
+Fibres are numbered depth-first from each FDH (and from the POP for the feeder), so every
+section carries a contiguous range (`openftth.fiber_start` / `fiber_end`) and its local
+numbering starts at 1. Tubes hold 12 fibres and colours follow `color_standard` (TIA-598-C).
+Each home records `fiber_start` / `fiber_end` and its `splitter_port`.
+
+## Exports
+
+`export_gpkg` writes `deliverables/design.gpkg`: one layer per bundle file (dots in names become
+underscores), openFTTH attributes as an `extra_json` column, the side tables and
+`_openftth_metadata` as attribute tables. `splice_schedule` writes `splice_schedule.csv`.
 
 `element_uuid` is `uuid5(namespace, project|type|local key)` and never changes between runs.
 
