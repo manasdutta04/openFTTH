@@ -1,0 +1,33 @@
+{
+  "name": "openftth-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "openFTTH agent harness: folks, rooms, engine drivers, approvals, memory and backstage behind a local HTTP + SSE API",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --no-warnings src/index.ts",
+    "start": "node --no-warnings dist/index.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --no-warnings --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "build": "node scripts/bundle.mjs",
+    "smoke:packaged": "node scripts/smoke-packaged.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

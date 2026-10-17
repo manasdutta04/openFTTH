@@ -1,0 +1,183 @@
+/**
+ * End-to-end tests of the HTTP API with a fake folk engine (speaks the CLI protocol) and a
+ * fake design engine (an MCP server). Nothing here needs network access or an LLM.
+ */
+
+import { strict as assert } from "node:assert";
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+import { findRepoRoot } from "../src/config.ts";
+import { claudeDriverFactory } from "../src/drivers/claude.ts";
+import { freePort } from "../src/engine-process.ts";
+import { parseSse } from "../src/events.ts";
+import { startHarness, type Harness } from "../src/index.ts";
+
+const repo = findRepoRoot();
+const TOKEN = "test-app-token";
+let dataDir: string;
+let fakeEngine: ChildProcess;
+let fakeEngineUrl: string;
+let h: Harness;
+
+before(async () => {
+  dataDir = mkdtempSync(join(tmpdir(), "openftth-harness-test-"));
+  const port = await freePort();
+  fakeEngine = spawn(process.execPath, [join(import.meta.dirname, "fake-engine.mjs"), "serve", "--project", dataDir, "--rulebook", "x", "--port", String(port)], { stdio: ["ignore", "ignore", "pipe"] });
+  await new Promise<void>((resolve) => fakeEngine.stderr!.once("data", () => resolve()));
+  fakeEngineUrl = `http://127.0.0.1:${port}/mcp`;
+  h = await startHarness({
+    cfg: {
+      dataDir,
+      port: 0,
+      appToken: TOKEN,
+      commsToken: "test-comms-token",
+      approvalTimeoutMs: 5_000,
+      maxHops: 3,
+      folkEngine: { kind: "claude", command: process.execPath, args: [join(import.meta.dirname, "fake-claude.mjs")] },
+    },
+    driverFactory: claudeDriverFactory,
+    engineAttachUrl: fakeEngineUrl,
+    log: () => {},
+  });
+});
+
+after(async () => {
+  await h.close();
+  fakeEngine.kill();
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+const api = (path: string, init: RequestInit = {}, token = TOKEN) =>
+  fetch(`${h.url}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...(init.headers ?? {}) } });
+const body = async (r: Response | Promise<Response>): Promise<any> => (await r).json();
+
+test("health needs no token; everything else does", async () => {
+  const health = await fetch(`${h.url}/api/health`);
+  assert.equal(health.status, 200);
+  assert.equal((await body(health)).ok, true);
+  const noToken = await fetch(`${h.url}/api/crew`);
+  assert.equal(noToken.status, 401);
+  const badToken = await api("/api/crew", {}, "wrong");
+  assert.equal(badToken.status, 401);
+  const ok = await api("/api/crew");
+  assert.equal(ok.status, 200);
+  assert.equal((await body(ok)).members.length, 4);
+});
+
+test("non-loopback Origin is refused", async () => {
+  const res = await api("/api/crew", { headers: { origin: "https://evil.example" } });
+  assert.equal(res.status, 403);
+});
+
+test("opening a project attaches the engine and answers status, versions and diff", async () => {
+  const res = await api("/api/project", { method: "POST", body: JSON.stringify({ area_path: join(repo, "fixtures", "gent", "area.geojson"), rulebook: "generic-gpon" }) });
+  const text = await res.text();
+  assert.equal(res.status, 201, text);
+  const meta = JSON.parse(text);
+  assert.match(meta.id, /^area-[0-9a-f]{6}$/);
+  const status = await body(api("/api/project"));
+  assert.equal(status.open, true);
+  assert.equal(status.summary.elements.fat, 3);
+  const versions = await body(api("/api/project/versions"));
+  assert.equal(versions.length, 1);
+  const diff = await body(api("/api/project/diff?from=a&to=b"));
+  assert.deepEqual(diff.added, ["a"]);
+  const approved = await body(api("/api/project/approve", { method: "POST", body: JSON.stringify({ version: versions[0].version }) }));
+  assert.deepEqual(approved.approvedVersions, [versions[0].version]);
+});
+
+test("a user turn runs the default responder and streams frames", async () => {
+  const frames: Array<{ event?: string; data: any }> = [];
+  const off = h.bus.on((f) => frames.push({ event: f.kind, data: f.data }));
+  const res = await api("/api/room/messages", { method: "POST", body: JSON.stringify({ text: "Hello planner, tool please", designContext: { stage: "solve", selection: ["uuid-1"] }, wait: true }) });
+  assert.equal(res.status, 200);
+  off();
+  const kinds = frames.map((f) => f.event);
+  assert.ok(kinds.includes("message.patch"), "text deltas streamed");
+  assert.ok(kinds.includes("tool.activity"), "tool chips emitted");
+  assert.ok(kinds.includes("design.version"), "engine tool result with a version emits design.version");
+  const folkStates = frames.filter((f) => f.event === "folk").map((f) => f.data.state);
+  assert.ok(folkStates.includes("thinking") && folkStates.includes("idle"));
+  const messages = await body(api("/api/room/messages"));
+  const reply = messages.find((m: any) => m.role === "folk" && m.kind === "text" && m.folk === "planner");
+  assert.ok(reply, "planner replied");
+  assert.match(reply.text, /^echo: \[design context: stage=solve; selection=uuid-1\]/);
+  const toolMsg = messages.find((m: any) => m.kind === "tool");
+  assert.equal(toolMsg.text, "3 FATs");
+});
+
+test("a reply that mentions a teammate hands the turn over", async () => {
+  await api("/api/room/messages", { method: "POST", body: JSON.stringify({ text: "@Surveyor build the twin then handoff", wait: true }) });
+  const messages = await body(api("/api/room/messages"));
+  const folks = messages.filter((m: any) => m.role === "folk" && m.kind === "text").map((m: any) => m.folk);
+  assert.ok(folks.includes("surveyor") && folks.includes("checker"), `expected surveyor then checker, got ${folks.join(",")}`);
+  const handoff = messages.find((m: any) => m.kind === "handoff");
+  assert.equal(handoff.text, "Surveyor → Checker");
+  const checkerReply = messages.filter((m: any) => m.folk === "checker" && m.kind === "text").pop();
+  assert.match(checkerReply.text, /\[from Surveyor\]/);
+});
+
+test("a permission prompt becomes an approval card; allowing a risky tool injects approval_id", async () => {
+  const frames: any[] = [];
+  const off = h.bus.on((f) => f.kind === "approval" && frames.push(f.data));
+  const pending = fetch(`${h.url}/api/internal/permission`, { method: "POST", headers: { authorization: "Bearer test-comms-token", "content-type": "application/json" }, body: JSON.stringify({ folk: "planner", project: "p", tool: "mcp__engine__add_trench", input: { surface: "verge" } }) });
+  await new Promise((r) => setTimeout(r, 100));
+  const list = await body(api("/api/approvals"));
+  const card = list.find((a: any) => a.state === "pending");
+  assert.ok(card, "card is pending");
+  assert.equal(card.shortTool, "add_trench");
+  const decided = await api(`/api/approvals/${card.id}`, { method: "POST", body: JSON.stringify({ decision: "allow", note: "ok" }) });
+  assert.equal(decided.status, 200);
+  const decision = await body(pending);
+  assert.equal(decision.behavior, "allow");
+  assert.equal(decision.updatedInput.approval_id, card.id);
+  assert.equal(decision.updatedInput.surface, "verge");
+  const check = await body(fetch(`${h.url}/api/internal/approvals/${card.id}`, { headers: { authorization: "Bearer test-comms-token" } }));
+  assert.deepEqual(check, { approved: true, tool: "add_trench", state: "allowed" });
+  off();
+  assert.deepEqual(frames.map((f) => f.state), ["pending", "allowed"]);
+  const wrongToken = await fetch(`${h.url}/api/internal/approvals/${card.id}`, { headers: { authorization: `Bearer ${TOKEN}` } });
+  assert.equal(wrongToken.status, 401, "the app token must not open internal routes");
+});
+
+test("denying an approval resolves the prompt with deny", async () => {
+  const pending = fetch(`${h.url}/api/internal/permission`, { method: "POST", headers: { authorization: "Bearer test-comms-token", "content-type": "application/json" }, body: JSON.stringify({ folk: "drafter", project: "p", tool: "mcp__engine__export_for_construction", input: {} }) });
+  await new Promise((r) => setTimeout(r, 100));
+  const card = (await body(api("/api/approvals"))).find((a: any) => a.state === "pending");
+  await api(`/api/approvals/${card.id}`, { method: "POST", body: JSON.stringify({ decision: "deny", note: "not yet" }) });
+  const decision = await body(pending);
+  assert.equal(decision.behavior, "deny");
+  assert.match(decision.message, /not yet/);
+});
+
+test("SSE stream replays missed frames on resume", async () => {
+  const first = h.bus.emit("runtime", { marker: 1 });
+  h.bus.emit("runtime", { marker: 2 });
+  const ac = new AbortController();
+  const res = await fetch(`${h.url}/api/events`, { headers: { authorization: `Bearer ${TOKEN}`, "last-event-id": first.id }, signal: ac.signal });
+  const reader = res.body!.getReader();
+  const { value } = await reader.read();
+  ac.abort();
+  const frames = parseSse(new TextDecoder().decode(value));
+  assert.equal(frames[0]!.event, "hello");
+  assert.equal((frames[0]!.data as any).resumed, true);
+  assert.ok(frames.some((f) => f.event === "runtime" && (f.data as any).marker === 2), "frame after the cursor replayed");
+  assert.ok(!frames.some((f) => f.event === "runtime" && (f.data as any).marker === 1), "frame at the cursor not repeated");
+});
+
+test("a crashing folk process reports an error and the next turn resumes the session", async () => {
+  const res = await api("/api/room/messages", { method: "POST", body: JSON.stringify({ text: "@Drafter please crash now", wait: true }) });
+  assert.equal(res.status, 200);
+  const messages = await body(api("/api/room/messages"));
+  assert.ok(messages.some((m: any) => m.kind === "error" && /exited with code 3/.test(m.text)));
+  const again = await api("/api/room/messages", { method: "POST", body: JSON.stringify({ text: "@Drafter are you back?", wait: true }) });
+  assert.equal(again.status, 200);
+  const later = await body(api("/api/room/messages"));
+  const reply = later.filter((m: any) => m.folk === "drafter" && m.kind === "text").pop();
+  assert.match(reply.text, /are you back/);
+  const backstage = await body(api("/api/backstage"));
+  assert.ok(backstage.some((e: any) => e.event === "session"));
+});

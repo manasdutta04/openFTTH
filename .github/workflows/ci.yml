@@ -38,4 +38,30 @@ jobs:
           path: runs/ci
           if-no-files-found: error
 
-  # Phase 1 adds: harness (pnpm test) and desktop (cargo test/clippy) jobs.
+  harness:
+    name: Harness (Node)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: harness
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: harness/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm smoke:packaged
+
+  # Phase 1 adds a desktop (cargo test/clippy) job once the Rust workspace exists.
