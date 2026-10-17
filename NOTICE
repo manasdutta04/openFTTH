@@ -1,0 +1,9 @@
+openFTTH
+Copyright (c) 2026 Manas Dutta and openFTTH contributors
+Licensed under the MIT License (see LICENSE).
+
+Third-party dependencies keep their own licences; see the lock files in
+engine/, harness/ and desktop/.
+
+Fixture data under fixtures/ is derived from OpenStreetMap,
+© OpenStreetMap contributors, available under the Open Database Licence (ODbL).

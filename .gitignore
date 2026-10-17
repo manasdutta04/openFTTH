@@ -1,0 +1,32 @@
+# Python / engine
+engine/.venv/
+engine/**/__pycache__/
+engine/.pytest_cache/
+engine/.ruff_cache/
+engine/dist/
+engine/build/
+engine/*.egg-info/
+*.pyc
+
+# Rust / desktop
+desktop/target/
+macos/.build/
+
+# Node / harness
+harness/node_modules/
+harness/dist/
+
+# Runs, outputs, scratch
+runs/
+out/
+*.log
+
+# Large fixture downloads (committed samples are small and named explicitly)
+fixtures/**/raw/
+fixtures/**/*.gpkg
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
