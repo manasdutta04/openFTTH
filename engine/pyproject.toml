@@ -1,0 +1,53 @@
+[project]
+name = "openftth-engine"
+version = "0.1.0"
+description = "openFTTH design engine: deterministic FTTH/GPON design tools exposed over MCP and a headless CLI"
+authors = [
+    { name = "Manas Dutta", email = "122201926+manasdutta04@users.noreply.github.com" }
+]
+license = "MIT"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "geopandas>=1.0",
+    "shapely>=2.0",
+    "pyogrio>=0.10",
+    "pyproj>=3.6",
+    "networkx>=3.3",
+    "ortools>=9.11",
+    "osmnx>=2.0",
+    "pydantic>=2.8",
+    "pyyaml>=6.0",
+    "dulwich>=0.22",
+    "mcp>=1.10,<2",
+    "typer>=0.12",
+    "rich>=13",
+    "matplotlib>=3.9",
+    "numpy>=1.26",
+    "scipy>=1.13",
+]
+
+[project.scripts]
+openftth-engine = "openftth_engine.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "hypothesis>=6",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.11,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]  # ruff format wraps code; long human-readable decision strings are fine
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
