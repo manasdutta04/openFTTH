@@ -1,0 +1,118 @@
+# openFTTH rulebook — Norway draft preset
+# Aerial on existing poles is common outside city centres; longer drops; 1:32 cascaded 1:4 × 1:8.
+# All values `assumed` until reviewed by a Norwegian design partner, except `source:` lines.
+version: 1
+name: norway
+description: Norway draft. Mixed aerial/underground, cascaded 1:4 × 1:8 split, longer drops in low-density areas.
+country: "NO"
+currency: NOK
+
+pon:
+  class: C+                 # assumed: longer reach rural PONs
+  budget_db: 32.0           # source: G.984.2 class C+ max ODN loss
+  min_loss_db: 17.0         # source: G.984.2 class C+ min ODN loss
+  max_differential_db: 15.0
+  split_ratio: 32
+  cascade: [4, 8]           # assumed: L1 1:4 in the FDH, L2 1:8 in the FAT
+  worst_case_nm: 1310
+
+fibers:
+  drop: 2
+  distribution: [12, 24, 48, 96]
+  feeder: [96, 144, 288]
+  spare_pct: 20
+  take_rate: 0.7            # assumed: homes passed vs connected in rural rollouts
+
+homes:
+  count_units: true
+  default_units_apartment: 4
+  m2_per_unit: 95
+
+distances:
+  max_drop_m: 300           # assumed: longer rural drops
+  max_dist_m: 4000
+  max_reach_km: 20
+  max_pull_m: 300
+
+loss_db:
+  connector: 0.3
+  splice: 0.1
+  margin: 2.0
+  splitter: {2: 3.7, 4: 7.2, 8: 10.5, 16: 13.8, 32: 17.1, 64: 20.5}
+  fiber_per_km: {1310: 0.35, 1490: 0.25, 1550: 0.22}
+
+connectors_per_path: {odf: 2, fdh_in: 1, fdh_out: 1, fat: 1, ont: 1}
+
+fdh:
+  capacities: [288, 576]
+  max_fill_pct: 80
+  placements: [cabinet]
+
+fat:
+  max_homes: 8              # one 1:8 L2 splitter per FAT
+  min_homes: 2
+  placements: [pole, wall]
+
+chambers:
+  spacing_m: 300
+  types: {small: 600x450, large: 1200x600}
+
+closures:
+  sizes: [48, 96, 288]
+
+slack: {per_closure_m: 15, per_fat_m: 8}
+
+ducts:
+  prefer_existing: true
+  max_fill_pct: 40
+  min_bend_radius_mm: 300
+  microduct_bundles: [7, 12, 24]
+
+surfaces:                   # assumed, NOK per metre
+  asphalt:       {trench_per_m: 1400, reinstatement_per_m: 500}
+  pavement:      {trench_per_m: 900, reinstatement_per_m: 300}
+  verge:         {trench_per_m: 450, reinstatement_per_m: 60}
+  aerial:        {trench_per_m: 180}
+  existing_duct: {trench_per_m: 60}
+
+crossings:
+  road_drill_per_m: 2500
+
+highway_to_surface:
+  motorway: asphalt
+  trunk: asphalt
+  primary: asphalt
+  secondary: asphalt
+  tertiary: verge
+  residential: verge
+  living_street: pavement
+  unclassified: verge
+  service: verge
+  footway: pavement
+  cycleway: verge
+  path: verge
+  pedestrian: pavement
+  track: verge
+
+units:                      # NOK
+  fat: 3800
+  fdh_288: 75000
+  fdh_576: 110000
+  splitter_1_32: 1400
+  splitter_1_4: 450
+  splitter_1_8: 700
+  chamber_small: 11000
+  chamber_large: 22000
+  closure_48: 2800
+  closure_96: 4000
+  closure_288: 7000
+  odf_per_port: 300
+  cable_per_fiber_m: 0.14
+  cable_base_per_m: 10
+  drop_per_m: 14
+
+labour:                     # NOK
+  splice: 220
+  otdr_test: 140
+  fat_install: 2200
+  fdh_install: 15000

@@ -1,0 +1,859 @@
+{
+  "$defs": {
+    "Chambers": {
+      "additionalProperties": false,
+      "properties": {
+        "spacing_m": {
+          "default": 250.0,
+          "title": "Spacing M",
+          "type": "number"
+        },
+        "types": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Types",
+          "type": "object"
+        }
+      },
+      "title": "Chambers",
+      "type": "object"
+    },
+    "Closures": {
+      "additionalProperties": false,
+      "properties": {
+        "sizes": {
+          "default": [
+            48,
+            96,
+            288
+          ],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Sizes",
+          "type": "array"
+        }
+      },
+      "title": "Closures",
+      "type": "object"
+    },
+    "ConnectorsPerPath": {
+      "additionalProperties": false,
+      "properties": {
+        "odf": {
+          "default": 2,
+          "title": "Odf",
+          "type": "integer"
+        },
+        "fdh_in": {
+          "default": 1,
+          "title": "Fdh In",
+          "type": "integer"
+        },
+        "fdh_out": {
+          "default": 1,
+          "title": "Fdh Out",
+          "type": "integer"
+        },
+        "fat": {
+          "default": 1,
+          "title": "Fat",
+          "type": "integer"
+        },
+        "ont": {
+          "default": 1,
+          "title": "Ont",
+          "type": "integer"
+        }
+      },
+      "title": "ConnectorsPerPath",
+      "type": "object"
+    },
+    "Crossings": {
+      "additionalProperties": false,
+      "properties": {
+        "road_drill_per_m": {
+          "default": 180.0,
+          "title": "Road Drill Per M",
+          "type": "number"
+        }
+      },
+      "title": "Crossings",
+      "type": "object"
+    },
+    "Distances": {
+      "additionalProperties": false,
+      "properties": {
+        "max_drop_m": {
+          "default": 150.0,
+          "description": "Max drop length home \u2192 FAT along the street",
+          "title": "Max Drop M",
+          "type": "number"
+        },
+        "max_dist_m": {
+          "default": 2000.0,
+          "description": "Max distribution cable length FDH \u2192 FAT",
+          "title": "Max Dist M",
+          "type": "number"
+        },
+        "max_reach_km": {
+          "default": 20.0,
+          "description": "Max logical reach OLT \u2192 ONT",
+          "title": "Max Reach Km",
+          "type": "number"
+        },
+        "max_pull_m": {
+          "default": 250.0,
+          "description": "Max pull between chambers",
+          "title": "Max Pull M",
+          "type": "number"
+        }
+      },
+      "title": "Distances",
+      "type": "object"
+    },
+    "Ducts": {
+      "additionalProperties": false,
+      "properties": {
+        "prefer_existing": {
+          "default": true,
+          "title": "Prefer Existing",
+          "type": "boolean"
+        },
+        "max_fill_pct": {
+          "default": 40.0,
+          "title": "Max Fill Pct",
+          "type": "number"
+        },
+        "min_bend_radius_mm": {
+          "default": 300.0,
+          "title": "Min Bend Radius Mm",
+          "type": "number"
+        },
+        "microduct_bundles": {
+          "default": [
+            7,
+            12,
+            24
+          ],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Microduct Bundles",
+          "type": "array"
+        }
+      },
+      "title": "Ducts",
+      "type": "object"
+    },
+    "Fat": {
+      "additionalProperties": false,
+      "properties": {
+        "max_homes": {
+          "default": 32,
+          "description": "Max homes (units) served by one FAT",
+          "title": "Max Homes",
+          "type": "integer"
+        },
+        "min_homes": {
+          "default": 4,
+          "description": "Below this an FAT is discouraged (cost only)",
+          "title": "Min Homes",
+          "type": "integer"
+        },
+        "placements": {
+          "default": [
+            "pole",
+            "wall",
+            "chamber"
+          ],
+          "items": {
+            "enum": [
+              "pole",
+              "wall",
+              "chamber",
+              "cabinet"
+            ],
+            "type": "string"
+          },
+          "title": "Placements",
+          "type": "array"
+        }
+      },
+      "title": "Fat",
+      "type": "object"
+    },
+    "Fdh": {
+      "additionalProperties": false,
+      "properties": {
+        "capacities": {
+          "default": [
+            288,
+            576
+          ],
+          "description": "FDH sizes in splitter output ports",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Capacities",
+          "type": "array"
+        },
+        "max_fill_pct": {
+          "default": 80.0,
+          "description": "Max initial fill of an FDH",
+          "title": "Max Fill Pct",
+          "type": "number"
+        },
+        "placements": {
+          "default": [
+            "cabinet"
+          ],
+          "items": {
+            "enum": [
+              "pole",
+              "wall",
+              "chamber",
+              "cabinet"
+            ],
+            "type": "string"
+          },
+          "title": "Placements",
+          "type": "array"
+        }
+      },
+      "title": "Fdh",
+      "type": "object"
+    },
+    "Fibers": {
+      "additionalProperties": false,
+      "properties": {
+        "drop": {
+          "default": 2,
+          "description": "Fibres per drop cable",
+          "title": "Drop",
+          "type": "integer"
+        },
+        "distribution": {
+          "default": [
+            12,
+            24,
+            48,
+            96
+          ],
+          "description": "Distribution cable ladder",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Distribution",
+          "type": "array"
+        },
+        "feeder": {
+          "default": [
+            96,
+            144,
+            288
+          ],
+          "description": "Feeder cable ladder",
+          "items": {
+            "type": "integer"
+          },
+          "title": "Feeder",
+          "type": "array"
+        },
+        "spare_pct": {
+          "default": 20.0,
+          "description": "Spare fibres as % of demand, rounded up to ladder",
+          "title": "Spare Pct",
+          "type": "number"
+        },
+        "take_rate": {
+          "default": 1.0,
+          "description": "Share of homes passed that get a drop (0\u20131)",
+          "title": "Take Rate",
+          "type": "number"
+        }
+      },
+      "title": "Fibers",
+      "type": "object"
+    },
+    "Homes": {
+      "additionalProperties": false,
+      "properties": {
+        "count_units": {
+          "default": true,
+          "description": "Count dwelling units (busnummers / flats), not addresses",
+          "title": "Count Units",
+          "type": "boolean"
+        },
+        "default_units_apartment": {
+          "default": 6,
+          "description": "Units assumed for an apartment building with no unit data",
+          "title": "Default Units Apartment",
+          "type": "integer"
+        },
+        "m2_per_unit": {
+          "default": 90.0,
+          "description": "Floor area per unit used to estimate units from footprint \u00d7 levels",
+          "title": "M2 Per Unit",
+          "type": "number"
+        }
+      },
+      "title": "Homes",
+      "type": "object"
+    },
+    "Labour": {
+      "additionalProperties": false,
+      "properties": {
+        "splice": {
+          "default": 18.0,
+          "title": "Splice",
+          "type": "number"
+        },
+        "otdr_test": {
+          "default": 12.0,
+          "title": "Otdr Test",
+          "type": "number"
+        },
+        "fat_install": {
+          "default": 180.0,
+          "title": "Fat Install",
+          "type": "number"
+        },
+        "fdh_install": {
+          "default": 1200.0,
+          "title": "Fdh Install",
+          "type": "number"
+        }
+      },
+      "title": "Labour",
+      "type": "object"
+    },
+    "LossDb": {
+      "additionalProperties": false,
+      "properties": {
+        "connector": {
+          "default": 0.3,
+          "title": "Connector",
+          "type": "number"
+        },
+        "splice": {
+          "default": 0.1,
+          "title": "Splice",
+          "type": "number"
+        },
+        "margin": {
+          "default": 2.0,
+          "description": "Design margin added to every path",
+          "title": "Margin",
+          "type": "number"
+        },
+        "splitter": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Splitter",
+          "type": "object"
+        },
+        "fiber_per_km": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Fiber Per Km",
+          "type": "object"
+        }
+      },
+      "title": "LossDb",
+      "type": "object"
+    },
+    "Pon": {
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "default": "B+",
+          "description": "ITU-T G.984.2 ODN class",
+          "enum": [
+            "B+",
+            "C+"
+          ],
+          "title": "Class",
+          "type": "string"
+        },
+        "budget_db": {
+          "default": 28.0,
+          "description": "Max ODN loss for the class (B+ = 28 dB)",
+          "title": "Budget Db",
+          "type": "number"
+        },
+        "min_loss_db": {
+          "default": 13.0,
+          "description": "Min ODN loss for the class (B+ = 13 dB)",
+          "title": "Min Loss Db",
+          "type": "number"
+        },
+        "max_differential_db": {
+          "default": 15.0,
+          "description": "Max difference in loss between ONTs on one PON",
+          "title": "Max Differential Db",
+          "type": "number"
+        },
+        "split_ratio": {
+          "default": 32,
+          "description": "Total split per PON (1:N)",
+          "title": "Split Ratio",
+          "type": "integer"
+        },
+        "cascade": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Cascaded split stages, e.g. [4, 8]. None means a single centralised splitter in the FDH.",
+          "title": "Cascade"
+        },
+        "worst_case_nm": {
+          "default": 1310,
+          "description": "Wavelength used for the worst-case budget check",
+          "enum": [
+            1310,
+            1490,
+            1550
+          ],
+          "title": "Worst Case Nm",
+          "type": "integer"
+        }
+      },
+      "title": "Pon",
+      "type": "object"
+    },
+    "Slack": {
+      "additionalProperties": false,
+      "properties": {
+        "per_closure_m": {
+          "default": 10.0,
+          "title": "Per Closure M",
+          "type": "number"
+        },
+        "per_fat_m": {
+          "default": 5.0,
+          "title": "Per Fat M",
+          "type": "number"
+        }
+      },
+      "title": "Slack",
+      "type": "object"
+    },
+    "SurfaceCost": {
+      "additionalProperties": false,
+      "properties": {
+        "trench_per_m": {
+          "title": "Trench Per M",
+          "type": "number"
+        },
+        "reinstatement_per_m": {
+          "default": 0.0,
+          "title": "Reinstatement Per M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "trench_per_m"
+      ],
+      "title": "SurfaceCost",
+      "type": "object"
+    },
+    "Surfaces": {
+      "additionalProperties": false,
+      "properties": {
+        "asphalt": {
+          "$ref": "#/$defs/SurfaceCost",
+          "default": {
+            "trench_per_m": 90.0,
+            "reinstatement_per_m": 35.0
+          }
+        },
+        "pavement": {
+          "$ref": "#/$defs/SurfaceCost",
+          "default": {
+            "trench_per_m": 60.0,
+            "reinstatement_per_m": 20.0
+          }
+        },
+        "verge": {
+          "$ref": "#/$defs/SurfaceCost",
+          "default": {
+            "trench_per_m": 35.0,
+            "reinstatement_per_m": 5.0
+          }
+        },
+        "aerial": {
+          "$ref": "#/$defs/SurfaceCost",
+          "default": {
+            "trench_per_m": 20.0,
+            "reinstatement_per_m": 0.0
+          }
+        },
+        "existing_duct": {
+          "$ref": "#/$defs/SurfaceCost",
+          "default": {
+            "trench_per_m": 5.0,
+            "reinstatement_per_m": 0.0
+          }
+        }
+      },
+      "title": "Surfaces",
+      "type": "object"
+    },
+    "UnitCosts": {
+      "additionalProperties": false,
+      "properties": {
+        "fat": {
+          "default": 350.0,
+          "title": "Fat",
+          "type": "number"
+        },
+        "fdh_288": {
+          "default": 6500.0,
+          "title": "Fdh 288",
+          "type": "number"
+        },
+        "fdh_576": {
+          "default": 9500.0,
+          "title": "Fdh 576",
+          "type": "number"
+        },
+        "splitter_1_32": {
+          "default": 120.0,
+          "title": "Splitter 1 32",
+          "type": "number"
+        },
+        "splitter_1_4": {
+          "default": 40.0,
+          "title": "Splitter 1 4",
+          "type": "number"
+        },
+        "splitter_1_8": {
+          "default": 60.0,
+          "title": "Splitter 1 8",
+          "type": "number"
+        },
+        "chamber_small": {
+          "default": 900.0,
+          "title": "Chamber Small",
+          "type": "number"
+        },
+        "chamber_large": {
+          "default": 1800.0,
+          "title": "Chamber Large",
+          "type": "number"
+        },
+        "closure_48": {
+          "default": 250.0,
+          "title": "Closure 48",
+          "type": "number"
+        },
+        "closure_96": {
+          "default": 350.0,
+          "title": "Closure 96",
+          "type": "number"
+        },
+        "closure_288": {
+          "default": 600.0,
+          "title": "Closure 288",
+          "type": "number"
+        },
+        "odf_per_port": {
+          "default": 25.0,
+          "title": "Odf Per Port",
+          "type": "number"
+        },
+        "cable_per_fiber_m": {
+          "default": 0.012,
+          "description": "Cable cost per fibre-metre (linear approximation of the ladder)",
+          "title": "Cable Per Fiber M",
+          "type": "number"
+        },
+        "cable_base_per_m": {
+          "default": 0.9,
+          "description": "Cable sheath cost per metre",
+          "title": "Cable Base Per M",
+          "type": "number"
+        },
+        "drop_per_m": {
+          "default": 1.2,
+          "title": "Drop Per M",
+          "type": "number"
+        }
+      },
+      "title": "UnitCosts",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "country": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Country"
+    },
+    "currency": {
+      "default": "EUR",
+      "title": "Currency",
+      "type": "string"
+    },
+    "pon": {
+      "$ref": "#/$defs/Pon",
+      "default": {
+        "class": "B+",
+        "budget_db": 28.0,
+        "min_loss_db": 13.0,
+        "max_differential_db": 15.0,
+        "split_ratio": 32,
+        "cascade": null,
+        "worst_case_nm": 1310
+      }
+    },
+    "fibers": {
+      "$ref": "#/$defs/Fibers",
+      "default": {
+        "drop": 2,
+        "distribution": [
+          12,
+          24,
+          48,
+          96
+        ],
+        "feeder": [
+          96,
+          144,
+          288
+        ],
+        "spare_pct": 20.0,
+        "take_rate": 1.0
+      }
+    },
+    "homes": {
+      "$ref": "#/$defs/Homes",
+      "default": {
+        "count_units": true,
+        "default_units_apartment": 6,
+        "m2_per_unit": 90.0
+      }
+    },
+    "distances": {
+      "$ref": "#/$defs/Distances",
+      "default": {
+        "max_drop_m": 150.0,
+        "max_dist_m": 2000.0,
+        "max_reach_km": 20.0,
+        "max_pull_m": 250.0
+      }
+    },
+    "loss_db": {
+      "$ref": "#/$defs/LossDb",
+      "default": {
+        "connector": 0.3,
+        "splice": 0.1,
+        "margin": 2.0,
+        "splitter": {
+          "16": 13.8,
+          "2": 3.7,
+          "32": 17.1,
+          "4": 7.2,
+          "64": 20.5,
+          "8": 10.5
+        },
+        "fiber_per_km": {
+          "1310": 0.35,
+          "1490": 0.25,
+          "1550": 0.22
+        }
+      }
+    },
+    "connectors_per_path": {
+      "$ref": "#/$defs/ConnectorsPerPath",
+      "default": {
+        "odf": 2,
+        "fdh_in": 1,
+        "fdh_out": 1,
+        "fat": 1,
+        "ont": 1
+      }
+    },
+    "fdh": {
+      "$ref": "#/$defs/Fdh",
+      "default": {
+        "capacities": [
+          288,
+          576
+        ],
+        "max_fill_pct": 80.0,
+        "placements": [
+          "cabinet"
+        ]
+      }
+    },
+    "fat": {
+      "$ref": "#/$defs/Fat",
+      "default": {
+        "max_homes": 32,
+        "min_homes": 4,
+        "placements": [
+          "pole",
+          "wall",
+          "chamber"
+        ]
+      }
+    },
+    "chambers": {
+      "$ref": "#/$defs/Chambers",
+      "default": {
+        "spacing_m": 250.0,
+        "types": {
+          "large": "1200x600",
+          "small": "600x450"
+        }
+      }
+    },
+    "closures": {
+      "$ref": "#/$defs/Closures",
+      "default": {
+        "sizes": [
+          48,
+          96,
+          288
+        ]
+      }
+    },
+    "slack": {
+      "$ref": "#/$defs/Slack",
+      "default": {
+        "per_closure_m": 10.0,
+        "per_fat_m": 5.0
+      }
+    },
+    "ducts": {
+      "$ref": "#/$defs/Ducts",
+      "default": {
+        "prefer_existing": true,
+        "max_fill_pct": 40.0,
+        "min_bend_radius_mm": 300.0,
+        "microduct_bundles": [
+          7,
+          12,
+          24
+        ]
+      }
+    },
+    "surfaces": {
+      "$ref": "#/$defs/Surfaces",
+      "default": {
+        "asphalt": {
+          "reinstatement_per_m": 35.0,
+          "trench_per_m": 90.0
+        },
+        "pavement": {
+          "reinstatement_per_m": 20.0,
+          "trench_per_m": 60.0
+        },
+        "verge": {
+          "reinstatement_per_m": 5.0,
+          "trench_per_m": 35.0
+        },
+        "aerial": {
+          "reinstatement_per_m": 0.0,
+          "trench_per_m": 20.0
+        },
+        "existing_duct": {
+          "reinstatement_per_m": 0.0,
+          "trench_per_m": 5.0
+        }
+      }
+    },
+    "crossings": {
+      "$ref": "#/$defs/Crossings",
+      "default": {
+        "road_drill_per_m": 180.0
+      }
+    },
+    "highway_to_surface": {
+      "additionalProperties": {
+        "enum": [
+          "asphalt",
+          "pavement",
+          "verge",
+          "aerial",
+          "existing_duct"
+        ],
+        "type": "string"
+      },
+      "description": "Where the trench goes for each OSM highway class (the footpath beside a residential road, the verge beside a track, \u2026)",
+      "title": "Highway To Surface",
+      "type": "object"
+    },
+    "units": {
+      "$ref": "#/$defs/UnitCosts",
+      "default": {
+        "fat": 350.0,
+        "fdh_288": 6500.0,
+        "fdh_576": 9500.0,
+        "splitter_1_32": 120.0,
+        "splitter_1_4": 40.0,
+        "splitter_1_8": 60.0,
+        "chamber_small": 900.0,
+        "chamber_large": 1800.0,
+        "closure_48": 250.0,
+        "closure_96": 350.0,
+        "closure_288": 600.0,
+        "odf_per_port": 25.0,
+        "cable_per_fiber_m": 0.012,
+        "cable_base_per_m": 0.9,
+        "drop_per_m": 1.2
+      }
+    },
+    "labour": {
+      "$ref": "#/$defs/Labour",
+      "default": {
+        "splice": 18.0,
+        "otdr_test": 12.0,
+        "fat_install": 180.0,
+        "fdh_install": 1200.0
+      }
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "Rulebook",
+  "type": "object"
+}

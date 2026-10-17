@@ -1,0 +1,117 @@
+# openFTTH rulebook — generic GPON preset
+# Every value is marked `source:` (public spec / vendor datasheet) or `assumed`.
+# Validate with: openftth-engine rules validate rulebooks/generic-gpon.yaml
+version: 1
+name: generic-gpon
+description: Centralised 1:32 split GPON, class B+, underground in footpaths. A neutral starting point.
+currency: EUR
+
+pon:
+  class: B+                 # source: ITU-T G.984.2 amendment 1, class B+
+  budget_db: 28.0           # source: G.984.2 B+ max ODN loss
+  min_loss_db: 13.0         # source: G.984.2 B+ min ODN loss
+  max_differential_db: 15.0 # source: G.984.2 max differential optical path loss
+  split_ratio: 32           # assumed: most common residential design
+  cascade: null             # centralised split in the FDH
+  worst_case_nm: 1310       # source: upstream wavelength has the highest attenuation
+
+fibers:
+  drop: 2                   # assumed: 2F drop, one spare
+  distribution: [12, 24, 48, 96]
+  feeder: [96, 144, 288]
+  spare_pct: 20             # assumed
+  take_rate: 1.0            # homes passed == homes connected for the budget
+
+homes:
+  count_units: true
+  default_units_apartment: 6   # assumed
+  m2_per_unit: 90              # assumed
+
+distances:
+  max_drop_m: 150           # assumed: typical limit for a drop without a mid-span closure
+  max_dist_m: 2000          # assumed
+  max_reach_km: 20          # source: G.984 logical reach 20 km
+  max_pull_m: 250           # assumed
+
+loss_db:
+  connector: 0.3            # source: IEC 61755 grade B, typical design value
+  splice: 0.1               # source: typical fusion splice design value
+  margin: 2.0               # assumed: design margin
+  splitter: {2: 3.7, 4: 7.2, 8: 10.5, 16: 13.8, 32: 17.1, 64: 20.5}  # source: typical PLC splitter datasheets (max IL)
+  fiber_per_km: {1310: 0.35, 1490: 0.25, 1550: 0.22}  # source: ITU-T G.652.D typical
+
+connectors_per_path: {odf: 2, fdh_in: 1, fdh_out: 1, fat: 1, ont: 1}
+
+fdh:
+  capacities: [288, 576]
+  max_fill_pct: 80          # assumed
+  placements: [cabinet]
+
+fat:
+  max_homes: 32             # assumed: one FAT per splitter group
+  min_homes: 4
+  placements: [pole, wall, chamber]
+
+chambers:
+  spacing_m: 250            # assumed
+  types: {small: 600x450, large: 1200x600}
+
+closures:
+  sizes: [48, 96, 288]
+
+slack: {per_closure_m: 10, per_fat_m: 5}
+
+ducts:
+  prefer_existing: true
+  max_fill_pct: 40          # assumed
+  min_bend_radius_mm: 300   # assumed
+  microduct_bundles: [7, 12, 24]
+
+surfaces:                   # trench + reinstatement cost per metre; all assumed
+  asphalt:       {trench_per_m: 90, reinstatement_per_m: 35}
+  pavement:      {trench_per_m: 60, reinstatement_per_m: 20}
+  verge:         {trench_per_m: 35, reinstatement_per_m: 5}
+  aerial:        {trench_per_m: 20}
+  existing_duct: {trench_per_m: 5}
+
+crossings:
+  road_drill_per_m: 180     # assumed
+
+highway_to_surface:
+  motorway: asphalt
+  trunk: asphalt
+  primary: asphalt
+  secondary: asphalt
+  tertiary: pavement
+  residential: pavement
+  living_street: pavement
+  unclassified: verge
+  service: verge
+  footway: pavement
+  cycleway: verge
+  path: verge
+  pedestrian: pavement
+  track: verge
+
+units:                      # all assumed, EUR
+  fat: 350
+  fdh_288: 6500
+  fdh_576: 9500
+  splitter_1_32: 120
+  splitter_1_4: 40
+  splitter_1_8: 60
+  chamber_small: 900
+  chamber_large: 1800
+  closure_48: 250
+  closure_96: 350
+  closure_288: 600
+  odf_per_port: 25
+  cable_per_fiber_m: 0.012
+  cable_base_per_m: 0.9
+  drop_per_m: 1.2
+
+labour:                     # all assumed, EUR
+  splice: 18
+  otdr_test: 12
+  fat_install: 180
+  fdh_install: 1200

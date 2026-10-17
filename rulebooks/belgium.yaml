@@ -1,0 +1,118 @@
+# openFTTH rulebook — Belgium (Flanders) draft preset
+# Starts from generic-gpon; differences below. Values are `assumed` until a design
+# partner reviews them; `source:` marks public specs.
+version: 1
+name: belgium
+description: Flanders draft. Underground in footpaths, centralised 1:32 split, 2F drops, existing-duct preference.
+country: BE
+currency: EUR
+
+pon:
+  class: B+                 # source: G.984.2
+  budget_db: 28.0
+  min_loss_db: 13.0
+  max_differential_db: 15.0
+  split_ratio: 32           # assumed: Flemish operators commonly use 1:32 centralised
+  cascade: null
+  worst_case_nm: 1310
+
+fibers:
+  drop: 2                   # assumed
+  distribution: [12, 24, 48, 96, 144]
+  feeder: [144, 288, 432]
+  spare_pct: 25             # assumed: higher spare for dense MDU streets
+  take_rate: 1.0
+
+homes:
+  count_units: true         # Adressenregister busnummer → one unit
+  default_units_apartment: 6
+  m2_per_unit: 85           # assumed: Flemish apartment average
+
+distances:
+  max_drop_m: 120           # assumed
+  max_dist_m: 1500          # assumed
+  max_reach_km: 20
+  max_pull_m: 200           # assumed: dense urban chambers
+
+loss_db:
+  connector: 0.3
+  splice: 0.1
+  margin: 2.0
+  splitter: {2: 3.7, 4: 7.2, 8: 10.5, 16: 13.8, 32: 17.1, 64: 20.5}
+  fiber_per_km: {1310: 0.35, 1490: 0.25, 1550: 0.22}
+
+connectors_per_path: {odf: 2, fdh_in: 1, fdh_out: 1, fat: 1, ont: 1}
+
+fdh:
+  capacities: [288, 576]
+  max_fill_pct: 80
+  placements: [cabinet]
+
+fat:
+  max_homes: 24             # assumed: wall-mounted FATs in terraced streets
+  min_homes: 4
+  placements: [wall, chamber]
+
+chambers:
+  spacing_m: 200
+  types: {small: 600x450, large: 1200x600}
+
+closures:
+  sizes: [48, 96, 288]
+
+slack: {per_closure_m: 10, per_fat_m: 5}
+
+ducts:
+  prefer_existing: true     # use existing ducts when the user supplies duct plans
+  max_fill_pct: 40
+  min_bend_radius_mm: 300
+  microduct_bundles: [7, 12, 24]
+
+surfaces:                   # assumed, EUR per metre, Flemish urban rates
+  asphalt:       {trench_per_m: 110, reinstatement_per_m: 45}
+  pavement:      {trench_per_m: 70, reinstatement_per_m: 30}
+  verge:         {trench_per_m: 40, reinstatement_per_m: 8}
+  aerial:        {trench_per_m: 25}
+  existing_duct: {trench_per_m: 6}
+
+crossings:
+  road_drill_per_m: 200
+
+highway_to_surface:
+  motorway: asphalt
+  trunk: asphalt
+  primary: asphalt
+  secondary: asphalt
+  tertiary: pavement
+  residential: pavement
+  living_street: pavement
+  unclassified: pavement
+  service: verge
+  footway: pavement
+  cycleway: verge
+  path: verge
+  pedestrian: pavement
+  track: verge
+
+units:
+  fat: 320
+  fdh_288: 7000
+  fdh_576: 10000
+  splitter_1_32: 120
+  splitter_1_4: 40
+  splitter_1_8: 60
+  chamber_small: 950
+  chamber_large: 1900
+  closure_48: 250
+  closure_96: 350
+  closure_288: 600
+  odf_per_port: 25
+  cable_per_fiber_m: 0.012
+  cable_base_per_m: 0.9
+  drop_per_m: 1.3
+
+labour:
+  splice: 20
+  otdr_test: 12
+  fat_install: 200
+  fdh_install: 1400
