@@ -1,0 +1,11 @@
+{
+  "type": "FeatureCollection",
+  "name": "gent-mariakerke-sample-area",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"name": "Gent / Mariakerke sample", "source": "hand-drawn bbox", "crs_note": "EPSG:4326"},
+      "geometry": {"type": "Polygon", "coordinates": [[[3.675, 51.070], [3.690, 51.070], [3.690, 51.078], [3.675, 51.078], [3.675, 51.070]]]}
+    }
+  ]
+}
