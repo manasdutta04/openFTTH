@@ -20,6 +20,10 @@ Tests (unit, property and determinism): `uv run pytest`.
 
 ## Gate 1 — through the agent crew (in progress)
 
+The Windows app does steps 1–6 for you: `cd desktop && cargo run -p openftth-app` spawns the
+harness, offers the Gent fixture in the open-project form, streams the room, shows approval
+cards and draws the design as versions arrive. The curl steps below exercise the same API by hand.
+
 1. Start the harness:
    ```bash
    cd harness

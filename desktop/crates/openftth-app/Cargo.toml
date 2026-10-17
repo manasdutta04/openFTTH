@@ -1,0 +1,20 @@
+[package]
+name = "openftth-app"
+description = "openFTTH desktop app for Windows: chat with the design crew, watch the twin, approve risky steps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "openftth"
+path = "src/main.rs"
+
+[dependencies]
+openftth-core = { path = "../openftth-core" }
+openftth-client = { path = "../openftth-client" }
+eframe = { workspace = true }
+egui = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+rand = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "openftth-core"
+description = "openFTTH core: design bundle model, rulebook model and map geometry (no UI, no I/O beyond files)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
