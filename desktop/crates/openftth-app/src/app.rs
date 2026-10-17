@@ -341,11 +341,13 @@ impl OpenFtthApp {
     fn chat_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("openFTTH");
-            ui.label(if self.connected {
-                RichText::new("● live").color(Color32::from_rgb(0x43, 0xa0, 0x47))
+            let (c, t) = if self.connected {
+                (Color32::from_rgb(0x43, 0xa0, 0x47), "live")
             } else {
-                RichText::new("○ offline").color(Color32::GRAY)
-            });
+                (Color32::GRAY, "offline")
+            };
+            dot(ui, c);
+            ui.label(RichText::new(t).color(c));
         });
         ui.separator();
         if self.project.is_none() {
@@ -384,8 +386,8 @@ impl OpenFtthApp {
                     "waiting" => Color32::from_rgb(0xd8, 0x1b, 0x60),
                     _ => Color32::GRAY,
                 };
-                ui.label(RichText::new(format!("● {name}")).color(c))
-                    .on_hover_text(state);
+                dot(ui, c);
+                ui.label(RichText::new(name).color(c)).on_hover_text(state);
             }
         });
         ui.horizontal_wrapped(|ui| {
@@ -397,7 +399,15 @@ impl OpenFtthApp {
                     .as_deref()
                     .map(|cur| stage_index(cur) >= stage_index(st))
                     .unwrap_or(false);
-                ui.label(RichText::new(format!("{} {st}", if done { "☑" } else { "☐" })).small());
+                ui.label(
+                    RichText::new(format!("{} {st}", if done { "[x]" } else { "[ ]" }))
+                        .small()
+                        .color(if done {
+                            Color32::from_rgb(0x2e, 0x7d, 0x32)
+                        } else {
+                            Color32::GRAY
+                        }),
+                );
             }
         });
         if !self.tool_chips.is_empty() {
@@ -457,13 +467,17 @@ impl OpenFtthApp {
                     match m.kind.as_str() {
                         "tool" => {
                             ui.label(
-                                RichText::new(format!("  ⚙ {}", m.text))
+                                RichText::new(format!("  [tool] {}", m.text))
                                     .small()
                                     .color(Color32::DARK_GRAY),
                             );
                         }
                         "handoff" => {
-                            ui.label(RichText::new(format!("  ↪ {}", m.text)).small().italics());
+                            ui.label(
+                                RichText::new(format!("  [hand-off] {}", m.text))
+                                    .small()
+                                    .italics(),
+                            );
                         }
                         "error" => {
                             ui.label(
@@ -532,20 +546,27 @@ impl OpenFtthApp {
             {
                 self.refresh_backstage();
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(d) = &self.design {
-                    let counts = d.counts();
-                    let line = ["home", "fat", "fdh", "feeder", "distribution", "drop"]
-                        .iter()
-                        .filter_map(|k| counts.get(*k).map(|n| format!("{n} {k}")))
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    ui.label(RichText::new(line).small());
-                }
-                if ui.small_button("fit").clicked() {
-                    self.twin.refit();
-                }
-            });
+        });
+        ui.horizontal(|ui| {
+            if ui.small_button("fit view").clicked() {
+                self.twin.refit();
+            }
+            if let Some(d) = &self.design {
+                let counts = d.counts();
+                let line = ["home", "fat", "fdh", "feeder", "distribution", "drop"]
+                    .iter()
+                    .filter_map(|k| counts.get(*k).map(|n| format!("{n} {k}")))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                ui.label(RichText::new(line).small());
+            }
+            if let Some((lon, lat)) = self.cursor {
+                ui.label(
+                    RichText::new(format!("{lon:.5}, {lat:.5}"))
+                        .small()
+                        .monospace(),
+                );
+            }
         });
         ui.separator();
         match self.tab {
@@ -618,6 +639,12 @@ impl eframe::App for OpenFtthApp {
         egui::CentralPanel::default().show(ui, |ui| self.workspace(ui));
         ui.ctx().request_repaint_after(Duration::from_millis(200));
     }
+}
+
+/// A small coloured disc; the default font has no bullet glyph.
+fn dot(ui: &mut egui::Ui, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.0, color);
 }
 
 fn message_from_value(v: &Value) -> ChatMessage {
