@@ -134,6 +134,8 @@ def check_power_budget(design: Design, rules: Rulebook) -> tuple[list[Violation]
     per_pon: dict[str, list[float]] = {}
     worst = 0.0
     best = float("inf")
+    worst_home: dict[str, Any] | None = None
+    best_home: dict[str, Any] | None = None
     n = 0
     for home in design.by_kind("home"):
         path_m = float(home.openftth.get("path_to_pop_m", 0.0))
@@ -141,6 +143,17 @@ def check_power_budget(design: Design, rules: Rulebook) -> tuple[list[Violation]
         loss = path_loss_db(rules, path_m, splices)
         home.openftth["odn_loss_db"] = round(loss["total"], 2)
         n += 1
+        label = {
+            "element_uuid": home.element_uuid,
+            "name": element_label(home),
+            "loss_db": round(loss["total"], 2),
+            "path_m": round(path_m, 1),
+            "splices": splices,
+        }
+        if loss["total"] > worst or worst_home is None:
+            worst_home = label
+        if loss["total"] < best or best_home is None:
+            best_home = label
         worst = max(worst, loss["total"])
         best = min(best, loss["total"])
         pon = home.openftth.get("pon_id")
@@ -172,6 +185,9 @@ def check_power_budget(design: Design, rules: Rulebook) -> tuple[list[Violation]
         "best_db": round(best, 2) if n else None,
         "budget_db": rules.pon.budget_db,
         "min_loss_db": rules.pon.min_loss_db,
+        # The homes behind the extremes, so "which home is worst?" has an answer.
+        "worst_home": worst_home,
+        "best_home": best_home,
     }
     if n and best < rules.pon.min_loss_db:
         stats["note"] = (
