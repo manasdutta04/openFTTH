@@ -7,8 +7,3 @@ engine/, harness/ and desktop/.
 
 Fixture data under fixtures/ is derived from OpenStreetMap,
 © OpenStreetMap contributors, available under the Open Database Licence (ODbL).
-
-The engine marks under desktop/crates/openftth-app/assets/engines/ come from the
-thesvg icon collection (MIT, Copyright (c) 2025 thesvg.org; see LICENSE-thesvg.txt
-there). The marks identify the products they belong to and remain the trademarks
-of their respective owners.
