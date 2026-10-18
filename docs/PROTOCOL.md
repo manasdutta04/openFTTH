@@ -25,6 +25,8 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `GET /api/crew` | the crew manifest with per-folk state |
 | `GET /api/rulebooks` | the shipped rulebook presets (name, description, country) |
 | `GET /api/projects` | projects opened before, newest first |
+| `GET /api/engines` | the folk engines (Claude CLI, Codex CLI, Ollama, OpenRouter, OpenAI-compatible): availability, models, which one is active |
+| `POST /api/engine` | `{kind, model?, baseUrl?, apiKey?}` switch the crew's engine; folk sessions restart on the next turn |
 | `POST /api/project {area_path, osm_path, rulebook}` | create or open a project: starts the engine, creates the room |
 | `GET /api/project` | project meta, stage, head version, engine status |
 | `GET /api/project/versions` | version log (from the engine) |
@@ -58,6 +60,7 @@ replay buffer of 500 frames; a 15 s `ping` keeps the connection alive.
 | `design.version` | `{version, tool, summary, changes}` | reload bundle, Diff tab |
 | `design.stage` | `{stage}` | stage checklist |
 | `runtime` | `{folk, event, detail}` | Backstage |
+| `engine` | `{kind, label, model, baseUrl, hasKey}` | the active engine changed |
 | `folk` | `{key, state: idle|thinking|tooling|waiting}` | presence |
 
 ## Engine tool contract

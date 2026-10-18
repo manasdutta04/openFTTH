@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { Approvals } from "./approvals.ts";
 import { loadConfig, type HarnessConfig } from "./config.ts";
 import { loadCrew } from "./crew.ts";
-import { claudeDriverFactory } from "./drivers/claude.ts";
+import { selectDriver } from "./drivers/index.ts";
+import { Engines } from "./engines.ts";
 import { EventBus } from "./events.ts";
 import { ProjectService } from "./project.ts";
 import { buildServer } from "./server.ts";
@@ -21,6 +22,7 @@ export interface Harness {
   bus: EventBus;
   store: Store;
   approvals: Approvals;
+  engines: Engines;
   projects: ProjectService;
   close(): Promise<void>;
 }
@@ -39,6 +41,7 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
   const store = new Store(cfg.dataDir);
   const approvals = new Approvals(bus, cfg.dataDir, cfg.approvalTimeoutMs);
   const crew = loadCrew(cfg.crewPath);
+  const engines = new Engines(cfg.dataDir, cfg.folkEngine);
   const startedAt = Date.now();
 
   // Listen first so the real port is known before the project service needs the URL.
@@ -48,6 +51,7 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
     bus,
     store,
     approvals,
+    engines,
     crew,
     get projects() {
       return projectsRef.current!;
@@ -67,7 +71,9 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
     crew,
     bus,
     store,
-    driverFactory: opts.driverFactory ?? claudeDriverFactory,
+    approvals,
+    engines,
+    driverFactory: opts.driverFactory ?? selectDriver,
     harnessUrl: url,
     proxyPath: proxyScriptPath(),
     log,
@@ -81,6 +87,7 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
     bus,
     store,
     approvals,
+    engines,
     projects: projectsRef.current,
     async close() {
       await projectsRef.current?.close();

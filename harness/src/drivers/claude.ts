@@ -6,11 +6,12 @@
  * not on the allow-list go to our MCP permission tool, which turns them into approval cards.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import type { ChildProcess } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { killTree } from "../engine-process.ts";
+import { spawnCli } from "./spawn.ts";
 import type { Driver, DriverEvent, FolkProcessSpec, TurnResult } from "./types.ts";
 
 interface Pending {
@@ -101,11 +102,11 @@ export class ClaudeCliDriver implements Driver {
     // extraArgs come first: they belong to the command itself (e.g. a wrapper script path).
     // On Windows the command is resolved to a file so that no shell rewrites the arguments;
     // a .cmd/.bat launcher still needs cmd.exe, which gets each argument quoted explicitly.
-    const exe = resolveExecutable(s.command);
-    const spawnOpts = { cwd: s.cwd, env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" }, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] };
-    const child = /\.(cmd|bat)$/i.test(exe)
-      ? spawn("cmd.exe", ["/d", "/s", "/c", `"${[exe, ...s.extraArgs, ...args].map(quoteForCmd).join(" ")}"`], { ...spawnOpts, windowsVerbatimArguments: true })
-      : spawn(exe, [...s.extraArgs, ...args], spawnOpts);
+    const child = spawnCli(s.command, [...s.extraArgs, ...args], {
+      cwd: s.cwd,
+      env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     this.child = child;
     const rl = createInterface({ input: child.stdout! });
     rl.on("line", (l) => this.onLine(l));
@@ -243,21 +244,3 @@ function tryJson(text: string): unknown {
 }
 
 export const claudeDriverFactory = (spec: FolkProcessSpec): Driver => new ClaudeCliDriver(spec);
-
-/** Find `command` on PATH (Windows only); elsewhere the OS resolves it. */
-function resolveExecutable(command: string): string {
-  if (process.platform !== "win32" || /[\\/]/.test(command) || /\.[a-z0-9]+$/i.test(command)) return command;
-  const dirs = (process.env.PATH ?? "").split(";").filter(Boolean);
-  for (const ext of [".exe", ".cmd", ".bat"]) {
-    for (const dir of dirs) {
-      const candidate = join(dir, command + ext);
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return command;
-}
-
-/** Quote one argument for a cmd.exe command line (MSVCRT rules; cmd leaves quoted text alone). */
-function quoteForCmd(arg: string): string {
-  return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
-}

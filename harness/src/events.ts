@@ -19,7 +19,8 @@ export type FrameKind =
   | "design.stage"
   | "runtime"
   | "folk"
-  | "project";
+  | "project"
+  | "engine";
 
 export interface Frame {
   id: string;

@@ -174,6 +174,25 @@ test("built-in tools on the folk deny list are refused without a card", async ()
   assert.ok(!list.some((a: any) => a.tool === "Bash"), "no card was opened");
 });
 
+test("engines are listed with availability and can be switched", async () => {
+  const listed = await body(api("/api/engines"));
+  assert.equal(listed.current.kind, "claude");
+  assert.equal(listed.engines.length, 5);
+  assert.ok(listed.engines.every((e: any) => typeof e.available === "boolean" && typeof e.label === "string"));
+  assert.ok(!listed.engines.some((e: any) => "apiKey" in e), "keys never leave the harness");
+  const frames: any[] = [];
+  const off = h.bus.on((f) => f.kind === "engine" && frames.push(f.data));
+  const switched = await body(api("/api/engine", { method: "POST", body: JSON.stringify({ kind: "openrouter", model: "openai/gpt-5", apiKey: "sk-test" }) }));
+  assert.equal(switched.kind, "openrouter");
+  assert.equal(switched.hasKey, true);
+  assert.equal(frames.length, 1);
+  off();
+  const bad = await api("/api/engine", { method: "POST", body: JSON.stringify({ kind: "nope" }) });
+  assert.equal(bad.status, 400);
+  const back = await body(api("/api/engine", { method: "POST", body: JSON.stringify({ kind: "claude" }) }));
+  assert.equal(back.kind, "claude");
+});
+
 test("SSE stream replays missed frames on resume", async () => {
   const first = h.bus.emit("runtime", { marker: 1 });
   h.bus.emit("runtime", { marker: 2 });

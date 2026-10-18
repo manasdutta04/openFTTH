@@ -129,7 +129,7 @@ export class FolkMemory {
 }
 
 /** The system prompt a folk runs with. Stable per folk so the engine process can be reused. */
-export function systemPrompt(crew: Crew, member: CrewMember, memory: string): string {
+export function systemPrompt(crew: Crew, member: CrewMember, memory: string, engineKind = "claude"): string {
   const roster = crew.members
     .map((m) => `- @${m.name} (${m.key}): ${m.title}`)
     .join("\n");
@@ -148,6 +148,9 @@ export function systemPrompt(crew: Crew, member: CrewMember, memory: string): st
     "## Hard rules",
     "- Never state a number that a tool did not return. Quote decisions[].reason when explaining.",
     "- If a tool returns error=approval_required, explain the step and its cost and ask the user to approve; do not retry it.",
+    engineKind === "codex"
+      ? "- Risky engine tools (add_trench, route_outside_ducts, export_for_construction, rewind_design) need the user's approval: first call the openftth tool `approve` with tool_name \"mcp__engine__<tool>\" and the input; if it answers allow, call the tool with the returned updatedInput (it carries approval_id). If it answers deny, stop and say so."
+      : "",
     memory.trim() ? `\n## Your memory\n${memory.trim()}` : "",
   ].join("\n");
 }

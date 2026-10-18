@@ -54,6 +54,16 @@ export class Room {
     }
   }
 
+  /** Subscribe to the current drivers again after the project service replaced them. */
+  rebind(): void {
+    for (const off of this.unsubscribe) off();
+    this.unsubscribe.length = 0;
+    for (const m of this.d.crew.members) {
+      const driver = this.d.drivers.get(m.key);
+      if (driver) this.unsubscribe.push(driver.onEvent((e) => this.onDriverEvent(m, e)));
+    }
+  }
+
   folkStates(): Record<string, FolkState> {
     return Object.fromEntries(this.states);
   }

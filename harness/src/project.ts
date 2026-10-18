@@ -13,6 +13,8 @@ import type { EventBus } from "./events.ts";
 import { Room } from "./room.ts";
 import { readJsonOr, writeJsonAtomic, type Store } from "./store.ts";
 import type { Driver, DriverFactory } from "./drivers/types.ts";
+import type { Approvals } from "./approvals.ts";
+import type { Engines } from "./engines.ts";
 
 export interface OpenProjectInput {
   area_path: string;
@@ -36,6 +38,8 @@ export interface ProjectDeps {
   crew: Crew;
   bus: EventBus;
   store: Store;
+  approvals: Approvals;
+  engines: Engines;
   driverFactory: DriverFactory;
   harnessUrl: string;
   proxyPath: string;
@@ -115,40 +119,68 @@ export class ProjectService {
     });
     this.engine = engine;
 
-    for (const member of this.d.crew.members) {
-      const mcpConfigPath = join(dir, `mcp.${member.key}.json`);
-      writeJsonAtomic(mcpConfigPath, {
-        mcpServers: {
-          engine: { type: "http", url: engine.url },
-          openftth: {
-            type: "stdio",
-            command: process.execPath,
-            args: [this.d.proxyPath],
-            env: { OPENFTTH_HARNESS_URL: this.d.harnessUrl, OPENFTTH_COMMS_TOKEN: this.d.cfg.commsToken, OPENFTTH_FOLK: member.key, OPENFTTH_PROJECT: id },
-          },
-        },
-      });
-      const engineCfg = { ...this.d.cfg.folkEngine, ...(member.engine ?? {}) };
-      const driver = this.d.driverFactory({
-        folkKey: member.key,
-        systemPrompt: systemPrompt(this.d.crew, member, this.memory.read(member.key)),
-        allowedTools: member.tools.map((t) => `mcp__engine__${t}`),
-        disallowedTools: DISALLOWED_FOR_FOLKS,
-        mcpConfigPath,
-        permissionTool: "mcp__openftth__approve",
-        ...(engineCfg.model ? { model: engineCfg.model } : {}),
-        cwd: dir,
-        command: engineCfg.command,
-        extraArgs: engineCfg.args ?? [],
-        log: this.d.log,
-      });
-      this.drivers.set(member.key, driver);
-    }
+    this.createDrivers(id, dir, engine);
 
     this.room = new Room({ crew: this.d.crew, bus: this.d.bus, store: this.d.store, memory: this.memory, drivers: this.drivers, projectId: id, maxHops: this.d.cfg.maxHops, log: this.d.log });
     this.meta = meta;
     this.d.bus.emit("project", { id, engine: "ready", url: engine.url, rulebook });
     return meta;
+  }
+
+  /** Build one driver per folk on the active engine. */
+  private createDrivers(id: string, dir: string, engine: EngineHandle): void {
+    const active = this.d.engines.current();
+    for (const member of this.d.crew.members) {
+      const mcpConfigPath = join(dir, `mcp.${member.key}.json`);
+      const proxy = {
+        command: process.execPath,
+        args: [this.d.proxyPath],
+        env: { OPENFTTH_HARNESS_URL: this.d.harnessUrl, OPENFTTH_COMMS_TOKEN: this.d.cfg.commsToken, OPENFTTH_FOLK: member.key, OPENFTTH_PROJECT: id },
+      };
+      writeJsonAtomic(mcpConfigPath, {
+        mcpServers: {
+          engine: { type: "http", url: engine.url },
+          openftth: { type: "stdio", ...proxy },
+        },
+      });
+      const engineCfg = { ...this.d.cfg.folkEngine, ...(member.engine ?? {}) };
+      const settings = { ...active, ...(member.engine?.model ? { model: member.engine.model } : {}) };
+      const command = settings.kind === "codex" ? (engineCfg.kind === "codex" ? engineCfg.command : "codex") : settings.kind === "claude" ? (engineCfg.kind === "claude" ? engineCfg.command : "claude") : engineCfg.command;
+      const driver = this.d.driverFactory({
+        folkKey: member.key,
+        folkName: member.name,
+        projectId: id,
+        systemPrompt: systemPrompt(this.d.crew, member, this.memory.read(member.key), settings.kind),
+        allowedTools: member.tools.map((t) => `mcp__engine__${t}`),
+        disallowedTools: DISALLOWED_FOR_FOLKS,
+        engineTools: member.tools,
+        mcpConfigPath,
+        permissionTool: "mcp__openftth__approve",
+        engine: settings,
+        ...(settings.model ? { model: settings.model } : {}),
+        cwd: dir,
+        command,
+        extraArgs: engineCfg.args ?? [],
+        engineUrl: engine.url,
+        callEngine: (tool, args) => engine.call(tool, args),
+        listEngineTools: () => engine.listToolDefs(),
+        approve: (tool, input) => this.d.approvals.request({ project: id, folk: member.key, tool, input }),
+        mcpProxy: proxy,
+        log: this.d.log,
+      });
+      this.drivers.set(member.key, driver);
+    }
+  }
+
+  /** The engine changed: replace every folk's driver; the room keeps its queue and history. */
+  async rebuildDrivers(): Promise<void> {
+    if (!this.meta || !this.engine) return;
+    if (this.room?.busy) throw new HttpError(409, "a turn is running; stop it before switching engines");
+    const old = [...this.drivers.values()];
+    this.drivers.clear();
+    for (const d of old) await d.dispose();
+    this.createDrivers(this.meta.id, this.meta.dir, this.engine);
+    this.room?.rebind();
   }
 
   async status(): Promise<Record<string, unknown>> {

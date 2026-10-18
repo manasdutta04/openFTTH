@@ -16,6 +16,8 @@ export interface EngineHandle {
   pid: number | null;
   call<T = unknown>(tool: string, args?: Record<string, unknown>): Promise<T>;
   listTools(): Promise<string[]>;
+  /** Tool names, descriptions and input schemas, for drivers that call tools themselves. */
+  listToolDefs(): Promise<Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>>;
   stop(): Promise<void>;
   onExit(cb: (code: number | null) => void): void;
 }
@@ -103,6 +105,15 @@ async function makeHandle(url: string, port: number, child: ChildProcess | null)
       try {
         const res = await client.listTools();
         return res.tools.map((t) => t.name).sort();
+      } finally {
+        await client.close();
+      }
+    },
+    async listToolDefs() {
+      const client = await connect(url);
+      try {
+        const res = await client.listTools();
+        return res.tools.map((t) => ({ name: t.name, description: t.description ?? "", inputSchema: (t.inputSchema ?? { type: "object" }) as Record<string, unknown> })).sort((a, b) => a.name.localeCompare(b.name));
       } finally {
         await client.close();
       }

@@ -6,6 +6,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { HarnessConfig } from "./config.ts";
 import type { Approvals } from "./approvals.ts";
+import type { Engines } from "./engines.ts";
 import { listRulebooks, type Crew } from "./crew.ts";
 import { findRepoRoot } from "./config.ts";
 import { join } from "node:path";
@@ -18,6 +19,7 @@ export interface ServerDeps {
   bus: EventBus;
   store: Store;
   approvals: Approvals;
+  engines: Engines;
   crew: Crew;
   projects: ProjectService;
   startedAt: number;
@@ -52,6 +54,25 @@ export function buildServer(d: ServerDeps): Server {
   });
 
   // ---- crew -------------------------------------------------------------------------------
+  add("GET", "/api/engines", async (_req, res) => {
+    json(res, 200, { current: d.engines.publicCurrent(), engines: await d.engines.list() });
+  });
+  add("POST", "/api/engine", async (req, res) => {
+    const body = await readJson(req);
+    if (typeof body.kind !== "string") throw new HttpError(400, "kind is required");
+    let current;
+    try {
+      current = d.engines.set({ kind: body.kind, model: body.model, baseUrl: body.baseUrl, apiKey: body.apiKey });
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+    await d.projects.rebuildDrivers();
+    const pub = d.engines.publicCurrent();
+    d.bus.emit("engine", pub);
+    void current;
+    json(res, 200, pub);
+  });
+
   add("GET", "/api/crew", (_req, res) => {
     const states = d.projects.currentRoom?.folkStates() ?? {};
     json(res, 200, {
