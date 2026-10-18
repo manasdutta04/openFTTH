@@ -35,7 +35,19 @@ fn main() -> Result<()> {
         }
     };
 
+    // wgpu's default backend list includes OpenGL, whose WGL probe thread has overflowed its
+    // stack at start-up on Windows. DirectX 12 and Vulkan cover every supported Windows GPU;
+    // WGPU_BACKEND still overrides this for debugging.
+    let mut wgpu_setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    if cfg!(windows) && eframe::wgpu::Backends::from_env().is_none() {
+        wgpu_setup.instance_descriptor.backends =
+            eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::VULKAN;
+    }
     let options = eframe::NativeOptions {
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(wgpu_setup),
+            ..Default::default()
+        },
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 800.0])
             .with_min_inner_size([960.0, 600.0])
