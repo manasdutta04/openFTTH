@@ -195,6 +195,7 @@ pub struct AppState {
     pub last_version_summary: Option<String>,
     pub engines: Vec<EngineInfo>,
     pub engine: Option<EngineCurrent>,
+    pending_open: Option<Receiver<Result<(), String>>>,
 }
 
 impl AppState {
@@ -233,6 +234,7 @@ impl AppState {
             last_version_summary: None,
             engines: Vec::new(),
             engine: None,
+            pending_open: None,
         };
         st.load_crew();
         st.load_engines();
@@ -432,6 +434,7 @@ impl AppState {
     // ---- frames ----------------------------------------------------------------------------
 
     pub fn drain_frames(&mut self) {
+        self.poll_open();
         while let Ok(f) = self.rx.try_recv() {
             self.apply(f);
         }
@@ -601,14 +604,45 @@ impl AppState {
         }
     }
 
+    /// Opening a project starts the design engine, which takes seconds: the call runs on its
+    /// own thread so the window keeps painting, and `poll_open` picks up the result.
     pub fn open_project(&mut self, area: &str, osm: Option<&str>, rulebook: &str) {
+        if self.pending_open.is_some() {
+            return;
+        }
         self.status = "Starting the design engine…".into();
-        match self.client.open_project(
-            area.trim(),
-            osm.map(str::trim).filter(|s| !s.is_empty()),
-            rulebook.trim(),
-        ) {
-            Ok(_) => {
+        let client = self.client.clone();
+        let area = area.trim().to_string();
+        let osm = osm
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let rulebook = rulebook.trim().to_string();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(
+                client
+                    .open_project(&area, osm.as_deref(), &rulebook)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        self.pending_open = Some(rx);
+    }
+
+    fn poll_open(&mut self) {
+        let Some(rx) = &self.pending_open else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(o) => o,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err("the open request was lost".to_string()),
+        };
+        self.pending_open = None;
+        self.status.clear();
+        match outcome {
+            Ok(()) => {
                 self.messages.clear();
                 self.approvals.clear();
                 self.selection.clear();
@@ -617,13 +651,10 @@ impl AppState {
                 self.refresh_project();
                 self.load_recents();
                 self.toasts.success("Project opened");
-                self.status.clear();
             }
-            Err(e) => {
-                self.status.clear();
-                self.toasts
-                    .error(format!("Could not open the project: {e}"));
-            }
+            Err(e) => self
+                .toasts
+                .error(format!("Could not open the project: {e}")),
         }
     }
 
