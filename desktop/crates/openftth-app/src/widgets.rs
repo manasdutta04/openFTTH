@@ -529,64 +529,6 @@ pub fn menu_separator(ui: &mut Ui, p: &Palette) {
         .hline(r.x_range(), r.center().y, egui::Stroke::new(1.0, p.line));
 }
 
-/// A menu row with a label and a dimmer detail on the right; a check mark when it is current.
-pub fn menu_item_detail(
-    ui: &mut Ui,
-    p: &Palette,
-    label: &str,
-    detail: &str,
-    current: bool,
-    enabled: bool,
-) -> bool {
-    let w = ui.available_width().clamp(200.0, 360.0);
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(w, 24.0),
-        if enabled {
-            egui::Sense::click()
-        } else {
-            egui::Sense::hover()
-        },
-    );
-    if enabled && resp.hovered() {
-        ui.painter().rect_filled(rect, R as f32, p.accent_soft);
-    }
-    if current {
-        icons::paint(
-            ui.painter(),
-            icons::square(egui::pos2(rect.left() + 14.0, rect.center().y), 12.0),
-            Icon::Check,
-            p.text,
-        );
-    }
-    let color = if enabled { p.text } else { p.text3 };
-    ui.painter().text(
-        egui::pos2(rect.left() + 28.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        font(12.5, Weight::Regular),
-        color,
-    );
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_string(), font(12.5, Weight::Regular), color);
-    let room = rect.right() - 10.0 - (rect.left() + 28.0 + galley.size().x + 12.0);
-    if room > 40.0 {
-        let detail = truncate(detail, (room / 6.0) as usize);
-        ui.painter().text(
-            egui::pos2(rect.right() - 10.0, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            detail,
-            font(11.0, Weight::Regular),
-            p.text3,
-        );
-    }
-    let clicked = enabled && resp.on_hover_cursor(CursorIcon::PointingHand).clicked();
-    if clicked {
-        ui.close();
-    }
-    clicked
-}
-
 /// A labelled text field; with suggestions it becomes an editable combo.
 pub fn kv_edit(
     ui: &mut Ui,
@@ -616,4 +558,74 @@ pub fn kv_edit(
             .on_hover_cursor(CursorIcon::PointingHand);
         }
     });
+}
+
+/// A menu row with an engine mark, label, detail on the right and a check when current.
+pub fn menu_row_mark(
+    ui: &mut Ui,
+    p: &Palette,
+    kind: &str,
+    label: &str,
+    detail: &str,
+    current: bool,
+) -> bool {
+    let w = ui.available_width().clamp(220.0, 360.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 28.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, R as f32, p.accent_soft);
+    }
+    icons::paint_engine_mark(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 18.0, rect.center().y),
+            egui::vec2(16.0, 16.0),
+        ),
+        kind,
+        p,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 34.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font(
+            12.5,
+            if current {
+                Weight::Medium
+            } else {
+                Weight::Regular
+            },
+        ),
+        p.text,
+    );
+    let label_w = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font(12.5, Weight::Regular), p.text)
+        .size()
+        .x;
+    let right = rect.right() - 10.0;
+    let mut right_edge = right;
+    if current {
+        icons::paint(
+            ui.painter(),
+            icons::square(egui::pos2(right - 6.0, rect.center().y), 12.0),
+            Icon::Check,
+            p.text,
+        );
+        right_edge = right - 18.0;
+    }
+    let room = right_edge - (rect.left() + 34.0 + label_w + 12.0);
+    if room > 40.0 {
+        ui.painter().text(
+            egui::pos2(right_edge, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            truncate(detail, (room / 6.0) as usize),
+            font(11.0, Weight::Regular),
+            p.text3,
+        );
+    }
+    let clicked = resp.on_hover_cursor(CursorIcon::PointingHand).clicked();
+    if clicked {
+        ui.close();
+    }
+    clicked
 }

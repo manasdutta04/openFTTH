@@ -1,8 +1,8 @@
 //! The crew panel: presence, stage progress, approvals, the thread, and the composer.
 
-use egui::{vec2, Frame, Key, KeyboardShortcut, Margin, Modifiers, Sense, Stroke, Ui};
+use egui::{vec2, CursorIcon, Frame, Key, KeyboardShortcut, Margin, Modifiers, Sense, Stroke, Ui};
 
-use crate::icons::Icon;
+use crate::icons::{self, Icon};
 use crate::markdown;
 use crate::state::{stage_index, AppState, ChatMessage, STAGES};
 use crate::theme::{Weight, R};
@@ -23,7 +23,13 @@ pub struct Composer {
     pub show_history: bool,
 }
 
-pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
+/// Something the composer asks the shell to do.
+pub enum ChatAction {
+    ConfigureEngine(String),
+}
+
+pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Option<ChatAction> {
+    let mut action = None;
     let p = st.palette;
     Frame::new()
         .inner_margin(Margin::symmetric(10, 0))
@@ -56,7 +62,7 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
                 .inner_margin(Margin::symmetric(10, 8)),
         )
         .show(ui, |ui| {
-            composer_ui(ui, st, composer);
+            action = composer_ui(ui, st, composer);
         });
 
     egui::ScrollArea::vertical().id_salt("thread").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
@@ -93,6 +99,7 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
             }
         });
     });
+    action
 }
 
 fn presence(ui: &mut Ui, st: &AppState) {
@@ -329,9 +336,10 @@ fn message_row(ui: &mut Ui, st: &AppState, m: &ChatMessage) {
     }
 }
 
-fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
+fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Option<ChatAction> {
     let p = st.palette;
     let open = st.project.is_some();
+    let mut action: Option<ChatAction> = None;
     let mut quick: Option<String> = None;
     ui.horizontal_wrapped(|ui| {
         if open {
@@ -371,37 +379,54 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
         .fill(p.bg2)
         .stroke(Stroke::new(1.0, p.line))
         .corner_radius(R as f32)
-        .inner_margin(Margin::symmetric(8, 6))
+        .inner_margin(Margin {
+            left: 10,
+            right: 8,
+            top: 8,
+            bottom: 6,
+        })
         .show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                let w = ui.available_width() - 30.0;
-                let response = ui.add_sized(
-                    [w, 0.0],
-                    egui::TextEdit::multiline(&mut composer.text)
-                        .frame(Frame::NONE)
-                        .desired_rows(2)
-                        .hint_text(if open {
-                            "Message the crew"
-                        } else {
-                            "Open a project first"
-                        })
-                        .return_key(Some(shortcut))
-                        .interactive(open)
-                        .font(crate::theme::font(13.0, Weight::Regular)),
-                );
-                if composer.want_focus {
-                    response.request_focus();
-                    composer.want_focus = false;
+            let response = ui.add_sized(
+                [ui.available_width(), 0.0],
+                egui::TextEdit::multiline(&mut composer.text)
+                    .frame(Frame::NONE)
+                    .desired_rows(2)
+                    .hint_text(if open {
+                        "Message the crew"
+                    } else {
+                        "Open a project first"
+                    })
+                    .return_key(Some(shortcut))
+                    .interactive(open)
+                    .font(crate::theme::font(13.0, Weight::Regular)),
+            );
+            if composer.want_focus {
+                response.request_focus();
+                composer.want_focus = false;
+            }
+            let enter = response.lost_focus()
+                && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
+            let can_send = open && !composer.text.trim().is_empty();
+            if enter {
+                composer.want_focus = true;
+                send_now = can_send;
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                action = engine_chip(ui, st);
+                if !st.selection.is_empty() {
+                    let names: Vec<String> =
+                        st.selection.iter().map(|u| st.element_name(u)).collect();
+                    tag(
+                        ui,
+                        &format!("with {}", widgets::truncate(&names.join(", "), 30)),
+                        p.accent,
+                        p.accent_soft,
+                    )
+                    .on_hover_text("The selection travels with your next message. Esc clears it.");
                 }
-                let enter = response.lost_focus()
-                    && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
-                let can_send = open && !composer.text.trim().is_empty();
-                if enter {
-                    composer.want_focus = true;
-                    send_now = can_send;
-                }
-                ui.vertical(|ui| {
-                    ui.add_space(2.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if st.busy() {
                         if icon_button_sized(
                             ui,
@@ -434,9 +459,9 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
                             p.bg3
                         };
                         ui.painter().rect_filled(r, R as f32, fill);
-                        crate::icons::paint(
+                        icons::paint(
                             ui.painter(),
-                            crate::icons::square(r.center(), 14.0),
+                            icons::square(r.center(), 14.0),
                             Icon::Send,
                             if can_send {
                                 egui::Color32::WHITE
@@ -444,14 +469,16 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
                                 p.text3
                             },
                         );
-                        if can_send
-                            && resp
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                        {
+                        if can_send && resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                             send_now = true;
                         }
                     }
+                    ui.label(text(
+                        if can_send { "Enter to send" } else { "" },
+                        10.5,
+                        Weight::Regular,
+                        p.text3,
+                    ));
                 });
             });
         });
@@ -462,33 +489,20 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
         composer.want_focus = true;
     }
     let past = st.approvals.iter().filter(|a| a.state != "pending").count();
-    if !st.selection.is_empty() || past > 0 {
-        ui.horizontal(|ui| {
-            if !st.selection.is_empty() {
-                let names: Vec<String> = st.selection.iter().map(|u| st.element_name(u)).collect();
-                tag(
-                    ui,
-                    &format!("with {}", widgets::truncate(&names.join(", "), 36)),
-                    p.accent,
-                    p.accent_soft,
-                )
-                .on_hover_text("The selection travels with your next message. Esc clears it.");
+    if past > 0 {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if button_ex(
+                ui,
+                &p,
+                None,
+                &format!("{past} past approval{}", if past == 1 { "" } else { "s" }),
+                Kind::Ghost,
+                true,
+            )
+            .clicked()
+            {
+                composer.show_history = !composer.show_history;
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if past > 0
-                    && button_ex(
-                        ui,
-                        &p,
-                        None,
-                        &format!("{past} past approval{}", if past == 1 { "" } else { "s" }),
-                        Kind::Ghost,
-                        true,
-                    )
-                    .clicked()
-                {
-                    composer.show_history = !composer.show_history;
-                }
-            });
         });
     }
     if composer.show_history && past > 0 {
@@ -516,4 +530,111 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
             });
     }
     let _ = caps;
+    action
+}
+
+/// The engine chip in the composer: the runtime the crew runs on, and a menu to switch it.
+fn engine_chip(ui: &mut Ui, st: &mut AppState) -> Option<ChatAction> {
+    let p = st.palette;
+    let mut action = None;
+    let current = st.engine.clone();
+    let info = current
+        .as_ref()
+        .and_then(|e| st.engines.iter().find(|x| x.kind == e.kind).cloned());
+    let ok = info.as_ref().map(|x| x.available).unwrap_or(false);
+    let label = match &current {
+        Some(e) => match &e.model {
+            Some(m) if !m.is_empty() => format!("{}  ·  {}", e.label, widgets::truncate(m, 22)),
+            _ => e.label.clone(),
+        },
+        None => "Choose an engine".to_string(),
+    };
+    let kind = current.as_ref().map(|e| e.kind.clone()).unwrap_or_default();
+    let galley = ui.painter().layout_no_wrap(
+        label.clone(),
+        crate::theme::font(12.0, Weight::Medium),
+        p.text,
+    );
+    let w = 8.0 + 16.0 + 6.0 + galley.size().x + 4.0 + 12.0 + 8.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+    let hovered = resp.hovered();
+    ui.painter().rect(
+        rect,
+        R as f32,
+        if hovered { p.bg3 } else { p.bg2 },
+        Stroke::new(1.0, if hovered { p.line_strong } else { p.line }),
+        egui::StrokeKind::Inside,
+    );
+    icons::paint_engine_mark(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 16.0, rect.center().y),
+            vec2(16.0, 16.0),
+        ),
+        &kind,
+        &p,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        if ok { p.text } else { p.amber },
+    );
+    icons::paint(
+        ui.painter(),
+        icons::square(egui::pos2(rect.right() - 14.0, rect.center().y), 12.0),
+        Icon::ChevronDown,
+        p.text3,
+    );
+    let resp = resp
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(match &info {
+            Some(i) => format!("{}\n{}", i.description, i.detail),
+            None => "The AI runtime the crew runs on.".to_string(),
+        });
+    egui::Popup::menu(&resp)
+        .id(ui.make_persistent_id("engine-chip-menu"))
+        .layout(egui::Layout::top_down(egui::Align::Min))
+        .show(|ui| {
+            widgets::menu_begin(ui, 300.0);
+            ui.label(caps("Crew engine", p.text3));
+            ui.add_space(2.0);
+            let engines = st.engines.clone();
+            let mut pick: Option<(String, Option<String>)> = None;
+            let mut configure: Option<String> = None;
+            for e in &engines {
+                let detail = if e.available {
+                    match &e.model {
+                        Some(m) if !m.is_empty() => m.clone(),
+                        _ => "ready".to_string(),
+                    }
+                } else {
+                    e.detail.clone()
+                };
+                let needs_form = e.needs.iter().any(|n| n == "apiKey" || n == "baseUrl");
+                let row = widgets::menu_row_mark(ui, &p, &e.kind, &e.label, &detail, e.current);
+                if row {
+                    if needs_form || !e.available || (e.kind == "ollama" && e.models.len() > 1) {
+                        configure = Some(e.kind.clone());
+                    } else {
+                        pick = Some((e.kind.clone(), None));
+                    }
+                }
+            }
+            widgets::menu_separator(ui, &p);
+            if widgets::menu_item(ui, &p, "Engine settings…", None, true) {
+                configure = Some(
+                    current
+                        .as_ref()
+                        .map(|e| e.kind.clone())
+                        .unwrap_or_else(|| "claude".into()),
+                );
+            }
+            if let Some((kind, model)) = pick {
+                st.set_engine(&kind, model.as_deref(), None, None);
+            }
+            if let Some(kind) = configure {
+                action = Some(ChatAction::ConfigureEngine(kind));
+            }
+        });
+    action
 }

@@ -12,7 +12,7 @@ use egui::{
 use openftth_client::Client;
 
 use crate::chat::{
-    chat_panel, Composer, PROMPT_BOQ, PROMPT_DESIGN, PROMPT_SCENARIOS, PROMPT_VALIDATE,
+    chat_panel, ChatAction, Composer, PROMPT_BOQ, PROMPT_DESIGN, PROMPT_SCENARIOS, PROMPT_VALIDATE,
 };
 use crate::icons::{self, Icon};
 use crate::inspector::{inspector, InspectorAction};
@@ -129,9 +129,6 @@ impl OpenFtthApp {
             false,
         );
         self.window_control(&mut right, Icon::Minus, "Minimize", false);
-        right.add_space(12.0);
-        flat_buttons(&mut right);
-        self.engine_picker(&mut right);
     }
 
     fn title_text(&self, ui: &Ui, bar: Rect) {
@@ -162,100 +159,6 @@ project {}",
                     pr.id
                 ));
         }
-    }
-
-    /// The engine pill: which runtime the crew is on, and a menu to switch it.
-    fn engine_picker(&mut self, ui: &mut Ui) {
-        let p = self.st.palette;
-        let (label, ok) = match &self.st.engine {
-            Some(e) => (
-                match &e.model {
-                    Some(m) if !m.is_empty() => {
-                        format!("{}  ·  {}", e.label, widgets::truncate(m, 28))
-                    }
-                    _ => e.label.clone(),
-                },
-                self.st
-                    .engines
-                    .iter()
-                    .find(|x| x.kind == e.kind)
-                    .map(|x| x.available)
-                    .unwrap_or(true),
-            ),
-            None => ("Engine".to_string(), false),
-        };
-        let title = text(
-            label,
-            12.0,
-            Weight::Regular,
-            if ok { p.text } else { p.amber },
-        );
-        let resp = ui
-            .menu_button(title, |ui| {
-                widgets::menu_begin(ui, 300.0);
-                ui.label(widgets::caps("Crew engine", p.text3));
-                ui.add_space(2.0);
-                let engines = self.st.engines.clone();
-                let mut pick: Option<(String, Option<String>)> = None;
-                let mut configure: Option<String> = None;
-                for e in &engines {
-                    let detail = if e.available {
-                        match &e.model {
-                            Some(m) if !m.is_empty() => m.clone(),
-                            _ => "ready".to_string(),
-                        }
-                    } else {
-                        e.detail.clone()
-                    };
-                    let needs_form = e.needs.iter().any(|n| n == "apiKey" || n == "baseUrl");
-                    if e.kind == "ollama" && !e.models.is_empty() {
-                        let models = e.models.clone();
-                        ui.menu_button(Self::menu_title(&e.label, &p), |ui| {
-                            widgets::menu_begin(ui, 260.0);
-                            for m in &models {
-                                let mut on = e.current && e.model.as_deref() == Some(m);
-                                if widgets::menu_check(ui, &p, m, &mut on) && on {
-                                    pick = Some((e.kind.clone(), Some(m.clone())));
-                                    ui.close();
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_cursor(CursorIcon::PointingHand);
-                        continue;
-                    }
-                    let row = widgets::menu_item_detail(ui, &p, &e.label, &detail, e.current, true);
-                    if row {
-                        if needs_form || (!e.available) {
-                            configure = Some(e.kind.clone());
-                        } else {
-                            pick = Some((e.kind.clone(), None));
-                        }
-                    }
-                }
-                widgets::menu_separator(ui, &p);
-                if menu_item(ui, &p, "Engine settings…", None, true) {
-                    configure = Some(
-                        self.st
-                            .engine
-                            .as_ref()
-                            .map(|e| e.kind.clone())
-                            .unwrap_or_else(|| "claude".into()),
-                    );
-                }
-                if let Some((kind, model)) = pick {
-                    self.st.set_engine(&kind, model.as_deref(), None, None);
-                }
-                if let Some(kind) = configure {
-                    self.open_engine_form(&kind);
-                }
-            })
-            .response;
-        resp.on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("The AI runtime the crew runs on. Click to switch.");
-        let (dot_rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-        ui.painter()
-            .circle_filled(dot_rect.center(), 3.0, if ok { p.green } else { p.amber });
     }
 
     fn open_engine_form(&mut self, kind: &str) {
@@ -976,7 +879,11 @@ impl eframe::App for OpenFtthApp {
                     .show_separator_line(true)
                     .frame(Frame::new().fill(p.bg1).inner_margin(Margin::ZERO))
                     .show(ui, |ui| {
-                        chat_panel(ui, &mut self.st, &mut self.composer);
+                        if let Some(ChatAction::ConfigureEngine(kind)) =
+                            chat_panel(ui, &mut self.st, &mut self.composer)
+                        {
+                            self.open_engine_form(&kind);
+                        }
                     });
             }
             if !self.st.selection.is_empty() {

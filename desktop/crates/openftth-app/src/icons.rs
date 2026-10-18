@@ -16,6 +16,7 @@ pub enum Icon {
     Check,
     Warning,
     ChevronRight,
+    ChevronDown,
     Folder,
     Refresh,
     Tool,
@@ -74,6 +75,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             painter.circle_filled(p(8.0, 11.5), 0.9 * s, color);
         }
         Icon::ChevronRight => line(vec![p(6.0, 3.5), p(10.5, 8.0), p(6.0, 12.5)]),
+        Icon::ChevronDown => line(vec![p(3.5, 6.0), p(8.0, 10.5), p(12.5, 6.0)]),
         Icon::Folder => {
             closed(vec![
                 p(2.0, 4.0),
@@ -264,4 +266,27 @@ pub fn paint_window_glyph(painter: &Painter, center: Pos2, icon: Icon, color: Co
             painter.line_segment([pos2(cx + h, cy - h), pos2(cx - h, cy + h)], stroke);
         }
     }
+}
+
+/// An engine's mark: a small tile with its initial, in the engine's own hue. Ours, not a logo.
+pub fn paint_engine_mark(painter: &Painter, rect: Rect, kind: &str, p: &crate::theme::Palette) {
+    let (tile, letter) = match kind {
+        "claude" => (Color32::from_rgb(0xd9, 0x77, 0x57), "C"),
+        "codex" => (Color32::from_rgb(0x5f, 0x6b, 0x7a), "X"),
+        "hermes" => (Color32::from_rgb(0x8b, 0x5c, 0xf6), "H"),
+        "ollama" => (Color32::from_rgb(0x3a, 0x3f, 0x47), "O"),
+        "openrouter" => (p.accent, "R"),
+        "openai" => (Color32::from_rgb(0x2e, 0x9e, 0x78), "A"),
+        _ => (p.text3, "?"),
+    };
+    let r = rect.width().min(rect.height());
+    let sq = Rect::from_center_size(rect.center(), Vec2::splat(r));
+    painter.rect_filled(sq, r * 0.25, tile);
+    painter.text(
+        sq.center() + vec2(0.0, 0.5),
+        egui::Align2::CENTER_CENTER,
+        letter,
+        crate::theme::font(r * 0.62, crate::theme::Weight::Semibold),
+        Color32::WHITE,
+    );
 }
