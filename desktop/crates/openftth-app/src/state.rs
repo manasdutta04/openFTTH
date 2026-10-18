@@ -193,6 +193,8 @@ pub struct AppState {
     pub toasts: Toasts,
     pub status: String,
     pub last_version_summary: Option<String>,
+    pub engines: Vec<EngineInfo>,
+    pub engine: Option<EngineCurrent>,
 }
 
 impl AppState {
@@ -229,8 +231,11 @@ impl AppState {
             toasts: Toasts::default(),
             status: String::new(),
             last_version_summary: None,
+            engines: Vec::new(),
+            engine: None,
         };
         st.load_crew();
+        st.load_engines();
         st.load_rulebooks();
         st.load_recents();
         st.refresh_project();
@@ -441,6 +446,7 @@ impl AppState {
                 self.connected = true;
                 if f.data["resumed"].as_bool() != Some(true) || !was {
                     self.refresh_project();
+                    self.load_engines();
                 }
             }
             "disconnected" => self.connected = false,
@@ -531,6 +537,7 @@ impl AppState {
                 self.folk_states
                     .insert(s(&f.data["key"]), s(&f.data["state"]));
             }
+            "engine" => self.load_engines(),
             "project" => {
                 if f.data["engine"].as_str() == Some("ready") {
                     self.refresh_project();
@@ -713,4 +720,93 @@ pub fn s(v: &Value) -> String {
 
 pub fn stage_index(stage: &str) -> usize {
     STAGES.iter().position(|s| *s == stage).unwrap_or(0)
+}
+
+/// One folk engine as the harness describes it: what it is and whether it can run here.
+#[derive(Clone, Debug)]
+pub struct EngineInfo {
+    pub kind: String,
+    pub label: String,
+    pub description: String,
+    pub needs: Vec<String>,
+    pub available: bool,
+    pub detail: String,
+    pub models: Vec<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub has_key: bool,
+    pub current: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct EngineCurrent {
+    pub kind: String,
+    pub label: String,
+    pub model: Option<String>,
+}
+
+impl AppState {
+    pub fn load_engines(&mut self) {
+        if let Ok(v) = self.client.engines() {
+            self.engine = v["current"].as_object().map(|c| EngineCurrent {
+                kind: s(&c["kind"]),
+                label: s(&c["label"]),
+                model: c["model"].as_str().map(str::to_string),
+            });
+            self.engines = v["engines"]
+                .as_array()
+                .map(|es| {
+                    es.iter()
+                        .map(|e| EngineInfo {
+                            kind: s(&e["kind"]),
+                            label: s(&e["label"]),
+                            description: s(&e["description"]),
+                            needs: e["needs"]
+                                .as_array()
+                                .map(|a| a.iter().map(s).collect())
+                                .unwrap_or_default(),
+                            available: e["available"].as_bool().unwrap_or(false),
+                            detail: s(&e["detail"]),
+                            models: e["models"]
+                                .as_array()
+                                .map(|a| a.iter().map(s).collect())
+                                .unwrap_or_default(),
+                            model: e["model"].as_str().map(str::to_string),
+                            base_url: e["baseUrl"].as_str().map(str::to_string),
+                            has_key: e["hasKey"].as_bool().unwrap_or(false),
+                            current: e["current"].as_bool().unwrap_or(false),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+    }
+
+    /// Switch the crew to another engine (and save that engine's settings). `None` keeps a value.
+    pub fn set_engine(
+        &mut self,
+        kind: &str,
+        model: Option<&str>,
+        base_url: Option<&str>,
+        api_key: Option<&str>,
+    ) {
+        let mut body = serde_json::json!({ "kind": kind });
+        if let Some(m) = model {
+            body["model"] = Value::String(m.to_string());
+        }
+        if let Some(u) = base_url {
+            body["baseUrl"] = Value::String(u.to_string());
+        }
+        if let Some(k) = api_key {
+            body["apiKey"] = Value::String(k.to_string());
+        }
+        match self.client.set_engine(&body) {
+            Ok(v) => {
+                let label = s(&v["label"]);
+                self.toasts.success(format!("Crew now runs on {label}"));
+                self.load_engines();
+            }
+            Err(e) => self.toasts.error(format!("Could not switch engine: {e}")),
+        }
+    }
 }

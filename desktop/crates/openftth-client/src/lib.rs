@@ -176,6 +176,14 @@ impl Client {
         self.get("/api/rulebooks")
     }
 
+    pub fn engines(&self) -> Result<Value, ClientError> {
+        self.get("/api/engines")
+    }
+
+    pub fn set_engine(&self, body: &Value) -> Result<Value, ClientError> {
+        self.send("POST", "/api/engine", body)
+    }
+
     pub fn projects(&self) -> Result<Value, ClientError> {
         self.get("/api/projects")
     }

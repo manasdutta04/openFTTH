@@ -528,3 +528,92 @@ pub fn menu_separator(ui: &mut Ui, p: &Palette) {
     ui.painter()
         .hline(r.x_range(), r.center().y, egui::Stroke::new(1.0, p.line));
 }
+
+/// A menu row with a label and a dimmer detail on the right; a check mark when it is current.
+pub fn menu_item_detail(
+    ui: &mut Ui,
+    p: &Palette,
+    label: &str,
+    detail: &str,
+    current: bool,
+    enabled: bool,
+) -> bool {
+    let w = ui.available_width().clamp(200.0, 360.0);
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(w, 24.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(rect, R as f32, p.accent_soft);
+    }
+    if current {
+        icons::paint(
+            ui.painter(),
+            icons::square(egui::pos2(rect.left() + 14.0, rect.center().y), 12.0),
+            Icon::Check,
+            p.text,
+        );
+    }
+    let color = if enabled { p.text } else { p.text3 };
+    ui.painter().text(
+        egui::pos2(rect.left() + 28.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font(12.5, Weight::Regular),
+        color,
+    );
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font(12.5, Weight::Regular), color);
+    let room = rect.right() - 10.0 - (rect.left() + 28.0 + galley.size().x + 12.0);
+    if room > 40.0 {
+        let detail = truncate(detail, (room / 6.0) as usize);
+        ui.painter().text(
+            egui::pos2(rect.right() - 10.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            detail,
+            font(11.0, Weight::Regular),
+            p.text3,
+        );
+    }
+    let clicked = enabled && resp.on_hover_cursor(CursorIcon::PointingHand).clicked();
+    if clicked {
+        ui.close();
+    }
+    clicked
+}
+
+/// A labelled text field; with suggestions it becomes an editable combo.
+pub fn kv_edit(
+    ui: &mut Ui,
+    p: &Palette,
+    key: &str,
+    value: &mut String,
+    hint: &str,
+    suggestions: &[String],
+) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [90.0, 22.0],
+            egui::Label::new(text(key, 12.0, Weight::Regular, p.text2)),
+        );
+        let w = ui.available_width() - if suggestions.is_empty() { 0.0 } else { 30.0 };
+        ui.add_sized([w, 22.0], egui::TextEdit::singleline(value).hint_text(hint));
+        if !suggestions.is_empty() {
+            ui.menu_button(text("▾", 12.0, Weight::Regular, p.text2), |ui| {
+                menu_begin(ui, 260.0);
+                for s in suggestions {
+                    if menu_item(ui, p, s, None, true) {
+                        *value = s.clone();
+                    }
+                }
+            })
+            .response
+            .on_hover_cursor(CursorIcon::PointingHand);
+        }
+    });
+}

@@ -221,3 +221,47 @@ fn in_glyph(x: f32, y: f32) -> bool {
     let stem = (x - 8.0).abs() <= 0.95 * scale && y >= 8.0 - 6.5 * scale && y <= 8.0 - 3.0 * scale;
     ring || dot || stem
 }
+
+/// Window-control glyphs drawn on whole pixels with 1 px lines, like the OS's own caption buttons.
+pub fn paint_window_glyph(painter: &Painter, center: Pos2, icon: Icon, color: Color32) {
+    let px = painter.ctx().pixels_per_point();
+    let snap = |v: f32| ((v * px).round() + 0.5) / px;
+    let (cx, cy) = (snap(center.x), snap(center.y));
+    let h = 5.0;
+    let stroke = Stroke::new(1.0 / px.max(1.0) * px.round().max(1.0), color);
+    match icon {
+        Icon::Minus => {
+            painter.line_segment([pos2(cx - h, cy), pos2(cx + h, cy)], stroke);
+        }
+        Icon::Maximize => {
+            painter.rect_stroke(
+                Rect::from_min_max(pos2(cx - h, cy - h), pos2(cx + h, cy + h)),
+                1.0,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+        }
+        Icon::Restore => {
+            painter.rect_stroke(
+                Rect::from_min_max(pos2(cx - h, cy - h + 2.0), pos2(cx + h - 2.0, cy + h)),
+                1.0,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.add(PathShape::line(
+                vec![
+                    pos2(cx - h + 2.0, cy - h + 2.0),
+                    pos2(cx - h + 2.0, cy - h),
+                    pos2(cx + h, cy - h),
+                    pos2(cx + h, cy + h - 2.0),
+                    pos2(cx + h - 2.0, cy + h - 2.0),
+                ],
+                PathStroke::new(stroke.width, color),
+            ));
+        }
+        _ => {
+            painter.line_segment([pos2(cx - h, cy - h), pos2(cx + h, cy + h)], stroke);
+            painter.line_segment([pos2(cx + h, cy - h), pos2(cx - h, cy + h)], stroke);
+        }
+    }
+}

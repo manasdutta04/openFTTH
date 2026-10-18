@@ -22,7 +22,7 @@ use crate::theme::{self, font, Mode, Palette, Weight, R};
 use crate::twin::TwinView;
 use crate::welcome::{welcome, OpenForm};
 use crate::widgets::{
-    self, dot, menu_check, menu_item, menu_separator, mono_text, pulse_dot, tag, text,
+    self, menu_check, menu_item, menu_separator, mono_text, pulse_dot, tag, text,
 };
 
 const TITLE_H: f32 = 34.0;
@@ -39,6 +39,14 @@ pub struct OpenFtthApp {
     applied_mode: Option<Mode>,
     show_crew: bool,
     about: bool,
+    engine_form: Option<EngineForm>,
+}
+
+struct EngineForm {
+    kind: String,
+    model: String,
+    base_url: String,
+    api_key: String,
 }
 
 impl OpenFtthApp {
@@ -62,6 +70,7 @@ impl OpenFtthApp {
             applied_mode: None,
             show_crew: true,
             about: false,
+            engine_form: None,
         }
     }
 
@@ -79,41 +88,30 @@ impl OpenFtthApp {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
 
-        // Centre: the project, like an editor's command centre.
-        let centre_w = (bar.width() * 0.34).clamp(240.0, 520.0);
-        let centre = Rect::from_center_size(bar.center(), vec2(centre_w, 24.0));
-        self.command_centre(ui, centre);
+        // Centre: the project and its stage, as plain text.
+        self.title_text(ui, bar);
 
         // Left: app mark and menus.
         let mut left = ui.new_child(
             UiBuilder::new()
                 .max_rect(Rect::from_min_max(
                     bar.min,
-                    pos2(centre.left() - 8.0, bar.max.y),
+                    pos2(bar.center().x - 140.0, bar.max.y),
                 ))
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        {
-            let v = left.visuals_mut();
-            v.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-            v.widgets.inactive.bg_stroke = Stroke::NONE;
-            v.widgets.hovered.bg_stroke = Stroke::NONE;
-            v.widgets.open.bg_stroke = Stroke::NONE;
-            v.widgets.active.bg_stroke = Stroke::NONE;
-            left.spacing_mut().button_padding = vec2(8.0, 5.0);
-            left.spacing_mut().item_spacing.x = 0.0;
-        }
+        flat_buttons(&mut left);
         left.add_space(10.0);
         let (mark, _) = left.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
         icons::paint_mark(left.painter(), mark, p.accent, egui::Color32::WHITE);
         left.add_space(8.0);
         self.menus(&mut left);
 
-        // Right: connection, window controls.
+        // Right: window controls, then the engine the crew runs on.
         let mut right = ui.new_child(
             UiBuilder::new()
                 .max_rect(Rect::from_min_max(
-                    pos2(centre.right() + 8.0, bar.min.y),
+                    pos2(bar.center().x + 140.0, bar.min.y),
                     bar.max,
                 ))
                 .layout(Layout::right_to_left(Align::Center)),
@@ -131,75 +129,301 @@ impl OpenFtthApp {
             false,
         );
         self.window_control(&mut right, Icon::Minus, "Minimize", false);
-        right.add_space(14.0);
-        if self.st.connected {
-            right.label(text("connected", 11.0, Weight::Regular, p.text3));
-            right.add_space(5.0);
-            dot(&mut right, p.green, 3.5);
-        } else {
-            right.label(text("reconnecting", 11.0, Weight::Regular, p.red));
-            right.add_space(5.0);
-            pulse_dot(&mut right, p.red, 3.5);
-        }
+        right.add_space(12.0);
+        flat_buttons(&mut right);
+        self.engine_picker(&mut right);
     }
 
-    fn command_centre(&self, ui: &mut Ui, rect: Rect) {
+    fn title_text(&self, ui: &Ui, bar: Rect) {
         let p = self.st.palette;
-        let painter = ui.painter().clone();
-        painter.rect(
-            rect,
-            R as f32,
-            p.bg2,
-            Stroke::new(1.0, p.line),
-            egui::StrokeKind::Inside,
-        );
-        let resp = ui.interact(rect, Id::unique("command-centre"), Sense::hover());
-        match &self.st.project {
-            Some(pr) => {
-                let name = file_stem(&pr.area_path);
-                let label = format!("{name}  ·  {}", pr.rulebook);
-                let galley = painter.layout_no_wrap(label, font(12.0, Weight::Medium), p.text);
-                let stage = self.st.stage.as_ref().map(|s| {
-                    painter.layout_no_wrap(s.clone(), font(11.0, Weight::Regular), p.text2)
-                });
-                let stage_w = stage
-                    .as_ref()
-                    .map(|g| g.size().x + 12.0 + 8.0)
-                    .unwrap_or(0.0);
-                let total = galley.size().x + stage_w;
-                let x = rect.center().x - total / 2.0;
-                painter.galley(
-                    pos2(x, rect.center().y - galley.size().y / 2.0),
-                    galley,
-                    p.text,
-                );
-                if let Some(sg) = stage {
-                    let sr = Rect::from_min_size(
-                        pos2(
-                            x + total - stage_w + 8.0,
-                            rect.center().y - sg.size().y / 2.0 - 2.0,
-                        ),
-                        sg.size() + vec2(12.0, 4.0),
-                    );
-                    painter.rect_filled(sr, 3.0, p.bg3);
-                    painter.galley(sr.min + vec2(6.0, 2.0), sg, p.text2);
-                }
-                resp.on_hover_text(format!(
-                    "{}\n{}\nproject {}",
+        let painter = ui.painter();
+        let label = match &self.st.project {
+            Some(pr) => match &self.st.stage {
+                Some(stage) => format!(
+                    "{}  ·  {}  ·  {stage}",
+                    file_stem(&pr.area_path),
+                    pr.rulebook
+                ),
+                None => format!("{}  ·  {}", file_stem(&pr.area_path), pr.rulebook),
+            },
+            None => "openFTTH".to_string(),
+        };
+        let galley = painter.layout_no_wrap(label, font(12.0, Weight::Regular), p.text2);
+        let rect = Rect::from_center_size(bar.center(), galley.size() + vec2(16.0, 8.0));
+        painter.galley(rect.min + vec2(8.0, 4.0), galley, p.text2);
+        if let Some(pr) = &self.st.project {
+            ui.interact(rect, Id::unique("title-text"), Sense::hover())
+                .on_hover_text(format!(
+                    "{}
+{}
+project {}",
                     pr.area_path,
                     pr.osm_path.as_deref().unwrap_or("no map extract"),
                     pr.id
                 ));
-            }
-            None => {
-                painter.text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    "openFTTH",
-                    font(12.0, Weight::Medium),
-                    p.text2,
+        }
+    }
+
+    /// The engine pill: which runtime the crew is on, and a menu to switch it.
+    fn engine_picker(&mut self, ui: &mut Ui) {
+        let p = self.st.palette;
+        let (label, ok) = match &self.st.engine {
+            Some(e) => (
+                match &e.model {
+                    Some(m) if !m.is_empty() => {
+                        format!("{}  ·  {}", e.label, widgets::truncate(m, 28))
+                    }
+                    _ => e.label.clone(),
+                },
+                self.st
+                    .engines
+                    .iter()
+                    .find(|x| x.kind == e.kind)
+                    .map(|x| x.available)
+                    .unwrap_or(true),
+            ),
+            None => ("Engine".to_string(), false),
+        };
+        let title = text(
+            label,
+            12.0,
+            Weight::Regular,
+            if ok { p.text } else { p.amber },
+        );
+        let resp = ui
+            .menu_button(title, |ui| {
+                widgets::menu_begin(ui, 300.0);
+                ui.label(widgets::caps("Crew engine", p.text3));
+                ui.add_space(2.0);
+                let engines = self.st.engines.clone();
+                let mut pick: Option<(String, Option<String>)> = None;
+                let mut configure: Option<String> = None;
+                for e in &engines {
+                    let detail = if e.available {
+                        match &e.model {
+                            Some(m) if !m.is_empty() => m.clone(),
+                            _ => "ready".to_string(),
+                        }
+                    } else {
+                        e.detail.clone()
+                    };
+                    let needs_form = e.needs.iter().any(|n| n == "apiKey" || n == "baseUrl");
+                    if e.kind == "ollama" && !e.models.is_empty() {
+                        let models = e.models.clone();
+                        ui.menu_button(Self::menu_title(&e.label, &p), |ui| {
+                            widgets::menu_begin(ui, 260.0);
+                            for m in &models {
+                                let mut on = e.current && e.model.as_deref() == Some(m);
+                                if widgets::menu_check(ui, &p, m, &mut on) && on {
+                                    pick = Some((e.kind.clone(), Some(m.clone())));
+                                    ui.close();
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_cursor(CursorIcon::PointingHand);
+                        continue;
+                    }
+                    let row = widgets::menu_item_detail(ui, &p, &e.label, &detail, e.current, true);
+                    if row {
+                        if needs_form || (!e.available) {
+                            configure = Some(e.kind.clone());
+                        } else {
+                            pick = Some((e.kind.clone(), None));
+                        }
+                    }
+                }
+                widgets::menu_separator(ui, &p);
+                if menu_item(ui, &p, "Engine settings…", None, true) {
+                    configure = Some(
+                        self.st
+                            .engine
+                            .as_ref()
+                            .map(|e| e.kind.clone())
+                            .unwrap_or_else(|| "claude".into()),
+                    );
+                }
+                if let Some((kind, model)) = pick {
+                    self.st.set_engine(&kind, model.as_deref(), None, None);
+                }
+                if let Some(kind) = configure {
+                    self.open_engine_form(&kind);
+                }
+            })
+            .response;
+        resp.on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("The AI runtime the crew runs on. Click to switch.");
+        let (dot_rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+        ui.painter()
+            .circle_filled(dot_rect.center(), 3.0, if ok { p.green } else { p.amber });
+    }
+
+    fn open_engine_form(&mut self, kind: &str) {
+        let e = self.st.engines.iter().find(|x| x.kind == kind).cloned();
+        self.engine_form = Some(EngineForm {
+            kind: kind.to_string(),
+            model: e.as_ref().and_then(|x| x.model.clone()).unwrap_or_default(),
+            base_url: e
+                .as_ref()
+                .and_then(|x| x.base_url.clone())
+                .unwrap_or_default(),
+            api_key: String::new(),
+        });
+    }
+
+    fn engine_window(&mut self, ctx: &egui::Context) {
+        let Some(form) = self.engine_form.as_mut() else {
+            return;
+        };
+        let p = self.st.palette;
+        let engines = self.st.engines.clone();
+        let mut open = true;
+        let mut apply: Option<(String, String, String, String)> = None;
+        egui::Window::new("Crew engine")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(420.0);
+                for e in &engines {
+                    let selected = e.kind == form.kind;
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+                    if selected {
+                        ui.painter().rect_filled(rect, R as f32, p.accent_soft);
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(rect, R as f32, p.bg3);
+                    }
+                    ui.painter().circle_filled(
+                        pos2(rect.left() + 12.0, rect.center().y),
+                        3.0,
+                        if e.available { p.green } else { p.text3 },
+                    );
+                    ui.painter().text(
+                        pos2(rect.left() + 24.0, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        &e.label,
+                        font(
+                            12.5,
+                            if selected {
+                                Weight::Medium
+                            } else {
+                                Weight::Regular
+                            },
+                        ),
+                        p.text,
+                    );
+                    if e.current {
+                        ui.painter().text(
+                            pos2(rect.right() - 8.0, rect.center().y),
+                            Align2::RIGHT_CENTER,
+                            "in use",
+                            font(11.0, Weight::Regular),
+                            p.text3,
+                        );
+                    }
+                    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() && !selected {
+                        form.kind = e.kind.clone();
+                        form.model = e.model.clone().unwrap_or_default();
+                        form.base_url = e.base_url.clone().unwrap_or_default();
+                        form.api_key.clear();
+                    }
+                }
+                let Some(e) = engines.iter().find(|x| x.kind == form.kind) else {
+                    return;
+                };
+                ui.add_space(6.0);
+                ui.add(
+                    egui::Label::new(text(&e.description, 11.5, Weight::Regular, p.text2)).wrap(),
                 );
-            }
+                ui.add(
+                    egui::Label::new(text(
+                        &e.detail,
+                        11.0,
+                        Weight::Regular,
+                        if e.available { p.green } else { p.amber },
+                    ))
+                    .wrap(),
+                );
+                ui.add_space(8.0);
+                let needs = |n: &str| e.needs.iter().any(|x| x == n);
+                if needs("model") || !e.models.is_empty() || e.kind == "claude" || e.kind == "codex"
+                {
+                    widgets::kv_edit(
+                        ui,
+                        &p,
+                        "Model",
+                        &mut form.model,
+                        if e.kind == "claude" || e.kind == "codex" {
+                            "default (leave empty)"
+                        } else {
+                            "model id"
+                        },
+                        &e.models,
+                    );
+                }
+                if needs("baseUrl") || e.kind == "ollama" {
+                    widgets::kv_edit(
+                        ui,
+                        &p,
+                        "Endpoint",
+                        &mut form.base_url,
+                        "http://host:port/v1",
+                        &[],
+                    );
+                }
+                if needs("apiKey") || e.kind == "openai" {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [90.0, 22.0],
+                            egui::Label::new(text("API key", 12.0, Weight::Regular, p.text2)),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut form.api_key)
+                                .password(true)
+                                .hint_text(if e.has_key {
+                                    "a key is saved; type to replace"
+                                } else {
+                                    "paste a key"
+                                })
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if widgets::button(ui, &p, "Use this engine", widgets::Kind::Prominent)
+                        .clicked()
+                    {
+                        apply = Some((
+                            form.kind.clone(),
+                            form.model.clone(),
+                            form.base_url.clone(),
+                            form.api_key.clone(),
+                        ));
+                    }
+                    ui.label(text(
+                        "Folks restart on their next turn.",
+                        11.0,
+                        Weight::Regular,
+                        p.text3,
+                    ));
+                });
+            });
+        if let Some((kind, model, base_url, api_key)) = apply {
+            let send_url = matches!(kind.as_str(), "openai" | "ollama");
+            let send_key = !api_key.is_empty();
+            self.st.set_engine(
+                &kind,
+                Some(&model),
+                if send_url { Some(&base_url) } else { None },
+                if send_key { Some(&api_key) } else { None },
+            );
+            open = false;
+        }
+        if !open {
+            self.engine_form = None;
         }
     }
 
@@ -216,12 +440,7 @@ impl OpenFtthApp {
         } else {
             p.text2
         };
-        icons::paint(
-            ui.painter(),
-            icons::square(rect.center(), 10.0),
-            icon,
-            color,
-        );
+        icons::paint_window_glyph(ui.painter(), rect.center(), icon, color);
         if resp
             .on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text(tip)
@@ -519,6 +738,16 @@ impl OpenFtthApp {
         let p = self.st.palette;
         ui.horizontal(|ui| {
             ui.set_height(16.0);
+            if !self.st.connected {
+                pulse_dot(ui, p.red, 3.0);
+                ui.label(text(
+                    "reconnecting to the harness",
+                    11.0,
+                    Weight::Regular,
+                    p.red,
+                ));
+                ui.add_space(8.0);
+            }
             if let Some((lon, lat)) = self.st.cursor {
                 ui.label(mono_text(format!("{lon:.5}  {lat:.5}"), 11.0, p.text3));
             }
@@ -774,6 +1003,7 @@ impl eframe::App for OpenFtthApp {
         }
 
         self.about_window(ui.ctx());
+        self.engine_window(ui.ctx());
         self.st.toasts.show(ui.ctx(), &p);
         self.resize_zones(ui.ctx());
         // A hairline around the frameless window so it reads as a window over other apps.
@@ -827,4 +1057,16 @@ fn repo_root() -> Option<PathBuf> {
         dir = dir.parent()?.to_path_buf();
     }
     None
+}
+
+/// Title-bar buttons: no frame until hovered, like an editor's menu bar.
+fn flat_buttons(ui: &mut Ui) {
+    let v = ui.visuals_mut();
+    v.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+    v.widgets.inactive.bg_stroke = Stroke::NONE;
+    v.widgets.hovered.bg_stroke = Stroke::NONE;
+    v.widgets.open.bg_stroke = Stroke::NONE;
+    v.widgets.active.bg_stroke = Stroke::NONE;
+    ui.spacing_mut().button_padding = vec2(8.0, 5.0);
+    ui.spacing_mut().item_spacing.x = 0.0;
 }
