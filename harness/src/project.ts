@@ -44,7 +44,16 @@ export interface ProjectDeps {
   engineAttachUrl?: string;
 }
 
-export const DISALLOWED_FOR_FOLKS = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "KillShell"];
+/**
+ * Built-in CLI tools a folk never gets: anything that writes or runs code, reaches the network,
+ * spawns agents, or talks to a terminal user that is not there. Read-only lookups (Read, Grep,
+ * Glob) stay, as does ToolSearch, which the CLI needs to load the engine's MCP tools.
+ */
+export const DISALLOWED_FOR_FOLKS = [
+  "Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "Task", "KillShell",
+  "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "EnterWorktree", "ExitWorktree", "Skill", "Workflow",
+  "SendMessage", "ListAgents", "RemoteTrigger", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "ReportFindings",
+];
 
 export class ProjectService {
   private meta: ProjectMeta | null = null;

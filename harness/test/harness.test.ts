@@ -166,6 +166,14 @@ test("denying an approval resolves the prompt with deny", async () => {
   assert.match(decision.message, /not yet/);
 });
 
+test("built-in tools on the folk deny list are refused without a card", async () => {
+  const decision = await body(fetch(`${h.url}/api/internal/permission`, { method: "POST", headers: { authorization: "Bearer test-comms-token", "content-type": "application/json" }, body: JSON.stringify({ folk: "planner", project: "p", tool: "Bash", input: { command: "ls" } }) }));
+  assert.equal(decision.behavior, "deny");
+  assert.match(decision.message, /engine tools/);
+  const list = await body(api("/api/approvals"));
+  assert.ok(!list.some((a: any) => a.tool === "Bash"), "no card was opened");
+});
+
 test("SSE stream replays missed frames on resume", async () => {
   const first = h.bus.emit("runtime", { marker: 1 });
   h.bus.emit("runtime", { marker: 2 });

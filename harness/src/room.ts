@@ -185,7 +185,7 @@ export class Room {
         this.runtime(folk.key, "error", { message: e.message });
         break;
       case "session":
-        this.runtime(folk.key, "session", { sessionId: e.sessionId });
+        this.runtime(folk.key, "session", { sessionId: e.sessionId, ...(e.tools ? { tools: e.tools } : {}), ...(e.version ? { version: e.version } : {}) });
         break;
       case "exit":
         this.runtime(folk.key, "exit", { code: e.code });
@@ -220,7 +220,7 @@ export function renderTurn(text: string, context: DesignContext | undefined, fro
   if (context && (context.selection?.length || context.cursor || context.stage || context.activeVersion)) {
     const bits: string[] = [];
     if (context.stage) bits.push(`stage=${context.stage}`);
-    if (context.activeVersion) bits.push(`version=${context.activeVersion.slice(0, 8)}`);
+    if (context.activeVersion) bits.push(`version=${context.activeVersion.slice(0, 8)} (advances with every engine tool call; a tool's returned version supersedes it)`);
     if (context.selection?.length) bits.push(`selection=${context.selection.join(",")}`);
     if (context.cursor) bits.push(`cursor=${context.cursor[0].toFixed(6)},${context.cursor[1].toFixed(6)}`);
     parts.push(`[design context: ${bits.join("; ")}]`);

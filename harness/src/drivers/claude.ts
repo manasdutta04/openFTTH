@@ -7,6 +7,8 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { killTree } from "../engine-process.ts";
 import type { Driver, DriverEvent, FolkProcessSpec, TurnResult } from "./types.ts";
@@ -73,6 +75,9 @@ export class ClaudeCliDriver implements Driver {
   private ensureProcess(): void {
     if (this.child && this.child.exitCode === null) return;
     const s = this.spec;
+    // The prompt is long and multi-line; a file keeps it off the command line on every platform.
+    const promptPath = join(s.cwd, `folk.${s.folkKey}.system.md`);
+    writeFileSync(promptPath, s.systemPrompt, "utf8");
     const args = [
       "-p",
       "--verbose",
@@ -81,8 +86,8 @@ export class ClaudeCliDriver implements Driver {
       "--input-format",
       "stream-json",
       "--include-partial-messages",
-      "--system-prompt",
-      s.systemPrompt,
+      "--system-prompt-file",
+      promptPath,
       "--mcp-config",
       s.mcpConfigPath,
       "--strict-mcp-config",
@@ -94,12 +99,13 @@ export class ClaudeCliDriver implements Driver {
       ...(this.sessionId ? ["--resume", this.sessionId] : []),
     ];
     // extraArgs come first: they belong to the command itself (e.g. a wrapper script path).
-    const child = spawn(s.command, [...s.extraArgs, ...args], {
-      cwd: s.cwd,
-      env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: process.platform === "win32" && !/\.(exe|cmd|bat)$/i.test(s.command) && !s.command.includes("/") && !s.command.includes("\\"),
-    });
+    // On Windows the command is resolved to a file so that no shell rewrites the arguments;
+    // a .cmd/.bat launcher still needs cmd.exe, which gets each argument quoted explicitly.
+    const exe = resolveExecutable(s.command);
+    const spawnOpts = { cwd: s.cwd, env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" }, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] };
+    const child = /\.(cmd|bat)$/i.test(exe)
+      ? spawn("cmd.exe", ["/d", "/s", "/c", `"${[exe, ...s.extraArgs, ...args].map(quoteForCmd).join(" ")}"`], { ...spawnOpts, windowsVerbatimArguments: true })
+      : spawn(exe, [...s.extraArgs, ...args], spawnOpts);
     this.child = child;
     const rl = createInterface({ input: child.stdout! });
     rl.on("line", (l) => this.onLine(l));
@@ -132,9 +138,11 @@ export class ClaudeCliDriver implements Driver {
       this.spec.log(`[${this.spec.folkKey}] non-JSON: ${line.slice(0, 200)}`);
       return;
     }
-    if (typeof msg.session_id === "string" && msg.session_id !== this.sessionId) {
+    const isInit = msg.type === "system" && msg.subtype === "init";
+    if (typeof msg.session_id === "string" && (msg.session_id !== this.sessionId || isInit)) {
       this.sessionId = msg.session_id;
-      this.emit({ type: "session", sessionId: msg.session_id });
+      const detail = isInit ? { ...(Array.isArray(msg.tools) ? { tools: msg.tools.map(String) } : {}), ...(typeof msg.claude_code_version === "string" ? { version: msg.claude_code_version } : {}) } : {};
+      this.emit({ type: "session", sessionId: msg.session_id, ...detail });
     }
     const p = this.pending;
     switch (msg.type) {
@@ -235,3 +243,21 @@ function tryJson(text: string): unknown {
 }
 
 export const claudeDriverFactory = (spec: FolkProcessSpec): Driver => new ClaudeCliDriver(spec);
+
+/** Find `command` on PATH (Windows only); elsewhere the OS resolves it. */
+function resolveExecutable(command: string): string {
+  if (process.platform !== "win32" || /[\\/]/.test(command) || /\.[a-z0-9]+$/i.test(command)) return command;
+  const dirs = (process.env.PATH ?? "").split(";").filter(Boolean);
+  for (const ext of [".exe", ".cmd", ".bat"]) {
+    for (const dir of dirs) {
+      const candidate = join(dir, command + ext);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return command;
+}
+
+/** Quote one argument for a cmd.exe command line (MSVCRT rules; cmd leaves quoted text alone). */
+function quoteForCmd(arg: string): string {
+  return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
+}

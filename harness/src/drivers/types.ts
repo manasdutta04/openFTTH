@@ -3,7 +3,7 @@
  */
 
 export type DriverEvent =
-  | { type: "session"; sessionId: string }
+  | { type: "session"; sessionId: string; tools?: string[]; version?: string }
   | { type: "turn.started" }
   | { type: "text.delta"; text: string }
   | { type: "text"; text: string }

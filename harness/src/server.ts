@@ -10,7 +10,7 @@ import { listRulebooks, type Crew } from "./crew.ts";
 import { findRepoRoot } from "./config.ts";
 import { join } from "node:path";
 import type { EventBus } from "./events.ts";
-import { HttpError, type ProjectService } from "./project.ts";
+import { DISALLOWED_FOR_FOLKS, HttpError, type ProjectService } from "./project.ts";
 import type { Store } from "./store.ts";
 
 export interface ServerDeps {
@@ -132,6 +132,13 @@ export function buildServer(d: ServerDeps): Server {
   // ---- internal (comms token): permission proxy and engine ------------------------------
   add("POST", "/api/internal/permission", async (req, res) => {
     const body = await readJson(req);
+    const tool = String(body.tool ?? "?");
+    if (DISALLOWED_FOR_FOLKS.includes(tool)) {
+      // Defence in depth: the folk engine is started with these tools disabled, and even if a
+      // prompt for one reaches us it is refused without opening a card.
+      json(res, 200, { behavior: "deny", message: `${tool} is not available to the crew. Use the engine tools.` });
+      return;
+    }
     const decision = await d.approvals.request({ project: String(body.project ?? d.projects.current?.id ?? "?"), folk: String(body.folk ?? "?"), tool: String(body.tool ?? "?"), input: (body.input ?? {}) as Record<string, unknown> });
     json(res, 200, decision);
   }, "comms");
