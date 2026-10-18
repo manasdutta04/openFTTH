@@ -91,8 +91,10 @@ export function buildServer(d: ServerDeps): Server {
     json(res, 201, meta);
   });
   add("GET", "/api/project", async (_req, res) => json(res, 200, await d.projects.status()));
-  add("DELETE", "/api/project", async (_req, res) => {
-    await d.projects.close();
+  add("DELETE", "/api/project", async (req, res) => {
+    const purge = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("purge");
+    if (purge === "1" || purge === "true") await d.projects.purge();
+    else await d.projects.close();
     json(res, 200, { open: false });
   });
   add("GET", "/api/rulebooks", (_req, res) => json(res, 200, listRulebooks(join(findRepoRoot(), "rulebooks"))));

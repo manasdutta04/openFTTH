@@ -4,7 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { HarnessConfig } from "./config.ts";
 import { FolkMemory, systemPrompt, type Crew } from "./crew.ts";
@@ -229,6 +229,18 @@ export class ProjectService {
     writeJsonAtomic(join(meta.dir, "harness.json"), meta);
     this.d.bus.emit("project", { id: meta.id, approved: version });
     return meta;
+  }
+
+  /** Close the project and delete everything it produced: design, versions, log, conversation. */
+  async purge(): Promise<void> {
+    const meta = this.requireMeta();
+    if (this.room?.busy) throw new HttpError(409, "a turn is running; stop it before resetting");
+    await this.close();
+    rmSync(meta.dir, { recursive: true, force: true });
+    this.d.store.deleteRoom(`room:${meta.id}`);
+    this.d.store.clearRuntime(meta.id);
+    this.d.approvals.forget(meta.id);
+    this.d.bus.emit("project", { id: meta.id, purged: true });
   }
 
   async close(): Promise<void> {

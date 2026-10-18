@@ -641,6 +641,35 @@ impl AppState {
         self.load_recents();
     }
 
+    /// Delete the open project's design, versions and conversation and go back to the start page.
+    pub fn reset_project(&mut self) {
+        match self.client.reset_project() {
+            Ok(_) => self
+                .toasts
+                .success("Project reset. Open the area again to start from a blank map."),
+            Err(e) => {
+                self.toasts.error(format!("reset: {e}"));
+                return;
+            }
+        }
+        self.project = None;
+        self.design = None;
+        self.streets = None;
+        self.boq = None;
+        self.validation = None;
+        self.messages.clear();
+        self.approvals.clear();
+        self.chips.clear();
+        self.selection.clear();
+        self.changed.clear();
+        self.versions.clear();
+        self.backstage.clear();
+        self.explanations.clear();
+        self.stage = None;
+        self.last_version_summary = None;
+        self.load_recents();
+    }
+
     pub fn approve_version(&mut self, version: &str) {
         match self.client.approve_version(version) {
             Ok(_) => {

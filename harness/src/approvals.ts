@@ -103,6 +103,17 @@ export class Approvals {
     return [...[...this.pending.values()].map((p) => p.approval), ...this.decided.values()].sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /** Drop every decided approval of a project (a project reset); pending ones are denied. */
+  forget(project: string): void {
+    for (const [id, entry] of [...this.pending]) {
+      if (entry.approval.project === project) this.decide(id, "deny", "project reset");
+    }
+    for (const [id, a] of [...this.decided]) {
+      if (a.project === project) this.decided.delete(id);
+    }
+    writeJsonAtomic(this.logPath, [...this.decided.values()].slice(-500));
+  }
+
   /** What the design engine asks: is this id an allowed approval for this tool? */
   check(id: string): { approved: boolean; tool: string | null; state: ApprovalState | null } {
     const a = this.get(id);

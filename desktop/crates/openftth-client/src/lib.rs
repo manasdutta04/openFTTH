@@ -120,6 +120,11 @@ impl Client {
         self.send("DELETE", "/api/project", &Value::Null)
     }
 
+    /// Close the project and delete everything it produced.
+    pub fn reset_project(&self) -> Result<Value, ClientError> {
+        self.send("DELETE", "/api/project?purge=1", &Value::Null)
+    }
+
     pub fn versions(&self, limit: usize) -> Result<Value, ClientError> {
         self.get(&format!("/api/project/versions?limit={limit}"))
     }

@@ -4,7 +4,7 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -92,6 +92,17 @@ export class Store {
 
   setKv(key: string, value: unknown): void {
     this.db.prepare("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
+  }
+
+  /** Forget a room's conversation (a project reset). */
+  deleteRoom(room: string): void {
+    this.db.prepare("DELETE FROM messages WHERE room = ?").run(room);
+  }
+
+  /** Forget a project's runtime log (a project reset). */
+  clearRuntime(project: string): void {
+    const p = join(this.dir, "backstage", `${project}.ndjson`);
+    if (existsSync(p)) rmSync(p);
   }
 
   appendRuntime(project: string, ev: RuntimeEvent): void {

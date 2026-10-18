@@ -174,6 +174,21 @@ test("built-in tools on the folk deny list are refused without a card", async ()
   assert.ok(!list.some((a: any) => a.tool === "Bash"), "no card was opened");
 });
 
+test("purging a project deletes its folder, conversation and runtime log", async () => {
+  const meta = await body(api("/api/project", { method: "POST", body: JSON.stringify({ area_path: join(repo, "fixtures", "gent", "area.geojson"), rulebook: "generic-gpon" }) }));
+  await api("/api/room/messages", { method: "POST", body: JSON.stringify({ text: "hello" }) });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok((await body(api("/api/room/messages"))).length > 0);
+  assert.ok((await body(api("/api/projects"))).some((p: any) => p.id === meta.id));
+  const res = await api("/api/project?purge=1", { method: "DELETE" });
+  assert.equal(res.status, 200);
+  assert.ok(!(await body(api("/api/projects"))).some((p: any) => p.id === meta.id), "project folder is gone");
+  const reopened = await body(api("/api/project", { method: "POST", body: JSON.stringify({ area_path: join(repo, "fixtures", "gent", "area.geojson"), rulebook: "generic-gpon" }) }));
+  assert.equal(reopened.id, meta.id);
+  assert.equal((await body(api("/api/room/messages"))).length, 0, "conversation starts empty");
+  assert.equal((await body(api("/api/backstage"))).length, 0, "runtime log starts empty");
+});
+
 test("engines are listed with availability and can be switched", async () => {
   const listed = await body(api("/api/engines"));
   assert.equal(listed.current.kind, "claude");

@@ -25,6 +25,7 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `GET /api/crew` | the crew manifest with per-folk state |
 | `GET /api/rulebooks` | the shipped rulebook presets (name, description, country) |
 | `GET /api/projects` | projects opened before, newest first |
+| `DELETE /api/project?purge=1` | close the project and delete its design, versions, conversation and runtime log (a reset) |
 | `GET /api/engines` | the folk engines (Claude CLI, Codex CLI, Ollama, OpenRouter, OpenAI-compatible): availability, models, which one is active |
 | `POST /api/engine` | `{kind, model?, baseUrl?, apiKey?}` switch the crew's engine; folk sessions restart on the next turn |
 | `POST /api/project {area_path, osm_path, rulebook}` | create or open a project: starts the engine, creates the room |

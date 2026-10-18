@@ -40,6 +40,7 @@ pub struct OpenFtthApp {
     show_crew: bool,
     about: bool,
     engine_form: Option<EngineForm>,
+    confirm_reset: bool,
 }
 
 struct EngineForm {
@@ -71,6 +72,7 @@ impl OpenFtthApp {
             show_crew: true,
             about: false,
             engine_form: None,
+            confirm_reset: false,
         }
     }
 
@@ -410,6 +412,9 @@ project {}",
             if menu_item(ui, &p, "Close project", None, open) {
                 self.st.close_project();
             }
+            if menu_item(ui, &p, "Reset project…", None, open && !busy) {
+                self.confirm_reset = true;
+            }
             menu_separator(ui, &p);
             if menu_item(ui, &p, "Exit", Some("Alt+F4"), true) {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Close);
@@ -571,6 +576,51 @@ project {}",
                 ui.label(text("MIT licence.", 11.5, Weight::Regular, p.text3));
             });
         self.about = open;
+    }
+
+    fn reset_window(&mut self, ctx: &egui::Context) {
+        if !self.confirm_reset {
+            return;
+        }
+        let p = self.st.palette;
+        let name = self
+            .st
+            .project
+            .as_ref()
+            .map(|pr| file_stem(&pr.area_path))
+            .unwrap_or_default();
+        let mut open = true;
+        let mut decision: Option<bool> = None;
+        egui::Window::new("Reset project")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.add(egui::Label::new(text(
+                    format!("This deletes everything the crew produced for \"{name}\": the design, every version, the conversation and the runtime log. The area and map files on disk stay. You can open the area again and start from a blank map."),
+                    12.5,
+                    Weight::Regular,
+                    p.text2,
+                )).wrap());
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if widgets::button(ui, &p, "Reset and start over", widgets::Kind::Danger).clicked() {
+                        decision = Some(true);
+                    }
+                    if widgets::button(ui, &p, "Keep it", widgets::Kind::Quiet).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+        if let Some(yes) = decision {
+            if yes {
+                self.st.reset_project();
+            }
+            open = false;
+        }
+        self.confirm_reset = open;
     }
 
     /// Thin zones along the window edge that start an OS resize (the window has no frame).
@@ -922,6 +972,7 @@ impl eframe::App for OpenFtthApp {
 
         self.about_window(ui.ctx());
         self.engine_window(ui.ctx());
+        self.reset_window(ui.ctx());
         self.st.toasts.show(ui.ctx(), &p);
         self.resize_zones(ui.ctx());
         // A hairline around the frameless window so it reads as a window over other apps.
