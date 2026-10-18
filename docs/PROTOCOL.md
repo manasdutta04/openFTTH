@@ -23,10 +23,14 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `GET /api/health` | `{ok, version, uptime_s}`; no auth |
 | `GET /api/events?since=<cursor>` | SSE stream, resumable with `Last-Event-ID`; first frame `hello` |
 | `GET /api/crew` | the crew manifest with per-folk state |
+| `GET /api/rulebooks` | the shipped rulebook presets (name, description, country) |
+| `GET /api/projects` | projects opened before, newest first |
 | `POST /api/project {area_path, osm_path, rulebook}` | create or open a project: starts the engine, creates the room |
 | `GET /api/project` | project meta, stage, head version, engine status |
 | `GET /api/project/versions` | version log (from the engine) |
 | `GET /api/project/diff?from&to` | semantic diff by element id (from the engine) |
+| `GET /api/project/element/:uuid` | the engine's explanation of one element (attributes + recorded decisions) |
+| `GET /api/project/assumptions` | every assumption the engine recorded |
 | `POST /api/project/approve {version}` | tag a version as approved |
 | `POST /api/room/messages {text, designContext}` | a user turn in the project room |
 | `POST /api/room/interrupt` | stop the running turn |

@@ -16,6 +16,8 @@ function makeServer() {
   s.registerTool("design_summary", { description: "summary" }, async () => ({ content: [{ type: "text", text: JSON.stringify({ project, stage: "solve", version: versions[0].version, elements: { fat: 3 } }) }] }));
   s.registerTool("versions", { description: "versions", inputSchema: { limit: z.number().optional() } }, async () => ({ content: [{ type: "text", text: JSON.stringify(versions) }] }));
   s.registerTool("diff_versions", { description: "diff", inputSchema: { older: z.string(), newer: z.string() } }, async ({ older, newer }) => ({ content: [{ type: "text", text: JSON.stringify({ added: [older], removed: [], modified: [newer] }) }] }));
+  s.registerTool("explain_element", { description: "explain", inputSchema: { element_uuid: z.string() } }, async ({ element_uuid }) => ({ content: [{ type: "text", text: JSON.stringify({ element_uuid, kind: "fat", props: { name: "FAT-001" }, openftth: { units: 12 }, decisions: [{ reason: "placed by clustering" }] }) }] }));
+  s.registerTool("list_assumptions", { description: "assumptions" }, async () => ({ content: [{ type: "text", text: JSON.stringify([{ reason: "homes synthesised", source: "assumption" }]) }] }));
   s.registerTool("add_trench", { description: "risky", inputSchema: { approval_id: z.string().optional() } }, async ({ approval_id }) => ({ content: [{ type: "text", text: JSON.stringify(approval_id ? { tool: "add_trench", summary: `trench added under ${approval_id}` } : { error: "approval_required", tool: "add_trench" }) }] }));
   return s;
 }

@@ -3,7 +3,7 @@
  * folk's instructions and memory.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 export interface CrewMember {
@@ -75,6 +75,25 @@ export function mentions(crew: Crew, text: string): CrewMember[] {
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export interface RulebookPreset {
+  name: string;
+  description: string;
+  country: string | null;
+  path: string;
+}
+
+/** The YAML presets in `<repo>/rulebooks`, read without a YAML parser (name/description/country lines). */
+export function listRulebooks(rulebooksDir: string): RulebookPreset[] {
+  if (!existsSync(rulebooksDir)) return [];
+  const out: RulebookPreset[] = [];
+  for (const file of readdirSync(rulebooksDir).filter((f) => f.endsWith(".yaml")).sort()) {
+    const text = readFileSync(join(rulebooksDir, file), "utf8");
+    const pick = (key: string) => text.match(new RegExp(`^${key}:\\s*"?([^"\\n#]+?)"?\\s*(#.*)?$`, "m"))?.[1]?.trim() ?? null;
+    out.push({ name: pick("name") ?? file.replace(/\.yaml$/, ""), description: pick("description") ?? "", country: pick("country"), path: join(rulebooksDir, file) });
+  }
+  return out;
 }
 
 export const MEMORY_MAX_CHARS = 24_000;

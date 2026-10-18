@@ -89,6 +89,19 @@ test("opening a project attaches the engine and answers status, versions and dif
   assert.deepEqual(approved.approvedVersions, [versions[0].version]);
 });
 
+test("rulebooks, projects, element explanation and assumptions are served", async () => {
+  const rulebooks = await body(api("/api/rulebooks"));
+  assert.ok(rulebooks.map((r: any) => r.name).includes("belgium"));
+  assert.ok(rulebooks.find((r: any) => r.name === "norway").country === "NO");
+  const projects = await body(api("/api/projects"));
+  assert.equal(projects.length, 1);
+  assert.match(projects[0].id, /^area-/);
+  const explained = await body(api("/api/project/element/abc"));
+  assert.equal(explained.props.name, "FAT-001");
+  const assumptions = await body(api("/api/project/assumptions"));
+  assert.equal(assumptions.length, 1);
+});
+
 test("a user turn runs the default responder and streams frames", async () => {
   const frames: Array<{ event?: string; data: any }> = [];
   const off = h.bus.on((f) => frames.push({ event: f.kind, data: f.data }));

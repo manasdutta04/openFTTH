@@ -4,7 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { HarnessConfig } from "./config.ts";
 import { FolkMemory, systemPrompt, type Crew } from "./crew.ts";
@@ -159,6 +159,26 @@ export class ProjectService {
 
   async diff(from: string, to: string): Promise<unknown> {
     return this.requireEngine().call("diff_versions", { older: from, newer: to });
+  }
+
+  async explainElement(uuid: string): Promise<unknown> {
+    return this.requireEngine().call("explain_element", { element_uuid: uuid });
+  }
+
+  async assumptions(): Promise<unknown> {
+    return this.requireEngine().call("list_assumptions");
+  }
+
+  /** Every project folder under the data dir, newest first. */
+  listProjects(): ProjectMeta[] {
+    const root = join(this.d.cfg.dataDir, "projects");
+    if (!existsSync(root)) return [];
+    const out: ProjectMeta[] = [];
+    for (const name of readdirSync(root)) {
+      const meta = readJsonOr<ProjectMeta | null>(join(root, name, "harness.json"), null);
+      if (meta) out.push(meta);
+    }
+    return out.sort((a, b) => b.createdAt - a.createdAt);
   }
 
   approve(version: string): ProjectMeta {
