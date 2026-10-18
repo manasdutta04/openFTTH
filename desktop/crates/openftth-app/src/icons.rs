@@ -1,7 +1,13 @@
 //! Line icons drawn with the painter on a 16 × 16 grid: crisp at any scale, no icon font.
 
 use egui::epaint::{PathShape, PathStroke};
-use egui::{pos2, vec2, Color32, Painter, Pos2, Rect, Stroke, Vec2};
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use egui::{
+    pos2, vec2, Color32, ColorImage, Painter, Pos2, Rect, Stroke, TextureHandle, TextureOptions,
+    Vec2,
+};
 use std::f32::consts::TAU;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,25 +274,72 @@ pub fn paint_window_glyph(painter: &Painter, center: Pos2, icon: Icon, color: Co
     }
 }
 
-/// An engine's mark: a small tile with its initial, in the engine's own hue. Ours, not a logo.
+// ---- engine marks ---------------------------------------------------------------------------
+
+const MARK_SIZE: usize = 96;
+
+/// Alpha masks rasterised from the engine icons by `tools/rasterize_marks.py`.
+const MARKS: &[(&str, &[u8])] = &[
+    ("claude", include_bytes!("../assets/engines/claude.a8")),
+    ("codex", include_bytes!("../assets/engines/codex.a8")),
+    ("hermes", include_bytes!("../assets/engines/hermes.a8")),
+    ("ollama", include_bytes!("../assets/engines/ollama.a8")),
+    (
+        "openrouter",
+        include_bytes!("../assets/engines/openrouter.a8"),
+    ),
+    ("openai", include_bytes!("../assets/engines/openai.a8")),
+];
+
+thread_local! {
+    static MARK_TEXTURES: RefCell<HashMap<&'static str, TextureHandle>> = RefCell::new(HashMap::new());
+}
+
+fn mark_texture(ctx: &egui::Context, kind: &str) -> Option<TextureHandle> {
+    let (name, mask) = MARKS.iter().find(|(k, _)| *k == kind)?;
+    MARK_TEXTURES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(t) = cache.get(name) {
+            return Some(t.clone());
+        }
+        let pixels: Vec<Color32> = mask.iter().map(|a| Color32::from_white_alpha(*a)).collect();
+        let image = ColorImage {
+            size: [MARK_SIZE, MARK_SIZE],
+            source_size: Vec2::splat(MARK_SIZE as f32),
+            pixels,
+        };
+        let handle = ctx.load_texture(format!("engine-mark-{name}"), image, TextureOptions::LINEAR);
+        cache.insert(name, handle.clone());
+        Some(handle)
+    })
+}
+
+/// An engine's mark. Claude keeps its own hue; every other mark takes the text colour.
 pub fn paint_engine_mark(painter: &Painter, rect: Rect, kind: &str, p: &crate::theme::Palette) {
-    let (tile, letter) = match kind {
-        "claude" => (Color32::from_rgb(0xd9, 0x77, 0x57), "C"),
-        "codex" => (Color32::from_rgb(0x5f, 0x6b, 0x7a), "X"),
-        "hermes" => (Color32::from_rgb(0x8b, 0x5c, 0xf6), "H"),
-        "ollama" => (Color32::from_rgb(0x3a, 0x3f, 0x47), "O"),
-        "openrouter" => (p.accent, "R"),
-        "openai" => (Color32::from_rgb(0x2e, 0x9e, 0x78), "A"),
-        _ => (p.text3, "?"),
-    };
     let r = rect.width().min(rect.height());
     let sq = Rect::from_center_size(rect.center(), Vec2::splat(r));
-    painter.rect_filled(sq, r * 0.25, tile);
-    painter.text(
-        sq.center() + vec2(0.0, 0.5),
-        egui::Align2::CENTER_CENTER,
-        letter,
-        crate::theme::font(r * 0.62, crate::theme::Weight::Semibold),
-        Color32::WHITE,
-    );
+    let tint = match kind {
+        "claude" => Color32::from_rgb(0xd9, 0x77, 0x57),
+        _ => p.text,
+    };
+    match mark_texture(painter.ctx(), kind) {
+        Some(tex) => {
+            painter.image(
+                tex.id(),
+                sq,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                tint,
+            );
+        }
+        None => {
+            painter.rect_filled(sq, r * 0.25, p.text3);
+            painter.text(
+                sq.center(),
+                egui::Align2::CENTER_CENTER,
+                "?",
+                crate::theme::font(r * 0.62, crate::theme::Weight::Semibold),
+                Color32::WHITE,
+            );
+        }
+    }
 }

@@ -198,13 +198,24 @@ project {}",
                     } else if resp.hovered() {
                         ui.painter().rect_filled(rect, R as f32, p.bg3);
                     }
-                    ui.painter().circle_filled(
-                        pos2(rect.left() + 12.0, rect.center().y),
-                        3.0,
-                        if e.available { p.green } else { p.text3 },
+                    icons::paint_engine_mark(
+                        ui.painter(),
+                        Rect::from_center_size(
+                            pos2(rect.left() + 18.0, rect.center().y),
+                            vec2(16.0, 16.0),
+                        ),
+                        &e.kind,
+                        &p,
                     );
+                    if e.available {
+                        ui.painter().circle_filled(
+                            pos2(rect.left() + 28.0, rect.top() + 7.0),
+                            2.5,
+                            p.green,
+                        );
+                    }
                     ui.painter().text(
-                        pos2(rect.left() + 24.0, rect.center().y),
+                        pos2(rect.left() + 36.0, rect.center().y),
                         Align2::LEFT_CENTER,
                         &e.label,
                         font(
