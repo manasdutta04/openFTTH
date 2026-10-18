@@ -2,8 +2,16 @@
 //! chat column on the left, workspace (Twin, Versions, Backstage) on the right.
 
 mod app;
+mod chat;
+mod inspector;
+mod markdown;
+mod state;
 mod supervisor;
+mod tabs;
+mod theme;
 mod twin;
+mod welcome;
+mod widgets;
 
 use std::env;
 
@@ -28,8 +36,9 @@ fn main() -> Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1480.0, 920.0])
+            .with_inner_size([1400.0, 800.0])
             .with_min_inner_size([960.0, 600.0])
+            .with_maximized(true)
             .with_title("openFTTH"),
         ..Default::default()
     };

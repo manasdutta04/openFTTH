@@ -100,12 +100,17 @@ impl Element {
             .unwrap_or(&self.element_type)
     }
 
+    /// A human label: the `name` prop, else a cable's type with its ends, else the kind.
     pub fn name(&self) -> String {
-        self.props
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| self.kind().to_string())
+        if let Some(n) = self.props.get("name").and_then(Value::as_str) {
+            return n.to_string();
+        }
+        let from = self.props.get("from_label").and_then(Value::as_str);
+        let to = self.props.get("to_label").and_then(Value::as_str);
+        match (from, to) {
+            (Some(f), Some(t)) => format!("{} {f} → {t}", self.kind()),
+            _ => self.kind().to_string(),
+        }
     }
 
     fn from_feature(f: &Value) -> Option<Element> {
@@ -141,6 +146,8 @@ impl Element {
 pub struct Design {
     pub metadata: BTreeMap<String, String>,
     pub elements: Vec<Element>,
+    /// Side tables (`<name>.table.json`): splice points, fibre connections, …
+    pub tables: BTreeMap<String, Vec<Map<String, Value>>>,
 }
 
 impl Design {
@@ -175,6 +182,26 @@ impl Design {
                     .elements
                     .extend(features.iter().filter_map(Element::from_feature));
             }
+        }
+        let mut tables: Vec<_> = fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(".table.json"))
+            })
+            .collect();
+        tables.sort();
+        for p in tables {
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .trim_end_matches(".table.json")
+                .to_string();
+            let rows: Vec<Map<String, Value>> = serde_json::from_str(&fs::read_to_string(&p)?)?;
+            design.tables.insert(name, rows);
         }
         Ok(design)
     }

@@ -18,6 +18,8 @@ anyhow = "1"
 ureq = { version = "3", features = ["json"] }
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 egui = "0.37"
+egui_extras = "0.37"
+rfd = "0.17"
 rand = "0.9"
 
 [profile.release]

@@ -172,6 +172,22 @@ impl Client {
         self.get(&format!("/api/backstage?limit={limit}"))
     }
 
+    pub fn rulebooks(&self) -> Result<Value, ClientError> {
+        self.get("/api/rulebooks")
+    }
+
+    pub fn projects(&self) -> Result<Value, ClientError> {
+        self.get("/api/projects")
+    }
+
+    pub fn explain_element(&self, uuid: &str) -> Result<Value, ClientError> {
+        self.get(&format!("/api/project/element/{uuid}"))
+    }
+
+    pub fn assumptions(&self) -> Result<Value, ClientError> {
+        self.get("/api/project/assumptions")
+    }
+
     /// Subscribe to `/api/events` on a background thread. Reconnects with the last id until
     /// the receiver is dropped.
     pub fn subscribe(&self, tx: Sender<Frame>) -> JoinHandle<()> {
