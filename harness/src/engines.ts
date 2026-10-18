@@ -8,9 +8,9 @@ import { join } from "node:path";
 import type { FolkEngineConfig } from "./config.ts";
 import { readJsonOr, writeJsonAtomic } from "./store.ts";
 
-export type EngineKind = "claude" | "codex" | "ollama" | "openrouter" | "openai";
+export type EngineKind = "claude" | "codex" | "hermes" | "ollama" | "openrouter" | "openai";
 
-export const ENGINE_KINDS: EngineKind[] = ["claude", "codex", "ollama", "openrouter", "openai"];
+export const ENGINE_KINDS: EngineKind[] = ["claude", "codex", "hermes", "ollama", "openrouter", "openai"];
 
 export interface EngineSettings {
   kind: EngineKind;
@@ -55,6 +55,14 @@ export const ENGINE_CATALOG: Record<EngineKind, Catalog> = {
   codex: {
     label: "Codex CLI",
     description: "OpenAI Codex on this machine, with its own login. Runs read-only; engine tools over MCP.",
+    needs: [],
+    defaultModel: null,
+    defaultBaseUrl: null,
+    keyEnv: null,
+  },
+  hermes: {
+    label: "Hermes Agent",
+    description: "Hermes on this machine, speaking the Agent Client Protocol. It brings its own model and keys; the design engine is handed to it over MCP.",
     needs: [],
     defaultModel: null,
     defaultBaseUrl: null,
@@ -181,6 +189,10 @@ export class Engines {
       case "codex": {
         const exe = findOnPath("codex");
         return exe ? { available: true, detail: exe, models: [] } : { available: false, detail: "codex is not on PATH. Install the Codex CLI and sign in.", models: [] };
+      }
+      case "hermes": {
+        const exe = findOnPath("hermes");
+        return exe ? { available: true, detail: exe, models: [] } : { available: false, detail: "hermes is not on PATH. Install Hermes Agent and configure a provider.", models: [] };
       }
       case "ollama": {
         const base = r.baseUrl ?? "http://127.0.0.1:11434";

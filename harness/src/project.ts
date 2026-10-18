@@ -145,7 +145,8 @@ export class ProjectService {
       });
       const engineCfg = { ...this.d.cfg.folkEngine, ...(member.engine ?? {}) };
       const settings = { ...active, ...(member.engine?.model ? { model: member.engine.model } : {}) };
-      const command = settings.kind === "codex" ? (engineCfg.kind === "codex" ? engineCfg.command : "codex") : settings.kind === "claude" ? (engineCfg.kind === "claude" ? engineCfg.command : "claude") : engineCfg.command;
+      // CLI engines are named after their binary; a configured command only applies to its own kind.
+      const command = engineCfg.kind === settings.kind && engineCfg.command ? engineCfg.command : settings.kind;
       const driver = this.d.driverFactory({
         folkKey: member.key,
         folkName: member.name,

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { OpenAiCompatDriver } from "../src/drivers/openai.ts";
 import { CodexCliDriver } from "../src/drivers/codex.ts";
+import { AcpDriver } from "../src/drivers/acp.ts";
 import { Engines } from "../src/engines.ts";
 import type { DriverEvent, FolkProcessSpec } from "../src/drivers/types.ts";
 
@@ -159,6 +160,34 @@ test("engine settings persist per kind and resolve keys from the environment", a
   assert.equal(again.resolved("openrouter").model, "openai/gpt-5", "settings survive a restart");
   assert.throws(() => e.set({ kind: "nope" }));
   const list = await e.list();
-  assert.equal(list.length, 5);
+  assert.equal(list.length, 6);
   assert.ok(list.every((i) => typeof i.available === "boolean" && typeof i.detail === "string"));
+});
+
+test("the ACP driver hands over MCP servers, streams updates and routes risky permissions to a card", async () => {
+  const fake = join(import.meta.dirname, "fake-acp.mjs");
+  const approvals: string[] = [];
+  const d = new AcpDriver(
+    spec({
+      engine: { kind: "hermes", model: null, baseUrl: null, apiKey: null },
+      command: process.execPath,
+      extraArgs: [fake],
+      approve: async (tool) => {
+        approvals.push(tool);
+        return { behavior: "allow", updatedInput: { approval_id: "appr-2" } };
+      },
+    }),
+    [],
+  );
+  const events: DriverEvent[] = [];
+  d.onEvent((e) => events.push(e));
+  const first = await d.sendTurn("what is there?");
+  assert.equal(first.text, "Looking. echo: what is there?");
+  assert.equal((events.find((e) => e.type === "session") as any).sessionId, "acp-engine+openftth", "both MCP servers were handed over");
+  assert.deepEqual(first.toolCalls[0]!.output, { summary: "3 FATs" });
+  const second = await d.sendTurn("dig a trench");
+  assert.deepEqual(approvals, ["mcp__engine__add_trench"]);
+  assert.equal(second.text, "Looking. Trench added.");
+  assert.equal(second.toolCalls[0]!.isError, false);
+  await d.dispose();
 });

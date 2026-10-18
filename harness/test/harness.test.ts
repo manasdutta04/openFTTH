@@ -177,7 +177,7 @@ test("built-in tools on the folk deny list are refused without a card", async ()
 test("engines are listed with availability and can be switched", async () => {
   const listed = await body(api("/api/engines"));
   assert.equal(listed.current.kind, "claude");
-  assert.equal(listed.engines.length, 5);
+  assert.equal(listed.engines.length, 6);
   assert.ok(listed.engines.every((e: any) => typeof e.available === "boolean" && typeof e.label === "string"));
   assert.ok(!listed.engines.some((e: any) => "apiKey" in e), "keys never leave the harness");
   const frames: any[] = [];
