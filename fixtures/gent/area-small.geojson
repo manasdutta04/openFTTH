@@ -1,0 +1,38 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "gent-small"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              3.6825,
+              51.07
+            ],
+            [
+              3.69,
+              51.07
+            ],
+            [
+              3.69,
+              51.074
+            ],
+            [
+              3.6825,
+              51.074
+            ],
+            [
+              3.6825,
+              51.07
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}
