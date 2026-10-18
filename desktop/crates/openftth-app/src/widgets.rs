@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::{
-    pos2, vec2, Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, Response, RichText, Sense,
+    pos2, vec2, Color32, CornerRadius, CursorIcon, FontId, Margin, Response, RichText, Sense,
     Stroke, Ui, Vec2,
 };
 
@@ -258,25 +258,6 @@ pub fn float_frame(p: &Palette) -> egui::Frame {
             spread: 0,
             color: Color32::from_black_alpha(90),
         })
-}
-
-/// Segmented progress (stages): filled up to `done` of `total`, current segment brighter.
-pub fn segments(ui: &mut Ui, p: &Palette, total: usize, done: Option<usize>, width: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 4.0), Sense::hover());
-    let gap = 2.0;
-    let w = (rect.width() - gap * (total as f32 - 1.0)) / total as f32;
-    for i in 0..total {
-        let r = Rect::from_min_size(
-            pos2(rect.left() + i as f32 * (w + gap), rect.top()),
-            vec2(w, rect.height()),
-        );
-        let color = match done {
-            Some(d) if i < d => p.accent.gamma_multiply(0.7),
-            Some(d) if i == d => p.accent,
-            _ => p.bg3,
-        };
-        ui.painter().rect_filled(r, 1.0, color);
-    }
 }
 
 /// A metric block: large value, small label, no border.
@@ -628,4 +609,123 @@ pub fn menu_row_mark(
         ui.close();
     }
     clicked
+}
+
+// ---- crew header --------------------------------------------------------------------------
+
+/// A folk's badge: a filled disc with the initial, a pulsing ring while the folk works.
+pub fn folk_badge(
+    ui: &mut Ui,
+    p: &Palette,
+    key: &str,
+    name: &str,
+    active: bool,
+    size: f32,
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let c = p.folk(key);
+    let centre = rect.center();
+    let painter = ui.painter();
+    if active {
+        let t = ui.input(|i| i.time) as f32;
+        let pulse = 0.5 + 0.5 * (t * 4.0).sin();
+        painter.circle_stroke(
+            centre,
+            size / 2.0 + 2.0 + pulse * 2.0,
+            egui::Stroke::new(1.5, c.gamma_multiply(0.35 + 0.35 * pulse)),
+        );
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(40));
+    }
+    painter.circle_filled(
+        centre,
+        size / 2.0,
+        if active { c } else { c.gamma_multiply(0.55) },
+    );
+    let initial: String = name
+        .chars()
+        .next()
+        .map(|ch| ch.to_uppercase().to_string())
+        .unwrap_or_default();
+    painter.text(
+        centre + egui::vec2(0.0, 0.5),
+        egui::Align2::CENTER_CENTER,
+        initial,
+        font(size * 0.5, Weight::Semibold),
+        Color32::WHITE,
+    );
+    resp
+}
+
+/// Stage stepper: discs joined by a line, done ones ticked, the current one highlighted,
+/// labels underneath. `current` is the index of the stage in progress (None = not started).
+pub fn stepper(ui: &mut Ui, p: &Palette, steps: &[&str], current: Option<usize>) {
+    let n = steps.len().max(1);
+    let width = ui.available_width();
+    let show_labels = width / n as f32 >= 44.0;
+    let height = if show_labels { 34.0 } else { 18.0 };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let painter = ui.painter();
+    let step_w = width / n as f32;
+    let cy = rect.top() + 8.0;
+    let r = 5.0;
+    let centre_x = |i: usize| rect.left() + step_w * (i as f32 + 0.5);
+    for i in 0..n.saturating_sub(1) {
+        let done = current.map(|c| i < c).unwrap_or(false);
+        painter.line_segment(
+            [
+                egui::pos2(centre_x(i) + r + 2.0, cy),
+                egui::pos2(centre_x(i + 1) - r - 2.0, cy),
+            ],
+            egui::Stroke::new(
+                1.0,
+                if done {
+                    p.accent.gamma_multiply(0.7)
+                } else {
+                    p.line_strong
+                },
+            ),
+        );
+    }
+    for (i, name) in steps.iter().enumerate() {
+        let c = egui::pos2(centre_x(i), cy);
+        match current {
+            Some(cur) if i < cur => {
+                painter.circle_filled(c, r, p.accent.gamma_multiply(0.85));
+                icons::paint(painter, icons::square(c, 7.0), Icon::Check, Color32::WHITE);
+            }
+            Some(cur) if i == cur => {
+                painter.circle_stroke(c, r + 1.0, egui::Stroke::new(1.5, p.accent));
+                painter.circle_filled(c, 2.5, p.accent);
+            }
+            _ => {
+                painter.circle_stroke(c, r, egui::Stroke::new(1.0, p.line_strong));
+            }
+        }
+        if show_labels {
+            let mut label = name.to_string();
+            if let Some(first) = label.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            let color = match current {
+                Some(cur) if i == cur => p.text,
+                Some(cur) if i < cur => p.text2,
+                _ => p.text3,
+            };
+            painter.text(
+                egui::pos2(c.x, rect.top() + 24.0),
+                egui::Align2::CENTER_CENTER,
+                label,
+                font(
+                    10.0,
+                    if current == Some(i) {
+                        Weight::Medium
+                    } else {
+                        Weight::Regular
+                    },
+                ),
+                color,
+            );
+        }
+    }
 }

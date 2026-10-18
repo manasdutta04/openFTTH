@@ -41,6 +41,7 @@ pub struct OpenFtthApp {
     about: bool,
     engine_form: Option<EngineForm>,
     confirm_reset: bool,
+    frame_ms: f32,
 }
 
 struct EngineForm {
@@ -73,6 +74,7 @@ impl OpenFtthApp {
             about: false,
             engine_form: None,
             confirm_reset: false,
+            frame_ms: 0.0,
         }
     }
 
@@ -725,6 +727,10 @@ project {}",
                 ));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if cfg!(debug_assertions) {
+                    ui.label(mono_text(format!("{:.1} ms", self.frame_ms), 11.0, p.text3))
+                        .on_hover_text("Frame CPU time (debug builds only)");
+                }
                 if let Some(v) = self.st.versions.first() {
                     ui.label(mono_text(
                         format!(
@@ -902,7 +908,12 @@ project {}",
 }
 
 impl eframe::App for OpenFtthApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        if cfg!(debug_assertions) {
+            if let Some(cpu) = frame.info().cpu_usage {
+                self.frame_ms = self.frame_ms * 0.9 + cpu * 1000.0 * 0.1;
+            }
+        }
         if self.applied_mode != Some(self.mode) {
             self.st.set_mode(self.mode);
             theme::apply(ui.ctx(), &self.st.palette);

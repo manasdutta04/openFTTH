@@ -36,6 +36,20 @@ pub fn render(ui: &mut Ui, p: &Palette, text: &str) {
             code_block(ui, p, code.trim_end_matches('\n'));
             continue;
         }
+        if is_table_line(trimmed) {
+            flush(ui, &mut paragraph);
+            let mut rows: Vec<String> = vec![trimmed.to_string()];
+            while let Some(next) = lines.peek() {
+                if is_table_line(next.trim_end()) {
+                    rows.push(next.trim_end().to_string());
+                    lines.next();
+                } else {
+                    break;
+                }
+            }
+            table(ui, p, &rows);
+            continue;
+        }
         if let Some((level, body)) = heading(trimmed) {
             flush(ui, &mut paragraph);
             let size = match level {
@@ -189,4 +203,63 @@ fn inline(ui: &mut Ui, p: &Palette, text: &str, color: Color32, size: f32, weigh
     }
     push(&mut job, &mut buf, bold, italic, false);
     ui.add(egui::Label::new(job).wrap());
+}
+
+fn is_table_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with('|') && t.len() > 1
+}
+
+fn split_cells(line: &str) -> Vec<String> {
+    let t = line.trim().trim_start_matches('|').trim_end_matches('|');
+    t.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+fn is_separator(cells: &[String]) -> bool {
+    !cells.is_empty()
+        && cells
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':'))
+}
+
+/// A pipe table: header row, optional separator, body rows. Columns share the width evenly.
+fn table(ui: &mut Ui, p: &Palette, rows: &[String]) {
+    let mut parsed: Vec<Vec<String>> = rows.iter().map(|r| split_cells(r)).collect();
+    if parsed.is_empty() {
+        return;
+    }
+    let header = parsed.remove(0);
+    if parsed.first().map(|r| is_separator(r)).unwrap_or(false) {
+        parsed.remove(0);
+    }
+    let ncols = header.len().max(1);
+    let total = ui.available_width() - 8.0;
+    let col_w = (total / ncols as f32).max(40.0);
+    let id = ui.next_auto_id();
+    ui.add_space(4.0);
+    egui::Grid::new(id)
+        .num_columns(ncols)
+        .spacing(egui::vec2(8.0, 3.0))
+        .min_col_width(col_w - 8.0)
+        .max_col_width(col_w - 8.0)
+        .show(ui, |ui| {
+            for h in &header {
+                ui.set_max_width(col_w - 8.0);
+                inline(ui, p, h, p.text2, 11.5, Weight::Semibold);
+            }
+            ui.end_row();
+            for row in &parsed {
+                for i in 0..ncols {
+                    ui.set_max_width(col_w - 8.0);
+                    let cell = row.get(i).map(String::as_str).unwrap_or("");
+                    inline(ui, p, cell, p.text, 12.0, Weight::Regular);
+                }
+                ui.end_row();
+            }
+        });
+    let (r, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter()
+        .hline(r.x_range(), r.center().y, egui::Stroke::new(1.0, p.line));
+    ui.add_space(4.0);
 }

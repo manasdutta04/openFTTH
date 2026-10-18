@@ -8,7 +8,7 @@ use crate::state::{stage_index, AppState, ChatMessage, STAGES};
 use crate::theme::{Weight, R};
 use crate::widgets::{
     self, button, button_ex, caps, clock_time, dot, hairline, icon_button_sized, mono_text,
-    panel_header, pulse_dot, segments, tag, text, Kind,
+    panel_header, pulse_dot, tag, text, Kind,
 };
 
 pub const PROMPT_DESIGN: &str = "Design this area with the current rulebook: import the data, build the twin, place POP, FDHs and FATs, route everything, validate and give me the BOQ.";
@@ -21,6 +21,10 @@ pub struct Composer {
     pub text: String,
     pub want_focus: bool,
     pub show_history: bool,
+    /// An "@name" being typed at the end of the text: (start byte, partial), from last frame.
+    pub mention: Option<(usize, String)>,
+    pub mention_pick: usize,
+    pub caret_to_end: bool,
 }
 
 /// Something the composer asks the shell to do.
@@ -105,30 +109,32 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Op
 fn presence(ui: &mut Ui, st: &AppState) {
     let p = st.palette;
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 12.0;
+        ui.spacing_mut().item_spacing.x = 14.0;
         for m in &st.crew {
             let state = st
                 .folk_states
                 .get(&m.key)
                 .cloned()
                 .unwrap_or_else(|| "idle".into());
+            let active = state != "idle";
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
-                let c = p.folk(&m.key);
-                if state == "idle" {
-                    dot(ui, c.gamma_multiply(0.7), 3.5);
-                } else {
-                    pulse_dot(ui, c, 3.5);
-                }
-                ui.label(text(
-                    &m.name,
-                    12.0,
-                    Weight::Medium,
-                    if state == "idle" { p.text2 } else { p.text },
-                ));
-                if state != "idle" {
-                    ui.label(text(&state, 11.0, Weight::Regular, p.text3));
-                }
+                ui.spacing_mut().item_spacing.x = 6.0;
+                widgets::folk_badge(ui, &p, &m.key, &m.name, active, 20.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(text(
+                        &m.name,
+                        12.0,
+                        Weight::Medium,
+                        if active { p.text } else { p.text2 },
+                    ));
+                    ui.label(text(
+                        if active { state.as_str() } else { "idle" },
+                        10.0,
+                        Weight::Regular,
+                        if active { p.folk(&m.key) } else { p.text3 },
+                    ));
+                });
             })
             .response
             .on_hover_text(&m.title);
@@ -139,17 +145,7 @@ fn presence(ui: &mut Ui, st: &AppState) {
 fn stage_row(ui: &mut Ui, st: &AppState) {
     let p = st.palette;
     let idx = st.stage.as_deref().map(stage_index);
-    ui.horizontal(|ui| {
-        let label = match (idx, &st.stage) {
-            (Some(i), Some(s)) => format!("{s}  {}/{}", i + 1, STAGES.len()),
-            _ => "not started".into(),
-        };
-        let w = ui.available_width() - 96.0;
-        segments(ui, &p, STAGES.len(), idx, w.max(80.0));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(text(label, 11.0, Weight::Regular, p.text3));
-        });
-    });
+    widgets::stepper(ui, &p, &STAGES, idx);
 }
 
 fn chips(ui: &mut Ui, st: &AppState) {
@@ -375,6 +371,41 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
     ui.add_space(4.0);
     let shortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter);
     let mut send_now = false;
+    // The @ picker takes the arrow and accept keys before the text field sees them.
+    let mut accept_mention: Option<String> = None;
+    if let Some((_, partial)) = composer.mention.clone() {
+        let matches = mention_matches(st, &partial);
+        if matches.is_empty() {
+            composer.mention = None;
+        } else {
+            let (up, down, enter, tab, esc) = ui.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                    i.consume_key(Modifiers::NONE, Key::Enter),
+                    i.consume_key(Modifiers::NONE, Key::Tab),
+                    i.consume_key(Modifiers::NONE, Key::Escape),
+                )
+            });
+            if up {
+                composer.mention_pick = composer.mention_pick.saturating_sub(1);
+            }
+            if down {
+                composer.mention_pick = (composer.mention_pick + 1).min(matches.len() - 1);
+            }
+            if esc {
+                composer.mention = None;
+            }
+            if enter || tab {
+                accept_mention = matches
+                    .get(composer.mention_pick.min(matches.len() - 1))
+                    .cloned();
+            }
+        }
+    }
+    if let Some(name) = accept_mention.take() {
+        apply_mention(composer, &name);
+    }
     Frame::new()
         .fill(p.bg2)
         .stroke(Stroke::new(1.0, p.line))
@@ -403,6 +434,22 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
             if composer.want_focus {
                 response.request_focus();
                 composer.want_focus = false;
+            }
+            if composer.caret_to_end {
+                composer.caret_to_end = false;
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                    let end = egui::text::CCursor::new(composer.text.chars().count());
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                    state.store(ui.ctx(), response.id);
+                }
+                response.request_focus();
+            }
+            composer_mention_state(composer, &response);
+            if let Some(name) = mention_picker(ui, st, composer, response.rect) {
+                apply_mention(composer, &name);
+                composer.want_focus = true;
             }
             let enter = response.lost_focus()
                 && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
@@ -637,4 +684,126 @@ fn engine_chip(ui: &mut Ui, st: &mut AppState) -> Option<ChatAction> {
             }
         });
     action
+}
+
+// ---- @ picker -----------------------------------------------------------------------------
+
+/// Folk names that start with what was typed after the "@".
+fn mention_matches(st: &AppState, partial: &str) -> Vec<String> {
+    let needle = partial.to_lowercase();
+    st.crew
+        .iter()
+        .filter(|m| m.name.to_lowercase().starts_with(&needle))
+        .map(|m| m.name.clone())
+        .collect()
+}
+
+/// Is the user typing "@name" at the end of the text? Remember it for next frame's keys.
+fn composer_mention_state(composer: &mut Composer, response: &egui::Response) {
+    if !response.has_focus() {
+        composer.mention = None;
+        return;
+    }
+    let text = composer.text.as_str();
+    let found = text.rfind('@').and_then(|at| {
+        let before_ok = at == 0 || text[..at].ends_with(char::is_whitespace);
+        let partial = &text[at + 1..];
+        let partial_ok = partial.chars().all(|c| c.is_alphanumeric());
+        (before_ok && partial_ok).then(|| (at, partial.to_string()))
+    });
+    if found.as_ref().map(|(at, _)| *at) != composer.mention.as_ref().map(|(at, _)| *at) {
+        composer.mention_pick = 0;
+    }
+    composer.mention = found;
+}
+
+/// Replace the "@partial" being typed with "@Name " and put the caret at the end.
+fn apply_mention(composer: &mut Composer, name: &str) {
+    if let Some((at, _)) = composer.mention.take() {
+        composer.text.truncate(at);
+        composer.text.push('@');
+        composer.text.push_str(name);
+        composer.text.push(' ');
+        composer.caret_to_end = true;
+    }
+}
+
+/// The popup above the text field listing the folks that match. Returns a chosen name.
+fn mention_picker(
+    ui: &mut Ui,
+    st: &AppState,
+    composer: &Composer,
+    anchor: egui::Rect,
+) -> Option<String> {
+    let (_, partial) = composer.mention.as_ref()?;
+    let matches = mention_matches(st, partial);
+    if matches.is_empty() {
+        return None;
+    }
+    let p = st.palette;
+    let mut chosen = None;
+    egui::Area::new(egui::Id::unique("mention-picker"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(anchor.left_top() - vec2(0.0, 8.0))
+        .pivot(egui::Align2::LEFT_BOTTOM)
+        .show(ui.ctx(), |ui| {
+            widgets::float_frame(&p).show(ui, |ui| {
+                ui.set_width(260.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(widgets::caps("Address a folk", p.text3));
+                ui.add_space(4.0);
+                for (i, name) in matches.iter().enumerate() {
+                    let member = st.crew.iter().find(|m| &m.name == name);
+                    let key = member.map(|m| m.key.as_str()).unwrap_or("");
+                    let title = member.map(|m| m.title.as_str()).unwrap_or("");
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+                    let picked = i == composer.mention_pick.min(matches.len() - 1);
+                    if picked || resp.hovered() {
+                        ui.painter().rect_filled(rect, R as f32, p.accent_soft);
+                    }
+                    let badge = egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 16.0, rect.center().y),
+                        vec2(18.0, 18.0),
+                    );
+                    ui.painter().circle_filled(badge.center(), 9.0, p.folk(key));
+                    ui.painter().text(
+                        badge.center() + vec2(0.0, 0.5),
+                        egui::Align2::CENTER_CENTER,
+                        name.chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string(),
+                        crate::theme::font(9.0, Weight::Semibold),
+                        egui::Color32::WHITE,
+                    );
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 32.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        format!("@{name}"),
+                        crate::theme::font(12.5, Weight::Medium),
+                        p.text,
+                    );
+                    ui.painter().text(
+                        egui::pos2(rect.right() - 8.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        widgets::truncate(title, 24),
+                        crate::theme::font(11.0, Weight::Regular),
+                        p.text3,
+                    );
+                    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                        chosen = Some(name.clone());
+                    }
+                }
+                ui.add_space(2.0);
+                ui.label(text(
+                    "↑↓ choose · Enter or Tab to insert",
+                    10.0,
+                    Weight::Regular,
+                    p.text3,
+                ));
+            });
+        });
+    chosen
 }

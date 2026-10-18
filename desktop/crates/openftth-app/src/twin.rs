@@ -1,7 +1,14 @@
 //! 2D twin: streets, buildings, cables, equipment. Drag to pan, wheel to zoom, click to select,
 //! hover for details. A floating toolbar, a layer list and a scale bar sit on the map.
+//!
+//! Geometry is projected to Mercator metres once per design and kept in a cache; each frame
+//! only culls against the view and applies a scale and offset, so panning and resizing stay
+//! smooth with thousands of elements. Detail follows the zoom: building outlines and homes
+//! appear as you zoom in.
 
-use egui::{pos2, vec2, Align2, Color32, CursorIcon, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
+use std::collections::{HashMap, HashSet};
+
+use egui::{pos2, vec2, Align2, CursorIcon, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use openftth_core::{Bounds, Design, Element, Geometry, Mercator, StreetLayer};
 
 use crate::icons::{self, Icon};
@@ -13,6 +20,7 @@ pub struct TwinView {
     center: [f64; 2],
     scale: f64,
     fitted: bool,
+    cache: Option<GeomCache>,
 }
 
 impl Default for TwinView {
@@ -21,6 +29,7 @@ impl Default for TwinView {
             center: [0.0, 0.0],
             scale: 1.0,
             fitted: false,
+            cache: None,
         }
     }
 }
@@ -32,9 +41,167 @@ pub struct TwinResponse {
     pub cursor: Option<(f64, f64)>,
 }
 
+// ---- cached geometry (Mercator metres) ----------------------------------------------------
+
+#[derive(Clone, Copy)]
+struct Bbox {
+    min: [f64; 2],
+    max: [f64; 2],
+}
+
+impl Bbox {
+    fn of(pts: &[[f64; 2]]) -> Bbox {
+        let mut b = Bbox {
+            min: [f64::INFINITY, f64::INFINITY],
+            max: [f64::NEG_INFINITY, f64::NEG_INFINITY],
+        };
+        for p in pts {
+            b.min[0] = b.min[0].min(p[0]);
+            b.min[1] = b.min[1].min(p[1]);
+            b.max[0] = b.max[0].max(p[0]);
+            b.max[1] = b.max[1].max(p[1]);
+        }
+        b
+    }
+
+    fn intersects(&self, o: &Bbox) -> bool {
+        self.min[0] <= o.max[0]
+            && self.max[0] >= o.min[0]
+            && self.min[1] <= o.max[1]
+            && self.max[1] >= o.min[1]
+    }
+}
+
+struct CLine {
+    pts: Vec<[f64; 2]>,
+    bbox: Bbox,
+    /// Street class (0 minor, 1 residential, 2 major) or cable kind (0 drop, 1 distribution, 2 feeder).
+    class: u8,
+    /// Index into `Design::elements`; usize::MAX for streets.
+    idx: usize,
+}
+
+struct CPoly {
+    pts: Vec<[f64; 2]>,
+    bbox: Bbox,
+    idx: usize,
+}
+
+struct CPoint {
+    xy: [f64; 2],
+    /// 0 home, 1 chamber, 2 fat, 3 fdh, 4 pop
+    kind: u8,
+    idx: usize,
+}
+
+struct GeomCache {
+    design_key: (usize, usize),
+    streets_key: (usize, usize),
+    streets: Vec<CLine>,
+    buildings: Vec<CPoly>,
+    cables: Vec<CLine>,
+    points: Vec<CPoint>,
+    uuid_index: HashMap<String, usize>,
+}
+
+const CABLE_KINDS: [&str; 3] = ["drop", "distribution", "feeder"];
+const POINT_KINDS: [&str; 5] = ["home", "chamber", "fat", "fdh", "pop"];
+
+fn design_key(d: Option<&Design>) -> (usize, usize) {
+    d.map(|d| (d.elements.as_ptr() as usize, d.elements.len()))
+        .unwrap_or((0, 0))
+}
+
+fn streets_key(s: Option<&StreetLayer>) -> (usize, usize) {
+    s.map(|s| (s.segments.as_ptr() as usize, s.segments.len()))
+        .unwrap_or((0, 0))
+}
+
+fn project_line(line: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    line.iter().map(|q| Mercator::project(q[0], q[1])).collect()
+}
+
+impl GeomCache {
+    fn build(design: Option<&Design>, streets: Option<&StreetLayer>) -> GeomCache {
+        let mut c = GeomCache {
+            design_key: design_key(design),
+            streets_key: streets_key(streets),
+            streets: Vec::new(),
+            buildings: Vec::new(),
+            cables: Vec::new(),
+            points: Vec::new(),
+            uuid_index: HashMap::new(),
+        };
+        if let Some(s) = streets {
+            for seg in &s.segments {
+                let class = match seg.highway.as_str() {
+                    "primary" | "secondary" | "trunk" | "primary_link" | "secondary_link" => 2,
+                    "tertiary" | "residential" | "living_street" | "unclassified" => 1,
+                    _ => 0,
+                };
+                let pts = project_line(&seg.line);
+                if pts.len() < 2 {
+                    continue;
+                }
+                let bbox = Bbox::of(&pts);
+                c.streets.push(CLine {
+                    pts,
+                    bbox,
+                    class,
+                    idx: usize::MAX,
+                });
+            }
+        }
+        if let Some(d) = design {
+            for (i, e) in d.elements.iter().enumerate() {
+                c.uuid_index.insert(e.element_uuid.clone(), i);
+                let kind = e.kind();
+                if kind == "building" {
+                    let rings: Vec<&Vec<[f64; 2]>> = match &e.geometry {
+                        Geometry::Polygon(r) => r.first().into_iter().collect(),
+                        Geometry::MultiPolygon(m) => m.iter().filter_map(|r| r.first()).collect(),
+                        _ => Vec::new(),
+                    };
+                    for ring in rings {
+                        let pts = project_line(ring);
+                        if pts.len() < 3 {
+                            continue;
+                        }
+                        let bbox = Bbox::of(&pts);
+                        c.buildings.push(CPoly { pts, bbox, idx: i });
+                    }
+                } else if let Some(class) = CABLE_KINDS.iter().position(|k| *k == kind) {
+                    if let Geometry::LineString(line) = &e.geometry {
+                        let pts = project_line(line);
+                        if pts.len() < 2 {
+                            continue;
+                        }
+                        let bbox = Bbox::of(&pts);
+                        c.cables.push(CLine {
+                            pts,
+                            bbox,
+                            class: class as u8,
+                            idx: i,
+                        });
+                    }
+                } else if let Some(kind_idx) = POINT_KINDS.iter().position(|k| *k == kind) {
+                    if let Some(a) = e.geometry.anchor() {
+                        c.points.push(CPoint {
+                            xy: Mercator::project(a[0], a[1]),
+                            kind: kind_idx as u8,
+                            idx: i,
+                        });
+                    }
+                }
+            }
+        }
+        c
+    }
+}
+
 struct Hit {
     dist: f32,
-    uuid: String,
+    idx: usize,
 }
 
 impl TwinView {
@@ -75,15 +242,28 @@ impl TwinView {
         )
     }
 
-    fn ll(&self, rect: Rect, lonlat: [f64; 2]) -> Pos2 {
-        self.to_screen(rect, Mercator::project(lonlat[0], lonlat[1]))
+    fn screen_to_mercator(&self, rect: Rect, pos: Pos2) -> [f64; 2] {
+        let c = rect.center();
+        [
+            self.center[0] + ((pos.x - c.x) as f64) / self.scale,
+            self.center[1] - ((pos.y - c.y) as f64) / self.scale,
+        ]
     }
 
     pub fn screen_to_lonlat(&self, rect: Rect, pos: Pos2) -> (f64, f64) {
-        let c = rect.center();
-        let x = self.center[0] + ((pos.x - c.x) as f64) / self.scale;
-        let y = self.center[1] - ((pos.y - c.y) as f64) / self.scale;
-        Mercator::unproject(x, y)
+        let m = self.screen_to_mercator(rect, pos);
+        Mercator::unproject(m[0], m[1])
+    }
+
+    fn ensure_cache(&mut self, design: Option<&Design>, streets: Option<&StreetLayer>) {
+        let fresh = self
+            .cache
+            .as_ref()
+            .map(|c| c.design_key == design_key(design) && c.streets_key == streets_key(streets))
+            .unwrap_or(false);
+        if !fresh {
+            self.cache = Some(GeomCache::build(design, streets));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -110,6 +290,7 @@ impl TwinView {
             }
             self.fit(&b, rect);
         }
+        self.ensure_cache(design, streets);
 
         if response.dragged() {
             let d = response.drag_delta();
@@ -122,8 +303,7 @@ impl TwinView {
             let factor = (zoom as f64) * (1.0 + scroll as f64 * 0.0015);
             if (factor - 1.0).abs() > 1e-4 {
                 if let Some(pos) = response.hover_pos() {
-                    let (lon, lat) = self.screen_to_lonlat(rect, pos);
-                    let before = Mercator::project(lon, lat);
+                    let before = self.screen_to_mercator(rect, pos);
                     self.zoom_by(factor);
                     let after = self.to_screen(rect, before);
                     self.center[0] += (after.x - pos.x) as f64 / self.scale;
@@ -138,160 +318,200 @@ impl TwinView {
             None
         };
         let probe = click_pos.or(hover_pos);
+
+        // The view in Mercator metres, with a margin so strokes at the edge still draw.
+        let margin = 40.0;
+        let view = {
+            let a = self.screen_to_mercator(rect, rect.left_bottom() + vec2(-margin, margin));
+            let b = self.screen_to_mercator(rect, rect.right_top() + vec2(margin, -margin));
+            Bbox { min: a, max: b }
+        };
+        let scale = self.scale;
+        let centre = self.center;
+        let rc = rect.center();
+        let tf = move |q: &[f64; 2]| -> Pos2 {
+            Pos2::new(
+                rc.x + ((q[0] - centre[0]) * scale) as f32,
+                rc.y - ((q[1] - centre[1]) * scale) as f32,
+            )
+        };
+
+        let cache = self.cache.as_ref().expect("cache built above");
+        let elements: &[Element] = design.map(|d| d.elements.as_slice()).unwrap_or(&[]);
+        let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
+        let selected_set: HashSet<&str> = selection.iter().map(String::as_str).collect();
+        let uuid_of = |idx: usize| elements[idx].element_uuid.as_str();
+        let mut shapes: Vec<Shape> = Vec::with_capacity(4096);
         let mut best: Option<Hit> = None;
-        let mut consider = |dist: f32, tol: f32, uuid: &str| {
+        let mut consider = |dist: f32, tol: f32, idx: usize| {
             if dist <= tol && best.as_ref().map(|b| dist < b.dist).unwrap_or(true) {
-                best = Some(Hit {
-                    dist,
-                    uuid: uuid.to_string(),
-                });
+                best = Some(Hit { dist, idx });
             }
         };
 
+        // Streets: minor streets fade out when zoomed far out.
         if layers.streets {
-            if let Some(s) = streets {
-                for seg in &s.segments {
-                    let pts: Vec<Pos2> = seg.line.iter().map(|q| self.ll(rect, *q)).collect();
-                    let (w, c) = match seg.highway.as_str() {
-                        "primary" | "secondary" | "trunk" => (2.4, p.map_street_major),
-                        "tertiary" | "residential" | "living_street" => (1.4, p.map_street),
-                        _ => (0.8, p.map_street),
-                    };
-                    painter.add(Shape::line(pts, Stroke::new(w, c)));
+            for s in &cache.streets {
+                if !s.bbox.intersects(&view) || (s.class == 0 && scale < 0.2) {
+                    continue;
+                }
+                let (w, c) = match s.class {
+                    2 => (2.4, p.map_street_major),
+                    1 => (1.4, p.map_street),
+                    _ => (0.8, p.map_street),
+                };
+                shapes.push(Shape::line(
+                    s.pts.iter().map(tf).collect(),
+                    Stroke::new(w, c),
+                ));
+            }
+        }
+
+        // Buildings: fills from medium zoom, outlines only when close.
+        if layers.buildings && scale >= 0.25 {
+            let edge = if scale >= 1.2 {
+                Stroke::new(0.6, p.map_building_edge)
+            } else {
+                Stroke::NONE
+            };
+            for b in &cache.buildings {
+                if !b.bbox.intersects(&view) {
+                    continue;
+                }
+                let fill = if changed_set.contains(uuid_of(b.idx)) {
+                    p.red.gamma_multiply(0.3)
+                } else {
+                    p.map_building
+                };
+                let pts: Vec<Pos2> = b.pts.iter().map(tf).collect();
+                shapes.push(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
+                if edge != Stroke::NONE {
+                    shapes.push(Shape::closed_line(pts, edge));
                 }
             }
         }
 
-        if let Some(d) = design {
-            let is_changed = |u: &str| changed.iter().any(|c| c == u);
-            let is_selected = |u: &str| selection.iter().any(|c| c == u);
-            if layers.buildings {
-                for e in d.by_kind("building") {
-                    let fill = if is_changed(&e.element_uuid) {
-                        p.red.gamma_multiply(0.3)
-                    } else {
-                        p.map_building
-                    };
-                    match &e.geometry {
-                        Geometry::Polygon(rings) => {
-                            self.polygon(&painter, rect, rings, fill, p.map_building_edge)
-                        }
-                        Geometry::MultiPolygon(polys) => {
-                            for rings in polys {
-                                self.polygon(&painter, rect, rings, fill, p.map_building_edge);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+        // Cables: drops are the thinnest and the most numerous, so they go first.
+        let cable_on = [layers.drops, layers.distribution, layers.feeder];
+        let cable_w = [0.9f32, 2.2, 3.4];
+        for cls in 0..3u8 {
+            if !cable_on[cls as usize] || (cls == 0 && scale < 0.35) {
+                continue;
             }
-            for (kind, w, on) in [
-                ("drop", 0.9f32, layers.drops),
-                ("distribution", 2.2, layers.distribution),
-                ("feeder", 3.4, layers.feeder),
-            ] {
-                if !on {
+            let w = cable_w[cls as usize];
+            let base = p.kind(CABLE_KINDS[cls as usize]);
+            for c in cache.cables.iter().filter(|c| c.class == cls) {
+                if !c.bbox.intersects(&view) {
                     continue;
                 }
-                for e in d.by_kind(kind) {
-                    if let Geometry::LineString(line) = &e.geometry {
-                        let pts: Vec<Pos2> = line.iter().map(|q| self.ll(rect, *q)).collect();
-                        let c = if is_changed(&e.element_uuid) {
-                            p.red
-                        } else {
-                            p.kind(kind)
-                        };
-                        if is_selected(&e.element_uuid) {
-                            painter.add(Shape::line(
-                                pts.clone(),
-                                Stroke::new(w + 6.0, p.accent.gamma_multiply(0.35)),
-                            ));
-                        }
-                        painter.add(Shape::line(pts.clone(), Stroke::new(w, c)));
-                        if let Some(q) = probe {
-                            consider(polyline_distance(&pts, q), 7.0, &e.element_uuid);
-                        }
-                    }
+                let uuid = uuid_of(c.idx);
+                let pts: Vec<Pos2> = c.pts.iter().map(tf).collect();
+                if selected_set.contains(uuid) {
+                    shapes.push(Shape::line(
+                        pts.clone(),
+                        Stroke::new(w + 6.0, p.accent.gamma_multiply(0.35)),
+                    ));
                 }
+                let color = if changed_set.contains(uuid) {
+                    p.red
+                } else {
+                    base
+                };
+                if let Some(q) = probe {
+                    consider(polyline_distance(&pts, q), 7.0, c.idx);
+                }
+                shapes.push(Shape::line(pts, Stroke::new(w, color)));
             }
-            for (kind, r, on) in [
-                ("home", 2.0f32, layers.homes),
-                ("chamber", 3.0, layers.chambers),
-                ("fat", 5.0, layers.fats),
-                ("fdh", 7.0, layers.fdhs),
-                ("pop", 9.0, true),
-            ] {
-                if !on {
-                    continue;
+        }
+
+        // Equipment and homes.
+        let point_on = [
+            layers.homes,
+            layers.chambers,
+            layers.fats,
+            layers.fdhs,
+            true,
+        ];
+        let radii = [2.0f32, 3.0, 5.0, 7.0, 9.0];
+        let edge = Stroke::new(1.0, p.map_bg);
+        for pt in &cache.points {
+            let k = pt.kind as usize;
+            if !point_on[k] || (k == 0 && scale < 0.15) {
+                continue;
+            }
+            if pt.xy[0] < view.min[0]
+                || pt.xy[0] > view.max[0]
+                || pt.xy[1] < view.min[1]
+                || pt.xy[1] > view.max[1]
+            {
+                continue;
+            }
+            let pos = tf(&pt.xy);
+            let uuid = uuid_of(pt.idx);
+            let r = if k == 0 && scale < 0.5 { 1.2 } else { radii[k] };
+            let c = if changed_set.contains(uuid) {
+                p.red
+            } else {
+                p.kind(POINT_KINDS[k])
+            };
+            if selected_set.contains(uuid) {
+                shapes.push(Shape::circle_filled(
+                    pos,
+                    r + 8.0,
+                    p.accent.gamma_multiply(0.25),
+                ));
+                shapes.push(Shape::circle_stroke(
+                    pos,
+                    r + 5.0,
+                    Stroke::new(1.5, p.accent),
+                ));
+            }
+            match k {
+                2 => shapes.push(Shape::convex_polygon(
+                    vec![
+                        pos + Vec2::new(0.0, -r - 1.0),
+                        pos + Vec2::new(r + 1.0, r),
+                        pos + Vec2::new(-r - 1.0, r),
+                    ],
+                    c,
+                    edge,
+                )),
+                3 => shapes.push(Shape::rect_filled(
+                    Rect::from_center_size(pos, Vec2::splat(r * 2.0)),
+                    2.0,
+                    c,
+                )),
+                1 => shapes.push(Shape::rect_filled(
+                    Rect::from_center_size(pos, Vec2::splat(r * 2.0)),
+                    1.0,
+                    c,
+                )),
+                4 => {
+                    shapes.push(Shape::circle_filled(pos, r, c));
+                    shapes.push(Shape::circle_stroke(pos, r, Stroke::new(2.0, p.map_bg)));
                 }
-                for e in d.by_kind(kind) {
-                    let Some(a) = e.geometry.anchor() else {
-                        continue;
-                    };
-                    let pos = self.ll(rect, a);
-                    if !rect.expand(20.0).contains(pos) {
-                        continue;
-                    }
-                    let c = if is_changed(&e.element_uuid) {
-                        p.red
-                    } else {
-                        p.kind(kind)
-                    };
-                    if is_selected(&e.element_uuid) {
-                        painter.circle_filled(pos, r + 8.0, p.accent.gamma_multiply(0.25));
-                        painter.circle_stroke(pos, r + 5.0, Stroke::new(1.5, p.accent));
-                    }
-                    let edge = Stroke::new(1.0, p.map_bg);
-                    match kind {
-                        "fat" => {
-                            painter.add(Shape::convex_polygon(
-                                vec![
-                                    pos + Vec2::new(0.0, -r - 1.0),
-                                    pos + Vec2::new(r + 1.0, r),
-                                    pos + Vec2::new(-r - 1.0, r),
-                                ],
-                                c,
-                                edge,
-                            ));
-                        }
-                        "fdh" => {
-                            painter.add(Shape::rect_filled(
-                                Rect::from_center_size(pos, Vec2::splat(r * 2.0)),
-                                2.0,
-                                c,
-                            ));
-                        }
-                        "chamber" => {
-                            painter.add(Shape::rect_filled(
-                                Rect::from_center_size(pos, Vec2::splat(r * 2.0)),
-                                1.0,
-                                c,
-                            ));
-                        }
-                        "pop" => {
-                            painter.circle_filled(pos, r, c);
-                            painter.circle_stroke(pos, r, Stroke::new(2.0, p.map_bg));
-                            painter.text(
-                                pos,
-                                Align2::CENTER_CENTER,
-                                "P",
-                                font(10.0, Weight::Semibold),
-                                p.map_bg,
-                            );
-                        }
-                        _ => {
-                            painter.add(Shape::circle_filled(pos, r, c));
-                        }
-                    }
-                    if let Some(q) = probe {
-                        consider(pos.distance(q), r + 6.0, &e.element_uuid);
-                    }
-                }
+                _ => shapes.push(Shape::circle_filled(pos, r, c)),
+            }
+            if let Some(q) = probe {
+                consider(pos.distance(q), r + 6.0, pt.idx);
+            }
+        }
+        painter.extend(shapes);
+        // The POP label needs the font layout, so it is drawn after the batch.
+        for pt in cache.points.iter().filter(|pt| pt.kind == 4) {
+            let pos = tf(&pt.xy);
+            if rect.contains(pos) {
+                painter.text(
+                    pos,
+                    Align2::CENTER_CENTER,
+                    "P",
+                    font(10.0, Weight::Semibold),
+                    p.map_bg,
+                );
             }
         }
 
         self.scale_bar(&painter, rect, p);
-        // floating toolbar
         let mut refit = false;
         let mut zoom: Option<f64> = None;
         egui::Area::new(egui::Id::unique("twin-toolbar"))
@@ -325,16 +545,13 @@ impl TwinView {
         }
         self.layer_list(ui, rect, p, layers, design);
 
+        let hit_uuid = best.map(|h| elements[h.idx].element_uuid.clone());
         let hovered = if click_pos.is_none() {
-            best.as_ref().map(|h| h.uuid.clone())
+            hit_uuid.clone()
         } else {
             None
         };
-        let clicked = if click_pos.is_some() {
-            best.map(|h| h.uuid)
-        } else {
-            None
-        };
+        let clicked = if click_pos.is_some() { hit_uuid } else { None };
         let clicked_empty = click_pos.is_some() && clicked.is_none();
         let cursor = hover_pos.map(|q| self.screen_to_lonlat(rect, q));
         if let (Some(d), Some(h)) = (design, hovered.as_deref()) {
@@ -361,23 +578,6 @@ impl TwinView {
             hovered,
             cursor,
         }
-    }
-
-    fn polygon(
-        &self,
-        painter: &egui::Painter,
-        rect: Rect,
-        rings: &[Vec<[f64; 2]>],
-        fill: Color32,
-        edge: Color32,
-    ) {
-        let Some(outer) = rings.first() else { return };
-        let pts: Vec<Pos2> = outer.iter().map(|q| self.ll(rect, *q)).collect();
-        if pts.iter().all(|q| !rect.expand(50.0).contains(*q)) {
-            return;
-        }
-        painter.add(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
-        painter.add(Shape::closed_line(pts, Stroke::new(0.6, edge)));
     }
 
     fn scale_bar(&self, painter: &egui::Painter, rect: Rect, p: &Palette) {
@@ -458,7 +658,7 @@ impl TwinView {
                         let alpha = if *on { 1.0 } else { 0.35 };
                         let c = match kind {
                             "building" => p.map_building_edge,
-                            "street" => p.map_street_major,
+                            "street" => p.text3,
                             k => p.kind(k),
                         }
                         .gamma_multiply(alpha);
