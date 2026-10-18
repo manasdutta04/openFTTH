@@ -613,7 +613,7 @@ pub fn menu_row_mark(
 
 // ---- crew header --------------------------------------------------------------------------
 
-/// A folk's badge: a filled disc with the initial, a pulsing ring while the folk works.
+/// A crew member's badge: a filled disc with the initial, a pulsing ring while they work.
 pub fn folk_badge(
     ui: &mut Ui,
     p: &Palette,

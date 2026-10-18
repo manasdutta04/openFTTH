@@ -106,7 +106,7 @@ export class FolkMemory {
   }
 
   path(key: string): string {
-    return join(this.dataDir, "folks", key, "MEMORY.md");
+    return join(this.dataDir, "members", key, "MEMORY.md");
   }
 
   read(key: string): string {
@@ -140,7 +140,7 @@ export function systemPrompt(crew: Crew, member: CrewMember, memory: string, eng
     .map((m) => `- @${m.name} (${m.key}): ${m.title}`)
     .join("\n");
   return [
-    `You are ${member.name}, the "${member.title}" folk of the ${crew.name}.`,
+    `You are ${member.name}, the "${member.title}" member of the ${crew.name}.`,
     "",
     member.instructions.trim(),
     "",

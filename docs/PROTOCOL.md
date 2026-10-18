@@ -11,8 +11,8 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
   carries `Authorization: Bearer <token>`. The server listens on `127.0.0.1` only and
   rejects non-loopback `Host`/`Origin` headers.
 - The harness spawns one `openftth-engine serve --project <dir> --port <p>` per open project
-  and registers it as the folks' MCP server `engine = {url: "http://127.0.0.1:<p>/mcp"}`. All
-  four folks connect to that one URL. Risky engine tools validate `approval_id` against
+  and registers it as the crew members' MCP server `engine = {url: "http://127.0.0.1:<p>/mcp"}`. All
+  four crew members connect to that one URL. Risky engine tools validate `approval_id` against
   `GET /api/internal/approvals/:id` (Bearer `OPENFTTH_COMMS_TOKEN`), which the harness passes
   to the engine as `OPENFTTH_APPROVALS_URL`.
 
@@ -22,12 +22,12 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 |---|---|
 | `GET /api/health` | `{ok, version, uptime_s}`; no auth |
 | `GET /api/events?since=<cursor>` | SSE stream, resumable with `Last-Event-ID`; first frame `hello` |
-| `GET /api/crew` | the crew manifest with per-folk state |
+| `GET /api/crew` | the crew manifest with per-member state |
 | `GET /api/rulebooks` | the shipped rulebook presets (name, description, country) |
 | `GET /api/projects` | projects opened before, newest first |
 | `DELETE /api/project?purge=1` | close the project and delete its design, versions, conversation and runtime log (a reset) |
-| `GET /api/engines` | the folk engines (Claude CLI, Codex CLI, Ollama, OpenRouter, OpenAI-compatible): availability, models, which one is active |
-| `POST /api/engine` | `{kind, model?, baseUrl?, apiKey?}` switch the crew's engine; folk sessions restart on the next turn |
+| `GET /api/engines` | the crew member engines (Claude CLI, Codex CLI, Ollama, OpenRouter, OpenAI-compatible): availability, models, which one is active |
+| `POST /api/engine` | `{kind, model?, baseUrl?, apiKey?}` switch the crew's engine; crew member sessions restart on the next turn |
 | `POST /api/project {area_path, osm_path, rulebook}` | create or open a project: starts the engine, creates the room |
 | `GET /api/project` | project meta, stage, head version, engine status |
 | `GET /api/project/versions` | version log (from the engine) |
@@ -75,9 +75,9 @@ replay buffer of 500 frames; a 15 s `ping` keeps the connection alive.
 Risky tools return `{"error": "approval_required" | "approval_unverifiable" | "approval_denied", ...}`
 instead of acting.
 
-## Per-folk tool allow-lists
+## Per-crew member tool allow-lists
 
 The crew manifest carries a `tools` array per member. The harness passes `mcp__engine__<tool>`
-entries as the allowed tools of that folk's engine process and strips file-editing and shell
+entries as the allowed tools of that crew member's engine process and strips file-editing and shell
 tools from Surveyor, Planner and Checker. Risky tools are never listed, so they raise approval
 cards naturally; the engine re-checks the approval id as the last line of defence.

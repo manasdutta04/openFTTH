@@ -1,5 +1,5 @@
 /**
- * Permission proxy: a stdio MCP server the folk's engine process spawns. Its single tool,
+ * Permission proxy: a stdio MCP server a crew member's engine process spawns. Its single tool,
  * `approve`, forwards a permission prompt to the harness and waits for the user's decision.
  *
  * Env: OPENFTTH_HARNESS_URL, OPENFTTH_COMMS_TOKEN, OPENFTTH_FOLK, OPENFTTH_PROJECT.
@@ -19,7 +19,7 @@ const server = new McpServer({ name: "openftth-permissions", version: "0.1.0" })
 server.registerTool(
   "approve",
   {
-    description: "Ask the user to approve a tool call that is not on this folk's allow-list.",
+    description: "Ask the user to approve a tool call that is not on this crew member's allow-list.",
     inputSchema: {
       tool_name: z.string(),
       input: z.record(z.unknown()).optional(),

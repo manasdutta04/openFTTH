@@ -22,7 +22,7 @@ subcontractors, and engineers who want to work an order of magnitude faster.
 | Design store | per-project GeoJSON bundle written canonically (sorted by id, one feature per line, 7-decimal coordinates), sharded by FDH area from Phase 1, versioned with pure-Python git, diffs computed semantically by element id | undo, versions and audit come for free; canonical writes keep large projects workable |
 | Routing | OR-Tools CP-SAT for capacitated placement (cells of ~500 demand points, k-nearest candidates, greedy hint, soft minimum fill, deterministic interleaved search) and NetworkX rooted Steiner trees | zero-install local-first; no spatial database server |
 | Engine ↔ agents | one long-lived engine process per project as a streamable-HTTP MCP server; single-writer commit queue; stdio only for tests | several agents share one engine without concurrent writes |
-| Tool permissions | explicit per-folk allow-lists; risky tools never listed so they raise approval cards; the engine re-validates an `approval_id` before acting | defence in depth against any engine instance running in a permissive mode |
+| Tool permissions | explicit per-member allow-lists; risky tools never listed so they raise approval cards; the engine re-validates an `approval_id` before acting | defence in depth against any engine instance running in a permissive mode |
 
 ## 2. Architecture
 
@@ -33,14 +33,14 @@ subcontractors, and engineers who want to work an order of magnitude faster.
 └──── spawns & owns ──────────────────────┬────────────────────────────────┘
           HTTP + SSE (127.0.0.1:<port>, Bearer OPENFTTH_APP_TOKEN)
 ┌ harness (Node 24) ───────────────────────┴────────────────────────────────┐
-│ crew: Surveyor · Planner · Checker · Drafter (folks in one project room) │
+│ crew: Surveyor · Planner · Checker · Drafter (crew members in one project room) │
 │ engines: claude CLI · codex │ approvals · memory · backstage · routines  │
 └──── MCP (streamable HTTP, one process per project) ┬──────────────────────┘
 ┌ openftth-engine (Python 3.12) ──────────────────────┴──────────────────────┐
 │ ingest · twin · rules · solve · validate · deliver                        │
 └──── reads/writes ───────────────────────┬─────────────────────────────────┘
 ~/.openftth/projects/<id>/  (git repo: design bundle, rulebook.yaml, versions = commits)
-~/.openftth/{config.json, messages.db, folks/<key>/MEMORY.md, models/, py/}
+~/.openftth/{config.json, messages.db, members/<key>/MEMORY.md, models/, py/}
 ```
 
 Hard rule: **the LLM never writes numbers into the design.** Every mutation is a tool call that
@@ -52,11 +52,11 @@ per decision that the Explain stage narrates.
 ```
 openFTTH/
   engine/          Python design engine (uv): interchange, ingest, twin, rules, solve, validate, deliver, MCP server, CLI
-  harness/         Node 24 agent harness: HTTP + SSE server, folks/room/tasks, engine drivers, approvals, memory, backstage
+  harness/         Node 24 agent harness: HTTP + SSE server, crew/room/tasks, engine drivers, approvals, memory, backstage
   desktop/         Cargo workspace: openftth-core, openftth-voice, openftth-render, openftth-client, openftth-ffi, openftth-app
   macos/           SwiftPM package (Phase 4)
   rulebooks/       YAML presets + generated schema.json
-  crews/openftth/  crew manifest + folk instructions
+  crews/openftth/  crew manifest + crew member instructions
   fixtures/gent/   test area
   docs/            PLAN, PROTOCOL, DESIGN-MODEL, RULEBOOK, DEMO
   .github/workflows/
@@ -86,15 +86,15 @@ openFTTH/
 ### 3.2 Harness (`harness/`) — Phase 1
 - Single Node process, no framework: `http` server on 127.0.0.1, Bearer token, loopback checks.
 - SSE `/api/events` with sequence ids, 500-frame replay buffer, `Last-Event-ID` resume, ping.
-- Data model: crew (from the manifest), folks with state and markdown memory, one project room,
+- Data model: crew (from the manifest), crew members with state and markdown memory, one project room,
   tasks (one per user turn) with transcript, approvals and token/cost usage. SQLite via
   `node:sqlite` for messages; atomic JSON for config, project and approvals.
 - Engine drivers behind one interface (`sendTurn`, `interrupt`, `respondToApproval`, events):
   Claude CLI (long-lived process, JSON stream, resume, permission prompts routed to the harness),
-  Codex CLI. Allowed tools per folk from the crew manifest.
+  Codex CLI. Allowed tools per crew member from the crew manifest.
 - Project service: spawns the engine MCP server, proxies versions/diff, tags approved versions,
   exposes `/api/internal/approvals/:id` for the engine.
-- Hand-offs: a folk's reply that mentions `@Teammate` triggers that folk's turn (bounded hops).
+- Hand-offs: a crew member's reply that mentions `@Teammate` triggers that crew member's turn (bounded hops).
 - Backstage: every runtime event appended to NDJSON and streamed.
 - Bundle with esbuild; ship with a Node runtime next to the app.
 

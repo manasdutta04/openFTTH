@@ -782,7 +782,7 @@ pub fn stage_index(stage: &str) -> usize {
     STAGES.iter().position(|s| *s == stage).unwrap_or(0)
 }
 
-/// One folk engine as the harness describes it: what it is and whether it can run here.
+/// One crew engine as the harness describes it: what it is and whether it can run here.
 #[derive(Clone, Debug)]
 pub struct EngineInfo {
     pub kind: String,

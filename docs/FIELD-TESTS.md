@@ -106,32 +106,32 @@ What went wrong, and what changed because of it:
    errors still block, warnings travel to the Drafter and the engineer. The BOQ tab shows them
    as "exceptions to accept". Tests in `test_checks.py`.
 2. **Two hand-offs wasted on version ids.** `check_rules` commits its own version, so the
-   Planner suspected the Checker had validated a different design and the two folks spent two
+   Planner suspected the Checker had validated a different design and the two crew members spent two
    turns (about $0.20) agreeing that nothing was wrong. *Fixed:* the check's result now names the
-   design version it looked at, and both folks' instructions state the rule.
+   design version it looked at, and both crew members' instructions state the rule.
 3. **The hand-off limit (6) was reached** before the Drafter ever spoke; a full design needs
    five hops without any discussion. *Changed:* default limit 10.
 4. The Surveyor spent four calls reading project files with Glob/Read/Grep before importing.
-   Harmless, but a sign the folk did not trust the empty `design_summary`; left as is.
+   Harmless, but a sign the crew member did not trust the empty `design_summary`; left as is.
 
 ### manchester-chorlton, attempts two and three
 
 The first Manchester attempt never imported anything: the Surveyor looked for the area and
 map files in the project folder, did not find them (they live wherever the user keeps them),
-asked the user, and the room then bounced "we are waiting for you" between three folks for
-ten hops, $0.43. Two fixes: every folk's prompt now carries the project's inputs, and the room
-stops a chain when a folk repeats itself.
+asked the user, and the room then bounced "we are waiting for you" between three crew members for
+ten hops, $0.43. Two fixes: every crew member's prompt now carries the project's inputs, and the room
+stops a chain when a crew member repeats itself.
 
 The second attempt exposed the real blocker behind both earlier runs. The Planner, now
 knowing the paths, called `import_osm` itself. That tool is the Surveyor's, so the CLI asked
 for permission, the proxy opened an approval card, and the card waited for an engineer who
 was not there. After five minutes Node's default request timeout cut the connection and the
-folk reported "harness unreachable: fetch failed", twice, 659 s for nothing. The same thing
+crew member reported "harness unreachable: fetch failed", twice, 659 s for nothing. The same thing
 had silently cost the Surveyor's Glob calls earlier. Fixes:
 
 - Only the four risky engine tools open a card. Read-only CLI tools are allowed at once; an
   engine tool that belongs to a teammate is refused with "hand it to @Surveyor"; anything
-  else is refused. No folk can wake the engineer for a step that is not theirs.
+  else is refused. No crew member can wake the engineer for a step that is not theirs.
 - The HTTP server no longer times out a held request, and the proxy waits as long as the
   configured approval timeout (15 min).
 - The project prompt says that only the Surveyor imports.

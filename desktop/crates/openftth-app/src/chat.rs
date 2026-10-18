@@ -86,7 +86,7 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Op
                 ui.add_space(18.0);
                 ui.vertical_centered(|ui| {
                     ui.label(text("No messages yet", 12.5, Weight::Medium, p.text2));
-                    ui.label(text("Planner answers by default. Address a folk with @Surveyor, @Checker or @Drafter.", 11.5, Weight::Regular, p.text3));
+                    ui.label(text("Planner answers by default. Address a crew member with @Surveyor, @Checker or @Drafter.", 11.5, Weight::Regular, p.text3));
                 });
             }
             let messages = st.messages.clone();
@@ -688,7 +688,7 @@ fn engine_chip(ui: &mut Ui, st: &mut AppState) -> Option<ChatAction> {
 
 // ---- @ picker -----------------------------------------------------------------------------
 
-/// Folk names that start with what was typed after the "@".
+/// Crew member names that start with what was typed after the "@".
 fn mention_matches(st: &AppState, partial: &str) -> Vec<String> {
     let needle = partial.to_lowercase();
     st.crew
@@ -728,7 +728,7 @@ fn apply_mention(composer: &mut Composer, name: &str) {
     }
 }
 
-/// The popup above the text field listing the folks that match. Returns a chosen name.
+/// The popup above the text field listing the crew members that match. Returns a chosen name.
 fn mention_picker(
     ui: &mut Ui,
     st: &AppState,
@@ -750,7 +750,7 @@ fn mention_picker(
             widgets::float_frame(&p).show(ui, |ui| {
                 ui.set_width(260.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(widgets::caps("Address a folk", p.text3));
+                ui.label(widgets::caps("Address a crew member", p.text3));
                 ui.add_space(4.0);
                 for (i, name) in matches.iter().enumerate() {
                     let member = st.crew.iter().find(|m| &m.name == name);

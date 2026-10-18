@@ -26,7 +26,7 @@ roadmap. Do not re-open those decisions unless the user asks.
 - `harness/` — Node 24, pnpm. `cd harness && pnpm install && pnpm test && pnpm dev`.
 - `rulebooks/` — YAML presets; `schema.json` is generated from the pydantic model
   (`uv run openftth-engine schema --out ../rulebooks/schema.json`). Never hand-edit it.
-- `crews/openftth/` — crew manifest + folk instructions.
+- `crews/openftth/` — crew manifest + crew member instructions.
 - `fixtures/gent/` — committed small sample only; large downloads go to `fixtures/**/raw/`
   (git-ignored).
 - `desktop/` — Rust workspace (`cargo test --workspace`, `cargo clippy -D warnings`).

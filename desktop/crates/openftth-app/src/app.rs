@@ -322,7 +322,7 @@ project {}",
                         ));
                     }
                     ui.label(text(
-                        "Folks restart on their next turn.",
+                        "The crew restarts on its next turn.",
                         11.0,
                         Weight::Regular,
                         p.text3,

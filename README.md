@@ -28,9 +28,9 @@ for the roadmap and [docs/DEMO.md](docs/DEMO.md) for the current gate demo.
 | Path | What |
 |---|---|
 | `engine/` | Python design engine: ingest, twin, rules, solve, validate, deliver. Exposed to the agents over MCP, and as a headless CLI. |
-| `harness/` | Agent harness: folks, rooms, engines, approvals, memory, backstage; a local HTTP + SSE sidecar. |
+| `harness/` | Agent harness: crew members, rooms, engines, approvals, memory, backstage; a local HTTP + SSE sidecar. |
 | `rulebooks/` | Design rulebooks (YAML) with JSON schema; country presets. |
-| `crews/openftth/` | The four-folk crew definition and each folk's instructions. |
+| `crews/openftth/` | The four-member crew definition and each crew member's instructions. |
 | `fixtures/gent/` | Test area: a Gent suburb from OpenStreetMap. |
 | `desktop/` | Rust workspace: core, voice, renderer, Windows app. |
 | `macos/` | Swift package for the Mac app (later). |

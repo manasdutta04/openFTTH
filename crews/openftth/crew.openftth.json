@@ -3,13 +3,13 @@
   "version": 1,
   "crew": {
     "name": "openFTTH design crew",
-    "description": "Four long-lived agents that design an FTTH network with the openFTTH engine: Surveyor (ingest, twin), Planner (rules, solve), Checker (validate) and Drafter (explain, deliver). The engine's tools make every engineering decision; the folks plan, explain and ask for approvals.",
+    "description": "Four long-lived agents that design an FTTH network with the openFTTH engine: Surveyor (ingest, twin), Planner (rules, solve), Checker (validate) and Drafter (explain, deliver). The engine's tools make every engineering decision; the crew plans, explains and asks for approvals.",
     "members": [
       {
         "key": "surveyor",
         "name": "Surveyor",
         "title": "Ingest, perceive, twin",
-        "instructions": "folks/surveyor.md",
+        "instructions": "members/surveyor.md",
         "tools": [
           "import_osm",
           "build_twin",
@@ -24,7 +24,7 @@
         "key": "planner",
         "name": "Planner",
         "title": "Rules and solve",
-        "instructions": "folks/planner.md",
+        "instructions": "members/planner.md",
         "tools": [
           "get_rulebook",
           "explain_rule",
@@ -53,7 +53,7 @@
         "key": "checker",
         "name": "Checker",
         "title": "Validate",
-        "instructions": "folks/checker.md",
+        "instructions": "members/checker.md",
         "tools": [
           "check_rules",
           "design_summary",
@@ -68,7 +68,7 @@
         "key": "drafter",
         "name": "Drafter",
         "title": "Explain and deliver",
-        "instructions": "folks/drafter.md",
+        "instructions": "members/drafter.md",
         "tools": [
           "explain_element",
           "list_assumptions",
