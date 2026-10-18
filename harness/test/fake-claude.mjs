@@ -1,6 +1,7 @@
 // A stand-in for the Claude Code CLI that speaks its stream-json protocol.
 // Behaviour is driven by the user text:
 //   contains "handoff"   → replies mentioning @Checker
+//   contains "stuck"     → always the same plea to @Planner (a folk waiting on the user)
 //   contains "tool"      → emits a tool_use for mcp__engine__design_summary and a result
 //   contains "crash"     → exits with code 3 mid-turn
 // Everything else echoes the text back.
@@ -31,7 +32,11 @@ rl.on("line", (line) => {
     out({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "mcp__engine__design_summary", input: {} }] }, session_id: sessionId });
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: JSON.stringify({ tool: "design_summary", summary: "3 FATs", version: "abc123def", changes: { added: 1, removed: 0, modified: 0 } }) }] }, session_id: sessionId });
   }
-  const reply = /handoff/i.test(text) ? "Twin is built. @Checker please validate." : `echo: ${text}`;
+  const reply = /stuck/i.test(text)
+    ? "I am stuck: I need the file path. @Planner @Surveyor can either of you send it?"
+    : /handoff/i.test(text)
+      ? "Twin is built. @Checker please validate."
+      : `echo: ${text}`;
   for (const piece of reply.match(/.{1,12}/g) ?? [reply]) {
     out({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: piece } }, session_id: sessionId });
   }

@@ -83,7 +83,7 @@ export function loadConfig(overrides: Partial<HarnessConfig> = {}): HarnessConfi
     engine: overrides.engine ?? engine,
     folkEngine: overrides.folkEngine ?? folkEngine,
     version: VERSION,
-    maxHops: overrides.maxHops ?? Number(fileCfg.maxHops ?? 6),
+    maxHops: overrides.maxHops ?? Number(fileCfg.maxHops ?? 10),
     approvalTimeoutMs: overrides.approvalTimeoutMs ?? Number(fileCfg.approvalTimeoutMs ?? 15 * 60 * 1000),
   };
 }

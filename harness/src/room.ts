@@ -119,12 +119,21 @@ export class Room {
     let folk = mentioned[0] ?? crew.members.find((m) => m.key === crew.room.defaultResponder)!;
     let input = renderTurn(text, context, null);
     const visited: string[] = [];
+    const said = new Map<string, string>();
     for (let hop = 0; hop <= this.d.maxHops; hop += 1) {
       visited.push(folk.key);
       const reply = await this.folkTurn(folk, input);
       if (reply === null) return; // interrupted
       const next = mentions(crew, reply).find((m) => m.key !== folk.key);
       if (!next) return;
+      // A folk saying the same thing twice in one chain is waiting on the user, not working:
+      // passing it around the room again only costs money.
+      const gist = reply.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 240);
+      if (said.get(folk.key) === gist) {
+        this.systemMessage(`${folk.name} is waiting for you; the crew stopped passing the question around (${visited.join(" → ")})`, "handoff");
+        return;
+      }
+      said.set(folk.key, gist);
       if (hop === this.d.maxHops) {
         this.systemMessage(`hand-off limit (${this.d.maxHops}) reached after ${visited.join(" → ")}`, "handoff");
         return;

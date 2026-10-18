@@ -189,6 +189,15 @@ test("purging a project deletes its folder, conversation and runtime log", async
   assert.equal((await body(api("/api/backstage"))).length, 0, "runtime log starts empty");
 });
 
+test("a chain stops when a folk repeats itself instead of looping to the hop limit", async () => {
+  const before = (await body(api("/api/room/messages"))).length;
+  await api("/api/room/messages", { method: "POST", body: JSON.stringify({ text: "@Surveyor you are stuck", wait: true }) });
+  const messages = (await body(api("/api/room/messages"))).slice(before);
+  const stop = messages.filter((m: any) => m.kind === "handoff" && /waiting for you/.test(m.text));
+  assert.equal(stop.length, 1, "the room explains why it stopped");
+  assert.ok(!messages.some((m: any) => /hand-off limit/.test(m.text)), "the hop limit was never needed");
+});
+
 test("engines are listed with availability and can be switched", async () => {
   const listed = await body(api("/api/engines"));
   assert.equal(listed.current.kind, "claude");

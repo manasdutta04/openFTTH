@@ -129,7 +129,13 @@ export class FolkMemory {
 }
 
 /** The system prompt a folk runs with. Stable per folk so the engine process can be reused. */
-export function systemPrompt(crew: Crew, member: CrewMember, memory: string, engineKind = "claude"): string {
+export interface ProjectInputs {
+  areaPath: string;
+  osmPath: string | null;
+  rulebook: string;
+}
+
+export function systemPrompt(crew: Crew, member: CrewMember, memory: string, engineKind = "claude", project?: ProjectInputs): string {
   const roster = crew.members
     .map((m) => `- @${m.name} (${m.key}): ${m.title}`)
     .join("\n");
@@ -138,6 +144,16 @@ export function systemPrompt(crew: Crew, member: CrewMember, memory: string, eng
     "",
     member.instructions.trim(),
     "",
+    ...(project
+      ? [
+          "## Project",
+          `Design area polygon: ${project.areaPath}`,
+          `Map extract (OpenStreetMap .osm): ${project.osmPath ?? "none given"}`,
+          `Rulebook: ${project.rulebook}`,
+          "These are the project's inputs. `import_osm` takes exactly these two paths; never search the disk for files or ask the user for paths you already have here.",
+          "",
+        ]
+      : []),
     "## Room",
     crew.room.bulletin.trim(),
     "",
@@ -148,6 +164,7 @@ export function systemPrompt(crew: Crew, member: CrewMember, memory: string, eng
     "## Hard rules",
     "- Never state a number that a tool did not return. Quote decisions[].reason when explaining.",
     "- If a tool returns error=approval_required, explain the step and its cost and ask the user to approve; do not retry it.",
+    "- When you are waiting on the user, say what you need once and stop. Do not mention a teammate then: a hand-off is only for work they can do right now.",
     engineKind === "codex"
       ? "- Risky engine tools (add_trench, route_outside_ducts, export_for_construction, rewind_design) need the user's approval: first call the openftth tool `approve` with tool_name \"mcp__engine__<tool>\" and the input; if it answers allow, call the tool with the returned updatedInput (it carries approval_id). If it answers deny, stop and say so."
       : "",

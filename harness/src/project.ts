@@ -119,7 +119,7 @@ export class ProjectService {
     });
     this.engine = engine;
 
-    this.createDrivers(id, dir, engine);
+    this.createDrivers(meta, engine);
 
     this.room = new Room({ crew: this.d.crew, bus: this.d.bus, store: this.d.store, memory: this.memory, drivers: this.drivers, projectId: id, maxHops: this.d.cfg.maxHops, log: this.d.log });
     this.meta = meta;
@@ -128,7 +128,8 @@ export class ProjectService {
   }
 
   /** Build one driver per folk on the active engine. */
-  private createDrivers(id: string, dir: string, engine: EngineHandle): void {
+  private createDrivers(meta: ProjectMeta, engine: EngineHandle): void {
+    const { id, dir } = meta;
     const active = this.d.engines.current();
     for (const member of this.d.crew.members) {
       const mcpConfigPath = join(dir, `mcp.${member.key}.json`);
@@ -151,7 +152,7 @@ export class ProjectService {
         folkKey: member.key,
         folkName: member.name,
         projectId: id,
-        systemPrompt: systemPrompt(this.d.crew, member, this.memory.read(member.key), settings.kind),
+        systemPrompt: systemPrompt(this.d.crew, member, this.memory.read(member.key), settings.kind, { areaPath: meta.areaPath, osmPath: meta.osmPath, rulebook: meta.rulebook }),
         allowedTools: member.tools.map((t) => `mcp__engine__${t}`),
         disallowedTools: DISALLOWED_FOR_FOLKS,
         engineTools: member.tools,
@@ -180,7 +181,7 @@ export class ProjectService {
     const old = [...this.drivers.values()];
     this.drivers.clear();
     for (const d of old) await d.dispose();
-    this.createDrivers(this.meta.id, this.meta.dir, this.engine);
+    this.createDrivers(this.meta, this.engine);
     this.room?.rebind();
   }
 
