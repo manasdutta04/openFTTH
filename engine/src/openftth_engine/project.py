@@ -193,7 +193,5 @@ class Project:
         out = []
         for line in p.read_text(encoding="utf-8").splitlines():
             if line.strip():
-                obj = json.loads(line)
-                obj.pop("tool", None)
-                out.append(Decision.model_validate(obj))
+                out.append(Decision.model_validate(json.loads(line)))
         return out

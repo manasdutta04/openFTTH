@@ -32,6 +32,15 @@ def test_set_rule_validates_and_persists(tmp_path):
     assert cascade.data["new"] == [4, 8] and s.rules.cascade_stages() == [4, 8]
 
 
+def test_decisions_round_trip_through_the_log(tmp_path):
+    s = open_session(tmp_path / "p", load_rulebook("generic-gpon"), project_id="decisions-test")
+    set_rule(s, "fat.max_homes", "24")
+    logged = s.project.decisions()
+    assert logged, "set_rule records a decision"
+    assert all(d.tool == "set_rule" for d in logged)
+    assert any(d.source == "user" for d in logged)
+
+
 def test_tree_fibers_are_contiguous_per_subtree():
     #      1 -a-> 2 -b-> 3 (demand 2)
     #        -c-> 4 (demand 3) -d-> 5 (demand 1)
