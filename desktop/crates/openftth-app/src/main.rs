@@ -40,6 +40,8 @@ fn main() -> Result<()> {
             .with_inner_size([1400.0, 800.0])
             .with_min_inner_size([960.0, 600.0])
             .with_maximized(true)
+            .with_decorations(false)
+            .with_icon(icons::app_icon(64))
             .with_title("openFTTH"),
         ..Default::default()
     };

@@ -1,22 +1,33 @@
-//! The window shell: top bar, crew panel, editor tab strip, properties panel, status bar.
+//! The window shell: custom title bar with menus and window controls, crew panel, editor tab
+//! strip, properties panel, status bar. The window has no OS decorations; dragging, resizing
+//! and the window buttons are handled here.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use egui::{pos2, vec2, Frame, Key, Margin, Sense, Stroke, Ui};
+use egui::{
+    pos2, vec2, Align, Align2, CursorIcon, Frame, Id, Key, Layout, Margin, Order, Pos2, Rect,
+    ResizeDirection, Sense, Stroke, Ui, UiBuilder, ViewportCommand,
+};
 use openftth_client::Client;
 
-use crate::chat::{chat_panel, Composer};
+use crate::chat::{
+    chat_panel, Composer, PROMPT_BOQ, PROMPT_DESIGN, PROMPT_SCENARIOS, PROMPT_VALIDATE,
+};
 use crate::icons::{self, Icon};
 use crate::inspector::{inspector, InspectorAction};
 use crate::state::{AppState, Tab};
 use crate::tabs::{backstage_tab, boq_tab, splice_tab, versions_tab, TabState};
-use crate::theme::{self, font, Mode, Weight};
+use crate::theme::{self, font, Mode, Palette, Weight, R};
 use crate::twin::TwinView;
 use crate::welcome::{welcome, OpenForm};
 use crate::widgets::{
-    self, button, dot, icon_button, mono_text, pulse_dot, tag, text, vline, Kind,
+    self, dot, menu_check, menu_item, menu_separator, mono_text, pulse_dot, tag, text,
 };
+
+const TITLE_H: f32 = 34.0;
+const CONTROL_W: f32 = 46.0;
+const EDGE: f32 = 5.0;
 
 pub struct OpenFtthApp {
     st: AppState,
@@ -26,7 +37,8 @@ pub struct OpenFtthApp {
     form: OpenForm,
     mode: Mode,
     applied_mode: Option<Mode>,
-    frames: u8,
+    show_crew: bool,
+    about: bool,
 }
 
 impl OpenFtthApp {
@@ -48,68 +60,460 @@ impl OpenFtthApp {
             form: OpenForm::new(fixture),
             mode: Mode::Dark,
             applied_mode: None,
-            frames: 0,
+            show_crew: true,
+            about: false,
         }
     }
 
-    fn top_bar(&mut self, ui: &mut Ui) {
+    // ---- title bar --------------------------------------------------------------------------
+
+    fn title_bar(&mut self, ui: &mut Ui) {
         let p = self.st.palette;
-        ui.horizontal(|ui| {
-            ui.set_height(24.0);
-            let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-            icons::paint(ui.painter(), r, Icon::Mark, p.accent);
-            ui.label(text("openFTTH", 13.0, Weight::Semibold, p.text));
-            if let Some(pr) = &self.st.project {
-                ui.add_space(6.0);
-                vline(ui, &p, 16.0);
-                ui.add_space(6.0);
-                ui.label(text(file_stem(&pr.area_path), 12.5, Weight::Medium, p.text))
-                    .on_hover_text(format!(
-                        "{}\n{}\nproject {}",
-                        pr.area_path,
-                        pr.osm_path.as_deref().unwrap_or("no map extract"),
-                        pr.id
-                    ));
-                ui.label(text(&pr.rulebook, 12.0, Weight::Regular, p.text2));
-                if let Some(stage) = &self.st.stage {
-                    tag(ui, stage, p.text2, p.bg3);
+        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+        let (bar, bar_resp) =
+            ui.allocate_exact_size(vec2(ui.available_width(), TITLE_H), Sense::click_and_drag());
+        if bar_resp.double_clicked() {
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+        } else if bar_resp.drag_started_by(egui::PointerButton::Primary) {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+
+        // Centre: the project, like an editor's command centre.
+        let centre_w = (bar.width() * 0.34).clamp(240.0, 520.0);
+        let centre = Rect::from_center_size(bar.center(), vec2(centre_w, 24.0));
+        self.command_centre(ui, centre);
+
+        // Left: app mark and menus.
+        let mut left = ui.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    bar.min,
+                    pos2(centre.left() - 8.0, bar.max.y),
+                ))
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        {
+            let v = left.visuals_mut();
+            v.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+            v.widgets.inactive.bg_stroke = Stroke::NONE;
+            v.widgets.hovered.bg_stroke = Stroke::NONE;
+            v.widgets.open.bg_stroke = Stroke::NONE;
+            v.widgets.active.bg_stroke = Stroke::NONE;
+            left.spacing_mut().button_padding = vec2(8.0, 5.0);
+            left.spacing_mut().item_spacing.x = 0.0;
+        }
+        left.add_space(10.0);
+        let (mark, _) = left.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+        icons::paint_mark(left.painter(), mark, p.accent, egui::Color32::WHITE);
+        left.add_space(8.0);
+        self.menus(&mut left);
+
+        // Right: connection, window controls.
+        let mut right = ui.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    pos2(centre.right() + 8.0, bar.min.y),
+                    bar.max,
+                ))
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        right.spacing_mut().item_spacing.x = 0.0;
+        self.window_control(&mut right, Icon::Close, "Close", true);
+        self.window_control(
+            &mut right,
+            if maximized {
+                Icon::Restore
+            } else {
+                Icon::Maximize
+            },
+            if maximized { "Restore" } else { "Maximize" },
+            false,
+        );
+        self.window_control(&mut right, Icon::Minus, "Minimize", false);
+        right.add_space(14.0);
+        if self.st.connected {
+            right.label(text("connected", 11.0, Weight::Regular, p.text3));
+            right.add_space(5.0);
+            dot(&mut right, p.green, 3.5);
+        } else {
+            right.label(text("reconnecting", 11.0, Weight::Regular, p.red));
+            right.add_space(5.0);
+            pulse_dot(&mut right, p.red, 3.5);
+        }
+    }
+
+    fn command_centre(&self, ui: &mut Ui, rect: Rect) {
+        let p = self.st.palette;
+        let painter = ui.painter().clone();
+        painter.rect(
+            rect,
+            R as f32,
+            p.bg2,
+            Stroke::new(1.0, p.line),
+            egui::StrokeKind::Inside,
+        );
+        let resp = ui.interact(rect, Id::unique("command-centre"), Sense::hover());
+        match &self.st.project {
+            Some(pr) => {
+                let name = file_stem(&pr.area_path);
+                let label = format!("{name}  ·  {}", pr.rulebook);
+                let galley = painter.layout_no_wrap(label, font(12.0, Weight::Medium), p.text);
+                let stage = self.st.stage.as_ref().map(|s| {
+                    painter.layout_no_wrap(s.clone(), font(11.0, Weight::Regular), p.text2)
+                });
+                let stage_w = stage
+                    .as_ref()
+                    .map(|g| g.size().x + 12.0 + 8.0)
+                    .unwrap_or(0.0);
+                let total = galley.size().x + stage_w;
+                let x = rect.center().x - total / 2.0;
+                painter.galley(
+                    pos2(x, rect.center().y - galley.size().y / 2.0),
+                    galley,
+                    p.text,
+                );
+                if let Some(sg) = stage {
+                    let sr = Rect::from_min_size(
+                        pos2(
+                            x + total - stage_w + 8.0,
+                            rect.center().y - sg.size().y / 2.0 - 2.0,
+                        ),
+                        sg.size() + vec2(12.0, 4.0),
+                    );
+                    painter.rect_filled(sr, 3.0, p.bg3);
+                    painter.galley(sr.min + vec2(6.0, 2.0), sg, p.text2);
+                }
+                resp.on_hover_text(format!(
+                    "{}\n{}\nproject {}",
+                    pr.area_path,
+                    pr.osm_path.as_deref().unwrap_or("no map extract"),
+                    pr.id
+                ));
+            }
+            None => {
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    "openFTTH",
+                    font(12.0, Weight::Medium),
+                    p.text2,
+                );
+            }
+        }
+    }
+
+    fn window_control(&mut self, ui: &mut Ui, icon: Icon, tip: &str, danger: bool) {
+        let p = self.st.palette;
+        let (rect, resp) = ui.allocate_exact_size(vec2(CONTROL_W, TITLE_H), Sense::click());
+        let hovered = resp.hovered();
+        if hovered {
+            ui.painter()
+                .rect_filled(rect, 0.0, if danger { p.red } else { p.bg3 });
+        }
+        let color = if hovered && danger {
+            egui::Color32::WHITE
+        } else {
+            p.text2
+        };
+        icons::paint(
+            ui.painter(),
+            icons::square(rect.center(), 10.0),
+            icon,
+            color,
+        );
+        if resp
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            let cmd = match icon {
+                Icon::Close => ViewportCommand::Close,
+                Icon::Minus => ViewportCommand::Minimized(true),
+                Icon::Maximize => ViewportCommand::Maximized(true),
+                _ => ViewportCommand::Maximized(false),
+            };
+            ui.ctx().send_viewport_cmd(cmd);
+        }
+    }
+
+    fn menu_title(label: &str, p: &Palette) -> egui::RichText {
+        text(label, 12.5, Weight::Regular, p.text)
+    }
+
+    fn menus(&mut self, ui: &mut Ui) {
+        let p = self.st.palette;
+        let open = self.st.project.is_some();
+        let busy = self.st.busy();
+        let has_selection = !self.st.selection.is_empty();
+
+        ui.menu_button(Self::menu_title("File", &p), |ui| {
+            widgets::menu_begin(ui, 260.0);
+            if menu_item(ui, &p, "New project", None, true) {
+                self.st.close_project();
+            }
+            ui.menu_button(Self::menu_title("Open recent", &p), |ui| {
+                widgets::menu_begin(ui, 260.0);
+                let recents = self.st.recents.clone();
+                if recents.is_empty() {
+                    menu_item(ui, &p, "No recent projects", None, false);
+                }
+                for r in recents.iter().take(10) {
+                    let label = format!("{}  ·  {}", file_stem(&r.area_path), r.rulebook);
+                    if menu_item(ui, &p, &label, None, true) {
+                        self.st
+                            .open_project(&r.area_path, r.osm_path.as_deref(), &r.rulebook);
+                    }
+                }
+            })
+            .response
+            .on_hover_cursor(CursorIcon::PointingHand);
+            menu_separator(ui, &p);
+            if menu_item(ui, &p, "Reveal project folder", None, open) {
+                if let Some(pr) = &self.st.project {
+                    reveal(&pr.dir.display().to_string());
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icon_button(
-                    ui,
-                    &p,
-                    if self.mode == Mode::Dark {
-                        Icon::Sun
-                    } else {
-                        Icon::Moon
-                    },
-                    "Theme",
-                )
-                .clicked()
-                {
-                    self.mode = if self.mode == Mode::Dark {
-                        Mode::Light
-                    } else {
-                        Mode::Dark
-                    };
+            if menu_item(ui, &p, "Close project", None, open) {
+                self.st.close_project();
+            }
+            menu_separator(ui, &p);
+            if menu_item(ui, &p, "Exit", Some("Alt+F4"), true) {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+            }
+        })
+        .response
+        .on_hover_cursor(CursorIcon::PointingHand);
+
+        ui.menu_button(Self::menu_title("Edit", &p), |ui| {
+            widgets::menu_begin(ui, 260.0);
+            if menu_item(ui, &p, "Copy selected ids", Some("Ctrl+C"), has_selection) {
+                ui.ctx().copy_text(self.st.selection.join("\n"));
+            }
+            if menu_item(ui, &p, "Clear selection", Some("Esc"), has_selection) {
+                self.st.selection.clear();
+            }
+            if menu_item(
+                ui,
+                &p,
+                "Clear change highlight",
+                None,
+                !self.st.changed.is_empty(),
+            ) {
+                self.st.changed.clear();
+            }
+        })
+        .response
+        .on_hover_cursor(CursorIcon::PointingHand);
+
+        ui.menu_button(Self::menu_title("View", &p), |ui| {
+            widgets::menu_begin(ui, 260.0);
+            for (i, tab) in Tab::ALL.iter().enumerate() {
+                if menu_item(ui, &p, tab.label(), Some(&format!("Ctrl+{}", i + 1)), open) {
+                    self.st.tab = *tab;
+                    if *tab == Tab::Backstage {
+                        self.st.refresh_backstage();
+                    }
                 }
-                if self.st.project.is_some()
-                    && button(ui, &p, "Close project", Kind::Ghost).clicked()
-                {
-                    self.st.close_project();
+            }
+            menu_separator(ui, &p);
+            if menu_item(ui, &p, "Fit design", Some("F"), open) {
+                self.st.tab = Tab::Twin;
+                self.twin.refit();
+            }
+            ui.menu_button(Self::menu_title("Layers", &p), |ui| {
+                widgets::menu_begin(ui, 200.0);
+                let l = &mut self.st.layers;
+                for (label, on) in [
+                    ("Feeder", &mut l.feeder),
+                    ("Distribution", &mut l.distribution),
+                    ("Drops", &mut l.drops),
+                    ("FDH cabinets", &mut l.fdhs),
+                    ("FATs", &mut l.fats),
+                    ("Chambers", &mut l.chambers),
+                    ("Homes", &mut l.homes),
+                    ("Buildings", &mut l.buildings),
+                    ("Streets", &mut l.streets),
+                ] {
+                    menu_check(ui, &p, label, on);
                 }
+            })
+            .response
+            .on_hover_cursor(CursorIcon::PointingHand);
+            menu_separator(ui, &p);
+            let mut crew = self.show_crew;
+            if menu_check(ui, &p, "Crew panel", &mut crew) {
+                self.show_crew = crew;
+            }
+            menu_separator(ui, &p);
+            ui.menu_button(Self::menu_title("Theme", &p), |ui| {
+                widgets::menu_begin(ui, 180.0);
+                let mut dark = self.mode == Mode::Dark;
+                let mut light = !dark;
+                if menu_check(ui, &p, "Dark", &mut dark) {
+                    self.mode = Mode::Dark;
+                }
+                if menu_check(ui, &p, "Light", &mut light) {
+                    self.mode = Mode::Light;
+                }
+            })
+            .response
+            .on_hover_cursor(CursorIcon::PointingHand);
+        })
+        .response
+        .on_hover_cursor(CursorIcon::PointingHand);
+
+        ui.menu_button(Self::menu_title("Crew", &p), |ui| {
+            widgets::menu_begin(ui, 260.0);
+            let can = open && !busy;
+            if menu_item(ui, &p, "Design this area", None, can) {
+                self.st.send(PROMPT_DESIGN);
+            }
+            if menu_item(ui, &p, "Validate the design", None, can) {
+                self.st.send(PROMPT_VALIDATE);
+            }
+            if menu_item(ui, &p, "Generate scenarios", None, can) {
+                self.st.send(PROMPT_SCENARIOS);
+            }
+            if menu_item(ui, &p, "Bill of quantities", None, can) {
+                self.st.send(PROMPT_BOQ);
+            }
+            menu_separator(ui, &p);
+            if menu_item(ui, &p, "Stop the current turn", None, busy) {
+                self.st.interrupt();
+            }
+        })
+        .response
+        .on_hover_cursor(CursorIcon::PointingHand);
+
+        ui.menu_button(Self::menu_title("Help", &p), |ui| {
+            widgets::menu_begin(ui, 220.0);
+            if menu_item(ui, &p, "Keyboard shortcuts", None, true) {
+                self.st.toasts.info(
+                    "Ctrl+1…5 tabs · F fit design · Esc clear selection · Enter send · Shift+Enter new line",
+                );
+            }
+            if menu_item(ui, &p, "About openFTTH", None, true) {
+                self.about = true;
+            }
+        })
+        .response
+        .on_hover_cursor(CursorIcon::PointingHand);
+    }
+
+    fn about_window(&mut self, ctx: &egui::Context) {
+        if !self.about {
+            return;
+        }
+        let p = self.st.palette;
+        let mut open = true;
+        egui::Window::new("About openFTTH")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(320.0);
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
+                    icons::paint_mark(ui.painter(), r, p.accent, egui::Color32::WHITE);
+                    ui.vertical(|ui| {
+                        ui.label(text("openFTTH", 15.0, Weight::Semibold, p.text));
+                        ui.label(text(
+                            format!("version {}", env!("CARGO_PKG_VERSION")),
+                            11.5,
+                            Weight::Regular,
+                            p.text3,
+                        ));
+                    });
+                });
+                ui.add_space(6.0);
+                ui.label(text(
+                    "Fibre access network design with a crew of agents and deterministic solvers. The crew never writes numbers into the design; solvers do, and record why.",
+                    12.0,
+                    Weight::Regular,
+                    p.text2,
+                ));
                 ui.add_space(4.0);
-                if self.st.connected {
-                    ui.label(text("connected", 11.0, Weight::Regular, p.text3));
-                    dot(ui, p.green, 3.5);
-                } else {
-                    ui.label(text("reconnecting", 11.0, Weight::Regular, p.red));
-                    pulse_dot(ui, p.red, 3.5);
+                ui.label(text("MIT licence.", 11.5, Weight::Regular, p.text3));
+            });
+        self.about = open;
+    }
+
+    /// Thin zones along the window edge that start an OS resize (the window has no frame).
+    fn resize_zones(&self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+            return;
+        }
+        let r = ctx.viewport_rect();
+        let (l, t, rt, b) = (r.left(), r.top(), r.right(), r.bottom());
+        let zones: [(&str, Rect, ResizeDirection, CursorIcon); 8] = [
+            (
+                "n",
+                Rect::from_min_max(pos2(l + EDGE, t), pos2(rt - EDGE, t + EDGE)),
+                ResizeDirection::North,
+                CursorIcon::ResizeNorth,
+            ),
+            (
+                "s",
+                Rect::from_min_max(pos2(l + EDGE, b - EDGE), pos2(rt - EDGE, b)),
+                ResizeDirection::South,
+                CursorIcon::ResizeSouth,
+            ),
+            (
+                "w",
+                Rect::from_min_max(pos2(l, t + EDGE), pos2(l + EDGE, b - EDGE)),
+                ResizeDirection::West,
+                CursorIcon::ResizeWest,
+            ),
+            (
+                "e",
+                Rect::from_min_max(pos2(rt - EDGE, t + EDGE), pos2(rt, b - EDGE)),
+                ResizeDirection::East,
+                CursorIcon::ResizeEast,
+            ),
+            (
+                "nw",
+                Rect::from_min_size(r.min, vec2(EDGE, EDGE)),
+                ResizeDirection::NorthWest,
+                CursorIcon::ResizeNwSe,
+            ),
+            (
+                "ne",
+                Rect::from_min_size(pos2(rt - EDGE, t), vec2(EDGE, EDGE)),
+                ResizeDirection::NorthEast,
+                CursorIcon::ResizeNeSw,
+            ),
+            (
+                "sw",
+                Rect::from_min_size(pos2(l, b - EDGE), vec2(EDGE, EDGE)),
+                ResizeDirection::SouthWest,
+                CursorIcon::ResizeNeSw,
+            ),
+            (
+                "se",
+                Rect::from_min_size(pos2(rt - EDGE, b - EDGE), vec2(EDGE, EDGE)),
+                ResizeDirection::SouthEast,
+                CursorIcon::ResizeNwSe,
+            ),
+        ];
+        egui::Area::new(Id::unique("resize-zones"))
+            .order(Order::Foreground)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                for (name, rect, dir, cursor) in zones {
+                    let resp = ui.interact(rect, Id::unique(("resize", name)), Sense::drag());
+                    if resp.hovered() || resp.dragged() {
+                        ctx.set_cursor_icon(cursor);
+                    }
+                    if resp.drag_started() {
+                        ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+                    }
                 }
             });
-        });
     }
+
+    // ---- body -------------------------------------------------------------------------------
 
     fn status_bar(&self, ui: &mut Ui) {
         let p = self.st.palette;
@@ -127,7 +531,7 @@ impl OpenFtthApp {
                     p.text2,
                 ));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if let Some(v) = self.st.versions.first() {
                     ui.label(mono_text(
                         format!(
@@ -158,30 +562,68 @@ impl OpenFtthApp {
             ui.add_space(6.0);
             for tab in Tab::ALL {
                 let active = self.st.tab == tab;
-                let galley = ui.painter().layout_no_wrap(tab.label().to_string(), font(12.5, if active { Weight::Medium } else { Weight::Regular }), if active { p.text } else { p.text2 });
-                let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 24.0, 30.0), Sense::click());
-                let color = if active || resp.hovered() { p.text } else { p.text2 };
-                ui.painter().galley(pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0), galley, color);
+                let galley = ui.painter().layout_no_wrap(
+                    tab.label().to_string(),
+                    font(
+                        12.5,
+                        if active {
+                            Weight::Medium
+                        } else {
+                            Weight::Regular
+                        },
+                    ),
+                    p.text,
+                );
+                let (rect, resp) =
+                    ui.allocate_exact_size(vec2(galley.size().x + 24.0, 30.0), Sense::click());
+                let color = if active || resp.hovered() {
+                    p.text
+                } else {
+                    p.text2
+                };
+                ui.painter().galley(
+                    pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0),
+                    galley,
+                    color,
+                );
                 if active {
-                    ui.painter().rect_filled(egui::Rect::from_min_max(pos2(rect.left() + 8.0, rect.bottom() - 2.0), pos2(rect.right() - 8.0, rect.bottom())), 1.0, p.accent);
+                    ui.painter().rect_filled(
+                        Rect::from_min_max(
+                            pos2(rect.left() + 8.0, rect.bottom() - 2.0),
+                            pos2(rect.right() - 8.0, rect.bottom()),
+                        ),
+                        1.0,
+                        p.accent,
+                    );
                 }
-                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                     self.st.tab = tab;
                     if tab == Tab::Backstage {
                         self.st.refresh_backstage();
                     }
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(10.0);
                 if !self.st.changed.is_empty() {
-                    let r = tag(ui, &format!("{} changed", self.st.changed.len()), p.red, p.red.gamma_multiply(0.18));
-                    r.on_hover_text("Elements changed in the latest version are drawn in red. Versions → Clear.");
+                    let r = tag(
+                        ui,
+                        &format!("{} changed", self.st.changed.len()),
+                        p.red,
+                        p.red.gamma_multiply(0.18),
+                    );
+                    r.on_hover_text(
+                        "Elements changed in the latest version are drawn in red. Edit → Clear change highlight.",
+                    );
                 }
                 if self.st.tab == Tab::Twin {
                     if let Some(d) = &self.st.design {
                         let c = d.counts();
-                        let line = [("home", "homes"), ("fat", "FATs"), ("fdh", "FDHs")].iter().filter_map(|(k, l)| c.get(*k).map(|n| format!("{n} {l}"))).collect::<Vec<_>>().join("  ·  ");
+                        let line = [("home", "homes"), ("fat", "FATs"), ("fdh", "FDHs")]
+                            .iter()
+                            .filter_map(|(k, l)| c.get(*k).map(|n| format!("{n} {l}")))
+                            .collect::<Vec<_>>()
+                            .join("  ·  ");
                         ui.label(text(line, 11.0, Weight::Regular, p.text3));
                     }
                 }
@@ -192,7 +634,6 @@ impl OpenFtthApp {
 
     fn workspace(&mut self, ui: &mut Ui) {
         self.tab_strip(ui);
-        let p = self.st.palette;
         match self.st.tab {
             Tab::Twin => {
                 let st = &mut self.st;
@@ -223,17 +664,17 @@ impl OpenFtthApp {
                         Tab::Backstage => backstage_tab(ui, &mut self.st, &mut self.tabs),
                         Tab::Twin => {}
                     });
-                let _ = p;
             }
         }
     }
 
     fn shortcuts(&mut self, ui: &Ui) {
         let typing = ui.ctx().egui_wants_keyboard_input();
-        let (esc, ctrl, n1, n2, n3, n4, n5, f) = ui.input(|i| {
+        let (esc, ctrl, c, n1, n2, n3, n4, n5, f) = ui.input(|i| {
             (
                 i.key_pressed(Key::Escape),
                 i.modifiers.ctrl,
+                i.key_pressed(Key::C),
                 i.key_pressed(Key::Num1),
                 i.key_pressed(Key::Num2),
                 i.key_pressed(Key::Num3),
@@ -257,6 +698,9 @@ impl OpenFtthApp {
                     self.st.tab = tab;
                 }
             }
+            if c && !typing && !self.st.selection.is_empty() {
+                ui.ctx().copy_text(self.st.selection.join("\n"));
+            }
         }
         if f && !typing {
             self.twin.refit();
@@ -271,27 +715,15 @@ impl eframe::App for OpenFtthApp {
             theme::apply(ui.ctx(), &self.st.palette);
             self.applied_mode = Some(self.mode);
         }
-        if self.frames < 3 {
-            self.frames += 1;
-            if self.frames == 2 {
-                ui.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-            }
-        }
         self.st.drain_frames();
         self.shortcuts(ui);
         let p = self.st.palette;
 
-        egui::Panel::top("top")
+        egui::Panel::top("title")
             .resizable(false)
             .show_separator_line(false)
-            .frame(
-                Frame::new()
-                    .fill(p.bg0)
-                    .inner_margin(Margin::symmetric(10, 6))
-                    .stroke(Stroke::NONE),
-            )
-            .show(ui, |ui| self.top_bar(ui));
+            .frame(Frame::new().fill(p.bg0).inner_margin(Margin::ZERO))
+            .show(ui, |ui| self.title_bar(ui));
         egui::Panel::bottom("status")
             .resizable(false)
             .show_separator_line(false)
@@ -307,15 +739,17 @@ impl eframe::App for OpenFtthApp {
                 .frame(Frame::new().fill(p.bg1))
                 .show(ui, |ui| welcome(ui, &mut self.st, &mut self.form));
         } else {
-            egui::Panel::left("crew")
-                .resizable(true)
-                .default_size(380.0)
-                .min_size(320.0)
-                .show_separator_line(true)
-                .frame(Frame::new().fill(p.bg1).inner_margin(Margin::ZERO))
-                .show(ui, |ui| {
-                    chat_panel(ui, &mut self.st, &mut self.composer);
-                });
+            if self.show_crew {
+                egui::Panel::left("crew")
+                    .resizable(true)
+                    .default_size(380.0)
+                    .min_size(320.0)
+                    .show_separator_line(true)
+                    .frame(Frame::new().fill(p.bg1).inner_margin(Margin::ZERO))
+                    .show(ui, |ui| {
+                        chat_panel(ui, &mut self.st, &mut self.composer);
+                    });
+            }
             if !self.st.selection.is_empty() {
                 egui::Panel::right("properties")
                     .resizable(true)
@@ -339,13 +773,40 @@ impl eframe::App for OpenFtthApp {
                 .show(ui, |ui| self.workspace(ui));
         }
 
+        self.about_window(ui.ctx());
         self.st.toasts.show(ui.ctx(), &p);
+        self.resize_zones(ui.ctx());
+        // A hairline around the frameless window so it reads as a window over other apps.
+        if !ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
+            ui.ctx()
+                .layer_painter(egui::LayerId::new(
+                    Order::Foreground,
+                    Id::unique("window-edge"),
+                ))
+                .rect_stroke(
+                    ui.ctx().viewport_rect().shrink(0.5),
+                    0.0,
+                    Stroke::new(1.0, p.line_strong),
+                    egui::StrokeKind::Inside,
+                );
+        }
         ui.ctx()
             .request_repaint_after(Duration::from_millis(if self.st.busy() {
                 100
             } else {
                 300
             }));
+    }
+}
+
+fn reveal(dir: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = dir;
     }
 }
 

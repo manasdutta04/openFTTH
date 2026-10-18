@@ -348,8 +348,12 @@ impl TwinView {
                 });
             }
         }
-        if hovered.is_some() {
+        if response.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        } else if hovered.is_some() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        } else if response.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
         }
         TwinResponse {
             clicked,

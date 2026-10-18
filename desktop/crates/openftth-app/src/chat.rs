@@ -11,6 +11,11 @@ use crate::widgets::{
     panel_header, pulse_dot, segments, tag, text, Kind,
 };
 
+pub const PROMPT_DESIGN: &str = "Design this area with the current rulebook: import the data, build the twin, place POP, FDHs and FATs, route everything, validate and give me the BOQ.";
+pub const PROMPT_VALIDATE: &str = "@Checker validate the current design and list any violations.";
+pub const PROMPT_SCENARIOS: &str = "Generate design scenarios and show me the cost table.";
+pub const PROMPT_BOQ: &str = "@Drafter give me the bill of quantities and the splice schedule.";
+
 #[derive(Default)]
 pub struct Composer {
     pub text: String,
@@ -330,20 +335,24 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) {
     let mut quick: Option<String> = None;
     ui.horizontal_wrapped(|ui| {
         if open {
-            let designed = st.design.as_ref().map(|d| d.by_kind("fat").next().is_some()).unwrap_or(false);
+            let designed = st
+                .design
+                .as_ref()
+                .map(|d| d.by_kind("fat").next().is_some())
+                .unwrap_or(false);
             if !designed {
                 if button(ui, &p, "Design this area", Kind::Quiet).clicked() {
-                    quick = Some("Design this area with the current rulebook: import the data, build the twin, place POP, FDHs and FATs, route everything, validate and give me the BOQ.".into());
+                    quick = Some(PROMPT_DESIGN.into());
                 }
             } else {
                 if button(ui, &p, "Validate", Kind::Quiet).clicked() {
-                    quick = Some("@Checker validate the current design and list any violations.".into());
+                    quick = Some(PROMPT_VALIDATE.into());
                 }
                 if button(ui, &p, "Scenarios", Kind::Quiet).clicked() {
-                    quick = Some("Generate design scenarios and show me the cost table.".into());
+                    quick = Some(PROMPT_SCENARIOS.into());
                 }
                 if button(ui, &p, "BOQ", Kind::Quiet).clicked() {
-                    quick = Some("@Drafter give me the bill of quantities and the splice schedule.".into());
+                    quick = Some(PROMPT_BOQ.into());
                 }
             }
             if !st.selection.is_empty() && button(ui, &p, "Why here?", Kind::Quiet).clicked() {

@@ -36,15 +36,6 @@ pub fn hairline(ui: &mut Ui, p: &Palette) {
     );
 }
 
-pub fn vline(ui: &mut Ui, p: &Palette, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(1.0, height), Sense::hover());
-    ui.painter().vline(
-        rect.center().x,
-        rect.top()..=rect.bottom(),
-        Stroke::new(1.0, p.line),
-    );
-}
-
 /// Panel header strip: caps title on the left, anything on the right, hairline below.
 pub fn panel_header(ui: &mut Ui, p: &Palette, title: &str, right: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
@@ -446,4 +437,94 @@ impl Toasts {
             });
         ctx.request_repaint_after(Duration::from_millis(400));
     }
+}
+
+// ---- menus --------------------------------------------------------------------------------
+
+/// Call first inside a menu closure: fixes the width and the spacing the popup inherited.
+pub fn menu_begin(ui: &mut Ui, width: f32) {
+    ui.set_min_width(width);
+    ui.set_max_width(width);
+    ui.spacing_mut().button_padding = egui::vec2(10.0, 4.0);
+    ui.spacing_mut().item_spacing = egui::vec2(6.0, 2.0);
+}
+
+/// One row in a menu: label left, shortcut right. Closes the menu when clicked.
+pub fn menu_item(
+    ui: &mut Ui,
+    p: &Palette,
+    label: &str,
+    shortcut: Option<&str>,
+    enabled: bool,
+) -> bool {
+    let w = ui.available_width().clamp(180.0, 360.0);
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(w, 24.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(rect, R as f32, p.accent_soft);
+    }
+    let color = if enabled { p.text } else { p.text3 };
+    ui.painter().text(
+        egui::pos2(rect.left() + 10.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font(12.5, Weight::Regular),
+        color,
+    );
+    if let Some(s) = shortcut {
+        ui.painter().text(
+            egui::pos2(rect.right() - 10.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            s,
+            font(11.5, Weight::Regular),
+            p.text3,
+        );
+    }
+    let clicked = enabled && resp.on_hover_cursor(CursorIcon::PointingHand).clicked();
+    if clicked {
+        ui.close();
+    }
+    clicked
+}
+
+/// A toggle row with a check mark; stays open so several can be flipped. Returns true on change.
+pub fn menu_check(ui: &mut Ui, p: &Palette, label: &str, on: &mut bool) -> bool {
+    let w = ui.available_width().clamp(160.0, 360.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, R as f32, p.accent_soft);
+    }
+    if *on {
+        icons::paint(
+            ui.painter(),
+            icons::square(egui::pos2(rect.left() + 14.0, rect.center().y), 12.0),
+            Icon::Check,
+            p.text,
+        );
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + 28.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font(12.5, Weight::Regular),
+        p.text,
+    );
+    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        *on = !*on;
+        return true;
+    }
+    false
+}
+
+pub fn menu_separator(ui: &mut Ui, p: &Palette) {
+    let (r, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 7.0), egui::Sense::hover());
+    ui.painter()
+        .hline(r.x_range(), r.center().y, egui::Stroke::new(1.0, p.line));
 }
