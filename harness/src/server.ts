@@ -5,7 +5,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { HarnessConfig } from "./config.ts";
-import type { Approvals } from "./approvals.ts";
+import { RISKY_ENGINE_TOOLS, type Approvals } from "./approvals.ts";
 import type { Engines } from "./engines.ts";
 import { listRulebooks, type Crew } from "./crew.ts";
 import { findRepoRoot } from "./config.ts";
@@ -156,13 +156,32 @@ export function buildServer(d: ServerDeps): Server {
   add("POST", "/api/internal/permission", async (req, res) => {
     const body = await readJson(req);
     const tool = String(body.tool ?? "?");
+    const folk = String(body.folk ?? "?");
     if (DISALLOWED_FOR_FOLKS.includes(tool)) {
       // Defence in depth: the folk engine is started with these tools disabled, and even if a
       // prompt for one reaches us it is refused without opening a card.
       json(res, 200, { behavior: "deny", message: `${tool} is not available to the crew. Use the engine tools.` });
       return;
     }
-    const decision = await d.approvals.request({ project: String(body.project ?? d.projects.current?.id ?? "?"), folk: String(body.folk ?? "?"), tool: String(body.tool ?? "?"), input: (body.input ?? {}) as Record<string, unknown> });
+    if (READ_ONLY_BUILTINS.has(tool)) {
+      // Looking at files in the project folder never needs the engineer.
+      json(res, 200, { behavior: "allow" });
+      return;
+    }
+    const engineTool = tool.match(/^mcp__engine__(.+)$/)?.[1];
+    if (engineTool && !RISKY_ENGINE_TOOLS.has(engineTool)) {
+      // An ordinary engine tool that is not on this folk's list belongs to a teammate: say so
+      // instead of waking the engineer with a card.
+      const owner = d.crew.members.find((m) => m.tools.includes(engineTool));
+      const hint = owner && owner.key !== folk ? ` It belongs to @${owner.name}; hand the step over.` : "";
+      json(res, 200, { behavior: "deny", message: `${engineTool} is not one of your tools.${hint}` });
+      return;
+    }
+    if (!engineTool) {
+      json(res, 200, { behavior: "deny", message: `${tool} is not available to the crew.` });
+      return;
+    }
+    const decision = await d.approvals.request({ project: String(body.project ?? d.projects.current?.id ?? "?"), folk, tool, input: (body.input ?? {}) as Record<string, unknown> });
     json(res, 200, decision);
   }, "comms");
   add("GET", "/api/internal/approvals/:id", (_req, res, p) => json(res, 200, d.approvals.check(p.id!)), "comms");
@@ -210,6 +229,9 @@ function bearer(req: IncomingMessage): string | null {
   if (!h || !h.startsWith("Bearer ")) return null;
   return h.slice(7).trim();
 }
+
+/** Built-in CLI tools that only read: allowed without a card. */
+const READ_ONLY_BUILTINS = new Set(["Read", "Glob", "Grep", "ToolSearch", "ListMcpResourcesTool", "ReadMcpResourceTool", "ReadMcpResourceDirTool"]);
 
 export function json(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);

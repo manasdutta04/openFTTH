@@ -136,7 +136,7 @@ export class ProjectService {
       const proxy = {
         command: process.execPath,
         args: [this.d.proxyPath],
-        env: { OPENFTTH_HARNESS_URL: this.d.harnessUrl, OPENFTTH_COMMS_TOKEN: this.d.cfg.commsToken, OPENFTTH_FOLK: member.key, OPENFTTH_PROJECT: id },
+        env: { OPENFTTH_HARNESS_URL: this.d.harnessUrl, OPENFTTH_COMMS_TOKEN: this.d.cfg.commsToken, OPENFTTH_FOLK: member.key, OPENFTTH_PROJECT: id, OPENFTTH_APPROVAL_TIMEOUT_MS: String(this.d.cfg.approvalTimeoutMs) },
       };
       writeJsonAtomic(mcpConfigPath, {
         mcpServers: {

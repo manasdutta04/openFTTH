@@ -29,10 +29,12 @@ server.registerTool(
   async ({ tool_name, input }) => {
     let decision: { behavior: "allow" | "deny"; updatedInput?: Record<string, unknown>; message?: string };
     try {
+      // The harness answers only when the card is decided; wait as long as its approval timeout.
       const res = await fetch(`${harnessUrl}/api/internal/permission`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
         body: JSON.stringify({ folk, project, tool: tool_name, input: input ?? {} }),
+        signal: AbortSignal.timeout(Number(process.env.OPENFTTH_APPROVAL_TIMEOUT_MS ?? 20 * 60_000) + 30_000),
       });
       if (!res.ok) {
         decision = { behavior: "deny", message: `harness answered ${res.status}` };

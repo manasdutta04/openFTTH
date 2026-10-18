@@ -198,6 +198,19 @@ test("a chain stops when a folk repeats itself instead of looping to the hop lim
   assert.ok(!messages.some((m: any) => /hand-off limit/.test(m.text)), "the hop limit was never needed");
 });
 
+test("only risky engine tools open a card; teammates' tools and reads are answered at once", async () => {
+  const ask = (tool: string, folk = "planner") => body(fetch(`${h.url}/api/internal/permission`, { method: "POST", headers: { authorization: "Bearer test-comms-token", "content-type": "application/json" }, body: JSON.stringify({ folk, project: "p", tool, input: {} }) }));
+  const read = await ask("Glob");
+  assert.equal(read.behavior, "allow");
+  const other = await ask("mcp__engine__import_osm");
+  assert.equal(other.behavior, "deny");
+  assert.match(other.message, /@Surveyor/);
+  const unknown = await ask("SomeOtherTool");
+  assert.equal(unknown.behavior, "deny");
+  const cards = await body(api("/api/approvals"));
+  assert.ok(!cards.some((a: any) => ["Glob", "mcp__engine__import_osm", "SomeOtherTool"].includes(a.tool)), "no card was opened for any of them");
+});
+
 test("engines are listed with availability and can be switched", async () => {
   const listed = await body(api("/api/engines"));
   assert.equal(listed.current.kind, "claude");

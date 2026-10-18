@@ -58,6 +58,11 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
     },
     startedAt,
   });
+  // A permission prompt holds its HTTP request open until the engineer answers the card, which
+  // can take longer than Node's default 5-minute request timeout; without this the proxy saw
+  // "fetch failed" instead of a decision.
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(cfg.port, cfg.host, () => resolve());

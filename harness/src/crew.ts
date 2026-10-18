@@ -150,7 +150,7 @@ export function systemPrompt(crew: Crew, member: CrewMember, memory: string, eng
           `Design area polygon: ${project.areaPath}`,
           `Map extract (OpenStreetMap .osm): ${project.osmPath ?? "none given"}`,
           `Rulebook: ${project.rulebook}`,
-          "These are the project's inputs. `import_osm` takes exactly these two paths; never search the disk for files or ask the user for paths you already have here.",
+          "These are the project's inputs. Surveyor's `import_osm` takes exactly these two paths; never search the disk for files or ask the user for paths you already have here. Only Surveyor imports; everyone else hands the import to @Surveyor.",
           "",
         ]
       : []),
