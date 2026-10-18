@@ -1,9 +1,13 @@
-//! The inspector: what is selected on the map, its attributes, and why the engine put it there.
+//! Properties panel for the selected element: attributes, connections, recorded reasons.
 
-use egui::{RichText, Ui};
+use egui::{Frame, Margin, Ui};
 
+use crate::icons::Icon;
 use crate::state::{s, AppState};
-use crate::widgets::{card, ghost_button, pill, primary_button, section_title};
+use crate::theme::Weight;
+use crate::widgets::{
+    button, button_ex, hairline, icon_button, kv, panel_header, section, tag, text, Kind,
+};
 
 pub enum InspectorAction {
     Ask(String),
@@ -14,166 +18,169 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
     let p = st.palette;
     let uuid = st.selection.first().cloned()?;
     let Some(e) = st.design.as_ref().and_then(|d| d.get(&uuid)).cloned() else {
-        ui.label(
-            RichText::new("Selected element is not in the current design.").color(p.text_muted),
-        );
+        ui.label(text(
+            "Not in the current design",
+            12.0,
+            Weight::Regular,
+            p.text3,
+        ));
         return None;
     };
     let mut action: Option<InspectorAction> = None;
-    ui.horizontal(|ui| {
-        ui.heading(e.name());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button("×")
-                .on_hover_text("Clear selection (Esc)")
-                .clicked()
-            {
-                st.selection.clear();
-            }
-            if ui.small_button("Zoom to").clicked() {
-                action = Some(InspectorAction::ZoomTo(uuid.clone()));
-            }
-        });
-    });
-    ui.horizontal(|ui| {
-        pill(ui, e.kind(), egui::Color32::WHITE, p.kind(e.kind()));
-        pill(ui, &e.placement, p.text_muted, p.surface_alt);
-        if st.changed.iter().any(|c| c == &uuid) {
-            pill(ui, "changed", egui::Color32::WHITE, p.danger);
-        }
-    });
-    ui.add_space(6.0);
-
-    card(ui, &p, |ui| {
-        section_title(ui, &p, "Attributes");
-        egui::Grid::new("attrs")
-            .num_columns(2)
-            .spacing([12.0, 4.0])
-            .striped(true)
-            .show(ui, |ui| {
-                for (k, v) in e.props.iter().filter(|(k, _)| *k != "name") {
-                    ui.label(
-                        RichText::new(k.replace('_', " "))
-                            .small()
-                            .color(p.text_muted),
-                    );
-                    ui.label(RichText::new(short(&s(v))).small());
-                    ui.end_row();
+    let mut close = false;
+    Frame::new()
+        .inner_margin(Margin::symmetric(10, 0))
+        .show(ui, |ui| {
+            panel_header(ui, &p, "Properties", |ui| {
+                if icon_button(ui, &p, Icon::Close, "Clear selection  (Esc)").clicked() {
+                    close = true;
                 }
-                for (k, v) in e.openftth.iter().filter(|(k, _)| {
-                    !["kind", "edges", "surfaces", "node", "building", "fat_ids"]
-                        .contains(&k.as_str())
-                }) {
-                    ui.label(
-                        RichText::new(k.replace('_', " "))
-                            .small()
-                            .color(p.text_muted),
-                    );
-                    let text = match v {
-                        serde_json::Value::String(id)
-                            if id.len() == 36
-                                && st
-                                    .design
-                                    .as_ref()
-                                    .map(|d| d.get(id).is_some())
-                                    .unwrap_or(false) =>
-                        {
-                            st.element_name(id)
+            });
+        });
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            Frame::new()
+                .inner_margin(Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.label(text(e.name(), 14.0, Weight::Semibold, p.text));
+                    ui.horizontal(|ui| {
+                        tag(
+                            ui,
+                            e.kind(),
+                            egui::Color32::WHITE,
+                            p.kind(e.kind()).gamma_multiply(0.85),
+                        );
+                        tag(ui, &e.placement, p.text2, p.bg3);
+                        if st.changed.iter().any(|c| c == &uuid) {
+                            tag(ui, "changed", p.red, p.red.gamma_multiply(0.2));
                         }
-                        other => short(&s(other)),
-                    };
-                    ui.label(RichText::new(text).small());
-                    ui.end_row();
-                }
-            });
-    });
-    ui.add_space(6.0);
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if button_ex(ui, &p, Some(Icon::Target), "Zoom to", Kind::Quiet, true)
+                            .clicked()
+                        {
+                            action = Some(InspectorAction::ZoomTo(uuid.clone()));
+                        }
+                        if button(ui, &p, "Ask the crew why", Kind::Prominent).clicked() {
+                            action = Some(InspectorAction::Ask(format!(
+                                "Why is {} placed there? Quote the recorded decision.",
+                                e.name()
+                            )));
+                        }
+                    });
 
-    // Related elements (navigate)
-    let links: Vec<(&str, String)> = ["fat_id", "fdh_id", "home", "pon_id"]
-        .iter()
-        .filter_map(|k| {
-            e.openftth
-                .get(*k)
-                .and_then(|v| v.as_str())
-                .map(|v| (*k, v.to_string()))
-        })
-        .collect();
-    if !links.is_empty() {
-        card(ui, &p, |ui| {
-            section_title(ui, &p, "Connected");
-            ui.horizontal_wrapped(|ui| {
-                for (k, id) in &links {
-                    if *k == "pon_id" {
-                        pill(ui, id, p.text_muted, p.surface_alt);
-                    } else if st
-                        .design
-                        .as_ref()
-                        .map(|d| d.get(id).is_some())
-                        .unwrap_or(false)
-                        && ui.link(st.element_name(id)).clicked()
+                    section(ui, &p, "Attributes");
+                    for (k, v) in e.props.iter().filter(|(k, _)| *k != "name") {
+                        kv(ui, &p, &k.replace('_', " "), &s(v));
+                    }
+                    let skip = [
+                        "kind", "edges", "surfaces", "node", "building", "fat_ids", "mdu",
+                        "fat_id", "fdh_id", "home",
+                    ];
+                    let shown: Vec<String> = e.props.values().map(s).collect();
+                    for (k, v) in e
+                        .openftth
+                        .iter()
+                        .filter(|(k, v)| !skip.contains(&k.as_str()) && !shown.contains(&s(v)))
                     {
-                        st.selection = vec![id.clone()];
+                        let value = match v {
+                            serde_json::Value::String(id)
+                                if id.len() == 36
+                                    && st
+                                        .design
+                                        .as_ref()
+                                        .map(|d| d.get(id).is_some())
+                                        .unwrap_or(false) =>
+                            {
+                                st.element_name(id)
+                            }
+                            other => s(other),
+                        };
+                        kv(ui, &p, &k.replace('_', " "), &value);
                     }
-                }
-            });
-        });
-        ui.add_space(6.0);
-    }
 
-    card(ui, &p, |ui| {
-        section_title(ui, &p, "Why here");
-        match st.explanations.get(&uuid).cloned() {
-            Some(x) => {
-                let decisions = x["decisions"].as_array().cloned().unwrap_or_default();
-                if decisions.is_empty() {
-                    ui.label(
-                        RichText::new("No recorded decision mentions this element yet.")
-                            .small()
-                            .color(p.text_muted),
-                    );
-                } else {
-                    for d in decisions.iter().rev().take(4) {
+                    let links: Vec<(&str, String)> = ["fat_id", "fdh_id", "home"]
+                        .iter()
+                        .filter_map(|k| {
+                            e.openftth
+                                .get(*k)
+                                .and_then(|v| v.as_str())
+                                .map(|v| (*k, v.to_string()))
+                        })
+                        .filter(|(_, id)| {
+                            st.design
+                                .as_ref()
+                                .map(|d| d.get(id).is_some())
+                                .unwrap_or(false)
+                        })
+                        .collect();
+                    if !links.is_empty() {
+                        section(ui, &p, "Connected");
                         ui.horizontal_wrapped(|ui| {
-                            pill(
-                                ui,
-                                d["tool"].as_str().unwrap_or("tool"),
-                                p.accent,
-                                p.accent_soft,
-                            );
-                            pill(
-                                ui,
-                                d["source"].as_str().unwrap_or("solver"),
-                                p.text_muted,
-                                p.surface_alt,
-                            );
+                            for (_, id) in &links {
+                                if button_ex(
+                                    ui,
+                                    &p,
+                                    Some(Icon::ChevronRight),
+                                    &st.element_name(id),
+                                    Kind::Ghost,
+                                    true,
+                                )
+                                .clicked()
+                                {
+                                    st.selection = vec![id.clone()];
+                                }
+                            }
                         });
-                        ui.label(RichText::new(s(&d["reason"])).small());
-                        ui.add_space(4.0);
                     }
-                }
-            }
-            None => {
-                if ghost_button(ui, &p, "Load the engine's reasons").clicked() {
-                    st.explain(&uuid);
-                }
-            }
-        }
-        ui.add_space(4.0);
-        if primary_button(ui, &p, "Ask the crew why").clicked() {
-            action = Some(InspectorAction::Ask(format!(
-                "Why is {} placed there? Quote the recorded decision.",
-                e.name()
-            )));
-        }
-    });
-    action
-}
 
-fn short(text: &str) -> String {
-    if text.chars().count() > 60 {
-        format!("{}…", text.chars().take(60).collect::<String>())
-    } else {
-        text.to_string()
+                    section(ui, &p, "Reasons");
+                    match st.explanations.get(&uuid).cloned() {
+                        Some(x) => {
+                            let decisions = x["decisions"].as_array().cloned().unwrap_or_default();
+                            if decisions.is_empty() {
+                                ui.label(text(
+                                    "No recorded decision mentions this element.",
+                                    11.5,
+                                    Weight::Regular,
+                                    p.text3,
+                                ));
+                            }
+                            for d in decisions.iter().rev().take(4) {
+                                ui.horizontal(|ui| {
+                                    tag(ui, d["tool"].as_str().unwrap_or("tool"), p.text2, p.bg3);
+                                    tag(
+                                        ui,
+                                        d["source"].as_str().unwrap_or("solver"),
+                                        p.text3,
+                                        p.bg2,
+                                    );
+                                });
+                                ui.add(
+                                    egui::Label::new(text(
+                                        s(&d["reason"]),
+                                        12.0,
+                                        Weight::Regular,
+                                        p.text2,
+                                    ))
+                                    .wrap(),
+                                );
+                                ui.add_space(4.0);
+                                hairline(ui, &p);
+                            }
+                        }
+                        None => {
+                            if button(ui, &p, "Load reasons", Kind::Quiet).clicked() {
+                                st.explain(&uuid);
+                            }
+                        }
+                    }
+                });
+        });
+    if close {
+        st.selection.clear();
     }
+    action
 }

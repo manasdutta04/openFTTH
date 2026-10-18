@@ -1,20 +1,46 @@
-//! Workspace tabs besides the twin: BOQ, splice schedule, versions and backstage.
+//! Workspace tabs besides the twin: BOQ, splices, versions and backstage.
 
 use std::collections::BTreeMap;
 
-use egui::{RichText, Ui};
+use egui::{pos2, vec2, Rect, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 use serde_json::Value;
 
+use crate::icons::Icon;
 use crate::state::{s, AppState};
+use crate::theme::Weight;
 use crate::widgets::{
-    card, fmt_metres, fmt_money, ghost_button, kpi, pill, relative_time, section_title, short_id,
+    button, button_ex, caps, dot, fmt_metres, fmt_money, hairline, metric, mono_text,
+    relative_time, short_id, tag, text, truncate, Kind,
 };
 
 #[derive(Default)]
 pub struct TabState {
     pub splice_filter: String,
     pub backstage_filter: String,
+}
+
+fn header_cell(ui: &mut Ui, p: &crate::theme::Palette, t: &str) {
+    ui.label(caps(t, p.text3));
+}
+
+fn search_field(ui: &mut Ui, p: &crate::theme::Palette, value: &mut String, width: f32) {
+    let resp = ui.add(
+        egui::TextEdit::singleline(value)
+            .hint_text("Filter")
+            .desired_width(width)
+            .margin(egui::Margin {
+                left: 22,
+                right: 6,
+                top: 3,
+                bottom: 3,
+            }),
+    );
+    let r = Rect::from_center_size(
+        pos2(resp.rect.left() + 12.0, resp.rect.center().y),
+        vec2(12.0, 12.0),
+    );
+    crate::icons::paint(ui.painter(), r, Icon::Search, p.text3);
 }
 
 // ---- BOQ --------------------------------------------------------------------------------------
@@ -25,28 +51,28 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
         empty(
             ui,
             st,
-            "No bill of quantities yet",
+            "No bill of quantities",
             "Ask the Drafter for the BOQ once the design is routed.",
         );
         return;
     };
     let currency = boq["currency"].as_str().unwrap_or("EUR");
     ui.horizontal_wrapped(|ui| {
-        kpi(
+        metric(
             ui,
             &p,
             &fmt_money(boq["grand_total"].as_f64().unwrap_or(0.0), currency),
             "total",
-            Some(p.accent),
+            Some(p.text),
         );
-        kpi(
+        metric(
             ui,
             &p,
             &fmt_money(boq["cost_per_unit"].as_f64().unwrap_or(0.0), currency),
             "per unit",
             None,
         );
-        kpi(
+        metric(
             ui,
             &p,
             &boq["units_served"].as_i64().unwrap_or(0).to_string(),
@@ -59,64 +85,63 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
                 .chain(d.by_kind("distribution"))
                 .filter_map(|c| c.props.get("length_m").and_then(|v| v.as_f64()))
                 .sum();
-            kpi(ui, &p, &fmt_metres(trench), "feeder + distribution", None);
+            metric(ui, &p, &fmt_metres(trench), "feeder + distribution", None);
         }
         if let Some(v) = &st.validation {
-            let n: usize = v["summary"]
+            let n: u64 = v["summary"]
                 .as_object()
-                .map(|m| m.values().filter_map(|x| x.as_u64()).sum::<u64>() as usize)
+                .map(|m| m.values().filter_map(|x| x.as_u64()).sum())
                 .unwrap_or(0);
-            kpi(
+            metric(
                 ui,
                 &p,
                 &n.to_string(),
                 "rule violations",
-                Some(if n == 0 { p.success } else { p.danger }),
+                Some(if n == 0 { p.green } else { p.red }),
             );
             if let Some(w) = v["power_budget"]["worst_db"].as_f64() {
                 let budget = v["power_budget"]["budget_db"].as_f64().unwrap_or(28.0);
-                kpi(
+                metric(
                     ui,
                     &p,
                     &format!("{w:.1} / {budget:.0} dB"),
                     "worst ODN loss",
-                    Some(if w <= budget { p.success } else { p.danger }),
+                    Some(if w <= budget { p.green } else { p.red }),
                 );
             }
         }
     });
-    ui.add_space(8.0);
+    ui.add_space(10.0);
     if let Some(totals) = boq["totals"].as_object() {
         let grand = boq["grand_total"].as_f64().unwrap_or(1.0).max(1.0);
-        card(ui, &p, |ui| {
-            section_title(ui, &p, "By category");
-            let (rect, _) = ui
-                .allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
-            let mut x = rect.left();
-            let colors = [p.accent, p.info, p.warning, p.kind("feeder"), p.text_muted];
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
+        let colors = [p.accent, p.kind("fat"), p.green, p.kind("feeder"), p.text3];
+        let mut x = rect.left();
+        for (i, (_, total)) in totals.iter().enumerate() {
+            let w = (total.as_f64().unwrap_or(0.0) / grand) as f32 * rect.width();
+            ui.painter().rect_filled(
+                Rect::from_min_size(pos2(x, rect.top()), vec2((w - 1.0).max(0.0), rect.height())),
+                2.0,
+                colors[i % colors.len()],
+            );
+            x += w;
+        }
+        ui.horizontal_wrapped(|ui| {
             for (i, (cat, total)) in totals.iter().enumerate() {
-                let w = (total.as_f64().unwrap_or(0.0) / grand) as f32 * rect.width();
-                let r = egui::Rect::from_min_size(
-                    egui::pos2(x, rect.top()),
-                    egui::vec2(w.max(0.0), rect.height()),
-                );
-                ui.painter().rect_filled(r, 2.0, colors[i % colors.len()]);
-                let _ = cat;
-                x += w;
+                dot(ui, colors[i % colors.len()], 3.5);
+                let v = total.as_f64().unwrap_or(0.0);
+                ui.label(text(
+                    format!(
+                        "{cat} {} · {:.0}%",
+                        fmt_money(v, currency),
+                        v / grand * 100.0
+                    ),
+                    11.5,
+                    Weight::Regular,
+                    p.text2,
+                ));
+                ui.add_space(8.0);
             }
-            ui.horizontal_wrapped(|ui| {
-                for (i, (cat, total)) in totals.iter().enumerate() {
-                    crate::widgets::dot(ui, colors[i % colors.len()], 4.0);
-                    ui.label(
-                        RichText::new(format!(
-                            "{cat} {} ({:.0}%)",
-                            fmt_money(total.as_f64().unwrap_or(0.0), currency),
-                            total.as_f64().unwrap_or(0.0) / grand * 100.0
-                        ))
-                        .small(),
-                    );
-                }
-            });
         });
     }
     ui.add_space(8.0);
@@ -131,75 +156,68 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
         .show(ui, |ui| {
             for (cat, rows) in &by_cat {
                 let total: f64 = rows.iter().filter_map(|r| r["total"].as_f64()).sum();
-                egui::CollapsingHeader::new(
-                    RichText::new(format!(
-                        "{}  ·  {}",
-                        capitalize(cat),
-                        fmt_money(total, currency)
-                    ))
-                    .strong(),
-                )
-                .default_open(true)
-                .show(ui, |ui| {
-                    TableBuilder::new(ui)
-                        .id_salt(format!("boq-{cat}"))
-                        .striped(true)
-                        .column(Column::remainder().at_least(180.0))
-                        .column(Column::auto().at_least(80.0))
-                        .column(Column::auto().at_least(50.0))
-                        .column(Column::auto().at_least(90.0))
-                        .column(Column::auto().at_least(110.0))
-                        .header(22.0, |mut h| {
-                            for t in ["Item", "Qty", "Unit", "Unit cost", "Total"] {
-                                h.col(|ui| {
-                                    ui.label(RichText::new(t).small().strong().color(p.text_muted));
-                                });
-                            }
-                        })
-                        .body(|body| {
-                            body.rows(22.0, rows.len(), |mut row| {
-                                let r = &rows[row.index()];
-                                row.col(|ui| {
-                                    let label = ui.label(s(&r["item"]));
-                                    if let Some(note) = r["note"].as_str() {
-                                        label.on_hover_text(note);
-                                    }
-                                });
-                                row.col(|ui| {
-                                    ui.label(format!("{:.0}", r["qty"].as_f64().unwrap_or(0.0)));
-                                });
-                                row.col(|ui| {
-                                    ui.label(RichText::new(s(&r["unit"])).color(p.text_muted));
-                                });
-                                row.col(|ui| {
-                                    ui.label(format!(
-                                        "{:.2}",
-                                        r["unit_cost"].as_f64().unwrap_or(0.0)
-                                    ));
-                                });
-                                row.col(|ui| {
-                                    ui.label(
-                                        RichText::new(fmt_money(
-                                            r["total"].as_f64().unwrap_or(0.0),
-                                            "",
-                                        ))
-                                        .strong(),
-                                    );
-                                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(text(capitalize(cat), 12.5, Weight::Semibold, p.text));
+                    ui.label(mono_text(fmt_money(total, currency), 11.5, p.text2));
+                });
+                hairline(ui, &p);
+                TableBuilder::new(ui)
+                    .id_salt(format!("boq-{cat}"))
+                    .striped(false)
+                    .column(Column::remainder().at_least(180.0))
+                    .column(Column::auto().at_least(80.0))
+                    .column(Column::auto().at_least(44.0))
+                    .column(Column::auto().at_least(90.0))
+                    .column(Column::auto().at_least(110.0))
+                    .header(20.0, |mut h| {
+                        for t in ["Item", "Qty", "Unit", "Unit cost", "Total"] {
+                            h.col(|ui| header_cell(ui, &p, t));
+                        }
+                    })
+                    .body(|body| {
+                        body.rows(22.0, rows.len(), |mut row| {
+                            let r = &rows[row.index()];
+                            row.col(|ui| {
+                                let l =
+                                    ui.label(text(s(&r["item"]), 12.5, Weight::Regular, p.text));
+                                if let Some(note) = r["note"].as_str() {
+                                    l.on_hover_text(note);
+                                }
+                            });
+                            row.col(|ui| {
+                                ui.label(mono_text(
+                                    format!("{:.0}", r["qty"].as_f64().unwrap_or(0.0)),
+                                    12.0,
+                                    p.text,
+                                ));
+                            });
+                            row.col(|ui| {
+                                ui.label(text(s(&r["unit"]), 12.0, Weight::Regular, p.text3));
+                            });
+                            row.col(|ui| {
+                                ui.label(mono_text(
+                                    format!("{:.2}", r["unit_cost"].as_f64().unwrap_or(0.0)),
+                                    12.0,
+                                    p.text2,
+                                ));
+                            });
+                            row.col(|ui| {
+                                ui.label(mono_text(
+                                    fmt_money(r["total"].as_f64().unwrap_or(0.0), ""),
+                                    12.0,
+                                    p.text,
+                                ));
                             });
                         });
-                });
+                    });
             }
             if let Some(a) = boq["assumptions"].as_array() {
                 if !a.is_empty() {
-                    ui.add_space(6.0);
-                    section_title(ui, &p, "Assumptions");
+                    ui.add_space(8.0);
+                    ui.label(caps("Assumptions", p.text3));
                     for x in a {
-                        ui.label(
-                            RichText::new(format!("• {}", s(x)))
-                                .small()
-                                .color(p.text_muted),
-                        );
+                        ui.label(text(s(x), 11.5, Weight::Regular, p.text3));
                     }
                 }
             }
@@ -214,13 +232,18 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
         empty(
             ui,
             st,
-            "No design yet",
+            "No design",
             "Open a project and design the area first.",
         );
         return;
     };
     let Some(conns) = d.tables.get("fiber_connection") else {
-        empty(ui, st, "Fibres are not assigned yet", "Ask the Planner to run size_cables and assign_fibers; the splice schedule appears here.");
+        empty(
+            ui,
+            st,
+            "Fibres not assigned",
+            "Ask the Planner to run size_cables and assign_fibers.",
+        );
         return;
     };
     let points: BTreeMap<&str, &serde_json::Map<String, Value>> = d
@@ -234,22 +257,21 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
         .unwrap_or_default();
     let name_of = |u: &str| st.element_name(u);
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!(
+        ui.label(text(
+            format!(
                 "{} connections in {} splice points",
                 conns.len(),
                 points.len()
-            ))
-            .strong(),
-        );
+            ),
+            12.5,
+            Weight::Medium,
+            p.text,
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut tabs.splice_filter)
-                    .hint_text("filter by closure, cable or type")
-                    .desired_width(260.0),
-            );
+            search_field(ui, &p, &mut tabs.splice_filter, 220.0);
         });
     });
+    ui.add_space(4.0);
     let filter = tabs.splice_filter.trim().to_lowercase();
     struct Row {
         closure: String,
@@ -313,57 +335,63 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
                 || r.kind.contains(&filter)
         })
         .collect();
-    rows.sort_by(|a, b| (&a.closure, &a.kind, &a.from).cmp(&(&b.closure, &b.kind, &b.from)));
+    rows.sort_by(|a, b| {
+        natural_cmp(&a.closure, &b.closure)
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| natural_cmp(&a.from, &b.from))
+    });
     let shown = rows.len().min(2000);
     if rows.len() > shown {
-        ui.label(
-            RichText::new(format!(
-                "showing the first {shown} of {} rows; narrow the filter",
-                rows.len()
-            ))
-            .small()
-            .color(p.text_muted),
-        );
+        ui.label(text(
+            format!("First {shown} of {} rows. Narrow the filter.", rows.len()),
+            11.0,
+            Weight::Regular,
+            p.text3,
+        ));
     }
-    TableBuilder::new(ui)
-        .id_salt("splices")
-        .striped(true)
-        .column(Column::auto().at_least(120.0))
-        .column(Column::auto().at_least(70.0))
-        .column(Column::remainder().at_least(200.0))
-        .column(Column::remainder().at_least(200.0))
-        .column(Column::auto().at_least(60.0))
-        .header(22.0, |mut h| {
-            for t in ["Closure", "Type", "From", "To", "Loss dB"] {
-                h.col(|ui| {
-                    ui.label(RichText::new(t).small().strong().color(p.text_muted));
+    egui::ScrollArea::vertical()
+        .id_salt("splices-scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            TableBuilder::new(ui)
+                .id_salt("splices")
+                .vscroll(false)
+                .striped(false)
+                .column(Column::auto().at_least(120.0))
+                .column(Column::auto().at_least(64.0))
+                .column(Column::remainder().at_least(200.0))
+                .column(Column::remainder().at_least(200.0))
+                .column(Column::auto().at_least(56.0))
+                .header(20.0, |mut h| {
+                    for t in ["Closure", "Type", "From", "To", "Loss dB"] {
+                        h.col(|ui| header_cell(ui, &p, t));
+                    }
+                })
+                .body(|body| {
+                    body.rows(20.0, shown, |mut row| {
+                        let r = &rows[row.index()];
+                        row.col(|ui| {
+                            ui.label(text(&r.closure, 12.0, Weight::Regular, p.text));
+                        });
+                        row.col(|ui| {
+                            let fg = match r.kind.as_str() {
+                                "splitter" => p.kind("fdh"),
+                                "patch" => p.text,
+                                _ => p.text2,
+                            };
+                            tag(ui, &r.kind, fg, p.bg3);
+                        });
+                        row.col(|ui| {
+                            ui.label(mono_text(&r.from, 11.5, p.text2));
+                        });
+                        row.col(|ui| {
+                            ui.label(mono_text(&r.to, 11.5, p.text2));
+                        });
+                        row.col(|ui| {
+                            ui.label(mono_text(format!("{:.1}", r.loss), 11.5, p.text3));
+                        });
+                    });
                 });
-            }
-        })
-        .body(|body| {
-            body.rows(20.0, shown, |mut row| {
-                let r = &rows[row.index()];
-                row.col(|ui| {
-                    ui.label(&r.closure);
-                });
-                row.col(|ui| {
-                    let (fg, bg) = match r.kind.as_str() {
-                        "splitter" => (p.kind("fdh"), p.surface_alt),
-                        "patch" => (p.kind("pop"), p.surface_alt),
-                        _ => (p.text_muted, p.surface_alt),
-                    };
-                    pill(ui, &r.kind, fg, bg);
-                });
-                row.col(|ui| {
-                    ui.label(RichText::new(&r.from).monospace().small());
-                });
-                row.col(|ui| {
-                    ui.label(RichText::new(&r.to).monospace().small());
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.1}", r.loss));
-                });
-            });
         });
 }
 
@@ -375,24 +403,26 @@ pub fn versions_tab(ui: &mut Ui, st: &mut AppState) {
         empty(
             ui,
             st,
-            "No versions yet",
-            "Every engine tool call becomes a version you can compare and approve.",
+            "No versions",
+            "Every engine tool call becomes a version.",
         );
         return;
     }
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!(
-                "{} versions · one per tool call",
-                st.versions.len()
-            ))
-            .strong(),
-        );
+        ui.label(text(
+            format!("{} versions", st.versions.len()),
+            12.5,
+            Weight::Medium,
+            p.text,
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ghost_button(ui, &p, "Refresh").clicked() {
+            if button_ex(ui, &p, Some(Icon::Refresh), "", Kind::Quiet, true)
+                .on_hover_text("Refresh")
+                .clicked()
+            {
                 st.refresh_versions();
             }
-            if !st.changed.is_empty() && ghost_button(ui, &p, "Clear highlight").clicked() {
+            if !st.changed.is_empty() && button(ui, &p, "Clear highlight", Kind::Quiet).clicked() {
                 st.changed.clear();
             }
         });
@@ -409,35 +439,33 @@ pub fn versions_tab(ui: &mut Ui, st: &mut AppState) {
     egui::ScrollArea::vertical().id_salt("versions").auto_shrink([false, false]).show(ui, |ui| {
         for (i, v) in versions.iter().enumerate() {
             let ver = s(&v["version"]);
-            let subject = s(&v["subject"]);
-            let (stage, rest) = split_subject(&subject);
-            card(ui, &p, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(short_id(&ver)).monospace().color(p.text_muted));
-                    if i == 0 {
-                        pill(ui, "head", egui::Color32::WHITE, p.accent);
+            let (stage, rest) = split_subject(&s(&v["subject"]));
+            ui.horizontal(|ui| {
+                ui.set_min_height(30.0);
+                ui.label(mono_text(short_id(&ver), 11.5, p.text3));
+                if i == 0 {
+                    tag(ui, "head", egui::Color32::WHITE, p.accent);
+                }
+                if approved.contains(&ver) {
+                    tag(ui, "approved", egui::Color32::WHITE, p.green);
+                }
+                if !stage.is_empty() {
+                    tag(ui, &stage, p.text2, p.bg3);
+                }
+                ui.add(egui::Label::new(text(rest, 12.5, Weight::Regular, p.text)).truncate());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if i == 0 && !approved.contains(&ver) && button(ui, &p, "Approve", Kind::Quiet).on_hover_text("Tag this version as approved by an engineer").clicked() {
+                        approve = Some(ver.clone());
                     }
-                    if approved.contains(&ver) {
-                        pill(ui, "approved", egui::Color32::WHITE, p.success);
-                    }
-                    if !stage.is_empty() {
-                        pill(ui, &stage, p.text_muted, p.surface_alt);
+                    if i > 0 && button(ui, &p, "Changes since", Kind::Ghost).on_hover_text("Highlight on the map what changed between this version and head").clicked() {
+                        compare = Some(ver.clone());
                     }
                     if let Some(t) = v["time"].as_i64() {
-                        ui.label(RichText::new(relative_time(t * 1000)).small().color(p.text_muted));
+                        ui.label(text(relative_time(t * 1000), 11.0, Weight::Regular, p.text3));
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if !approved.contains(&ver) && ui.small_button("Approve").on_hover_text("Tag this version as approved by an engineer").clicked() {
-                            approve = Some(ver.clone());
-                        }
-                        if i > 0 && ui.small_button("Changes since").on_hover_text("Highlight on the map what changed between this version and head").clicked() {
-                            compare = Some(ver.clone());
-                        }
-                    });
                 });
-                ui.label(rest);
             });
-            ui.add_space(4.0);
+            hairline(ui, &p);
         }
     });
     if let Some(v) = approve {
@@ -462,18 +490,32 @@ fn split_subject(subject: &str) -> (String, String) {
 pub fn backstage_tab(ui: &mut Ui, st: &mut AppState, tabs: &mut TabState) {
     let p = st.palette;
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Every tool call, request and error, as it happens").strong());
+        ui.label(text(
+            format!("{} runtime events", st.backstage.len()),
+            12.5,
+            Weight::Medium,
+            p.text,
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ghost_button(ui, &p, "Reload").clicked() {
+            if button_ex(ui, &p, Some(Icon::Refresh), "", Kind::Quiet, true)
+                .on_hover_text("Reload")
+                .clicked()
+            {
                 st.refresh_backstage();
             }
-            ui.add(
-                egui::TextEdit::singleline(&mut tabs.backstage_filter)
-                    .hint_text("filter")
-                    .desired_width(200.0),
-            );
+            search_field(ui, &p, &mut tabs.backstage_filter, 200.0);
         });
     });
+    ui.add_space(4.0);
+    if st.backstage.is_empty() {
+        ui.label(text(
+            "Tool calls, requests and errors appear here as the crew works.",
+            11.5,
+            Weight::Regular,
+            p.text3,
+        ));
+        return;
+    }
     let filter = tabs.backstage_filter.trim().to_lowercase();
     let rows: Vec<&Value> = st
         .backstage
@@ -488,35 +530,29 @@ pub fn backstage_tab(ui: &mut Ui, st: &mut AppState, tabs: &mut TabState) {
             for e in rows {
                 let event = s(&e["event"]);
                 let c = match event.as_str() {
-                    "error" => p.danger,
-                    "tool.started" => p.info,
-                    "tool.done" => p.success,
-                    _ => p.text_muted,
+                    "error" => p.red,
+                    "tool.started" => p.accent,
+                    "tool.done" => p.green,
+                    _ => p.text3,
                 };
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new(crate::widgets::clock_time(e["at"].as_i64().unwrap_or(0)))
-                            .monospace()
-                            .small()
-                            .color(p.text_muted),
-                    );
-                    crate::widgets::dot(ui, c, 3.0);
-                    ui.label(
-                        RichText::new(st.folk_name(e["folk"].as_str().unwrap_or("·")))
-                            .small()
-                            .strong(),
-                    );
-                    ui.label(RichText::new(&event).small().color(c));
+                ui.horizontal(|ui| {
+                    ui.label(mono_text(
+                        crate::widgets::clock_time(e["at"].as_i64().unwrap_or(0)),
+                        11.0,
+                        p.text3,
+                    ));
+                    dot(ui, c, 3.0);
+                    ui.label(text(
+                        st.folk_name(e["folk"].as_str().unwrap_or("·")),
+                        11.5,
+                        Weight::Medium,
+                        p.text2,
+                    ));
+                    ui.label(text(&event, 11.5, Weight::Regular, c));
                     let detail = e["detail"].to_string();
-                    ui.label(
-                        RichText::new(if detail.chars().count() > 160 {
-                            format!("{}…", detail.chars().take(160).collect::<String>())
-                        } else {
-                            detail.clone()
-                        })
-                        .monospace()
-                        .small()
-                        .color(p.text_muted),
+                    ui.add(
+                        egui::Label::new(mono_text(truncate(&detail, 140), 11.0, p.text3))
+                            .truncate(),
                     )
                     .on_hover_text(detail);
                 });
@@ -528,9 +564,40 @@ fn empty(ui: &mut Ui, st: &AppState, title: &str, hint: &str) {
     let p = st.palette;
     ui.add_space(40.0);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(title).size(17.0).strong());
-        ui.label(RichText::new(hint).color(p.text_muted));
+        ui.label(text(title, 13.5, Weight::Medium, p.text2));
+        ui.label(text(hint, 12.0, Weight::Regular, p.text3));
     });
+}
+
+/// Orders "FAT-2" before "FAT-10": digit runs compare by value, the rest by text.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let chunks = |s: &str| -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        for ch in s.chars() {
+            let digit = ch.is_ascii_digit();
+            match out.last_mut() {
+                Some((d, buf)) if *d == digit => buf.push(ch),
+                _ => out.push((digit, ch.to_string())),
+            }
+        }
+        out
+    };
+    let (ca, cb) = (chunks(a), chunks(b));
+    for (x, y) in ca.iter().zip(cb.iter()) {
+        let ord = if x.0 && y.0 {
+            let (nx, ny) = (
+                x.1.parse::<u64>().unwrap_or(0),
+                y.1.parse::<u64>().unwrap_or(0),
+            );
+            nx.cmp(&ny).then_with(|| x.1.cmp(&y.1))
+        } else {
+            x.1.cmp(&y.1)
+        };
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    ca.len().cmp(&cb.len())
 }
 
 fn capitalize(s: &str) -> String {

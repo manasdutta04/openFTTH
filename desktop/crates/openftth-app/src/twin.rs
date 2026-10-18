@@ -1,15 +1,17 @@
 //! 2D twin: streets, buildings, cables, equipment. Drag to pan, wheel to zoom, click to select,
-//! hover for details. A legend with layer toggles, zoom buttons and a scale bar sit on the map.
+//! hover for details. A floating toolbar, a layer list and a scale bar sit on the map.
 
-use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
+use egui::{pos2, vec2, Align2, Color32, CursorIcon, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use openftth_core::{Bounds, Design, Element, Geometry, Mercator, StreetLayer};
 
+use crate::icons::{self, Icon};
 use crate::state::Layers;
-use crate::theme::Palette;
+use crate::theme::{font, mono, Palette, Weight};
+use crate::widgets::{caps, float_frame, icon_button_sized, text};
 
 pub struct TwinView {
     center: [f64; 2],
-    scale: f64, // pixels per metre
+    scale: f64,
     fitted: bool,
 }
 
@@ -43,7 +45,7 @@ impl TwinView {
         let size = bounds.size();
         let sx = rect.width() as f64 / size[0].max(1.0);
         let sy = rect.height() as f64 / size[1].max(1.0);
-        self.scale = (sx.min(sy) * 0.9).max(1e-6);
+        self.scale = (sx.min(sy) * 0.92).max(1e-6);
         self.center = bounds.center();
         self.fitted = true;
     }
@@ -56,12 +58,11 @@ impl TwinView {
         self.scale = (self.scale * factor).clamp(1e-6, 1e3);
     }
 
-    /// Centre the view on an element.
     pub fn focus(&mut self, e: &Element) {
         if let Some([lon, lat]) = e.geometry.anchor() {
             self.center = Mercator::project(lon, lat);
-            if self.scale < 0.5 {
-                self.scale = 0.8;
+            if self.scale < 0.6 {
+                self.scale = 1.0;
             }
         }
     }
@@ -98,13 +99,7 @@ impl TwinView {
     ) -> TwinResponse {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
-        painter.rect_filled(rect, CornerRadius::same(crate::theme::RADIUS), p.map_bg);
-        painter.rect_stroke(
-            rect,
-            CornerRadius::same(crate::theme::RADIUS),
-            Stroke::new(1.0, p.border),
-            egui::StrokeKind::Inside,
-        );
+        painter.rect_filled(rect, 0.0, p.map_bg);
 
         if !self.fitted {
             let mut b = design.map(Design::bounds).unwrap_or_else(Bounds::empty);
@@ -116,7 +111,6 @@ impl TwinView {
             self.fit(&b, rect);
         }
 
-        // ---- input --------------------------------------------------------------------------
         if response.dragged() {
             let d = response.drag_delta();
             self.center[0] -= d.x as f64 / self.scale;
@@ -154,15 +148,14 @@ impl TwinView {
             }
         };
 
-        // ---- streets --------------------------------------------------------------------------
         if layers.streets {
             if let Some(s) = streets {
                 for seg in &s.segments {
                     let pts: Vec<Pos2> = seg.line.iter().map(|q| self.ll(rect, *q)).collect();
                     let (w, c) = match seg.highway.as_str() {
-                        "primary" | "secondary" | "trunk" => (2.6, p.map_street_major),
-                        "tertiary" | "residential" | "living_street" => (1.5, p.map_street),
-                        _ => (0.9, p.map_street),
+                        "primary" | "secondary" | "trunk" => (2.4, p.map_street_major),
+                        "tertiary" | "residential" | "living_street" => (1.4, p.map_street),
+                        _ => (0.8, p.map_street),
                     };
                     painter.add(Shape::line(pts, Stroke::new(w, c)));
                 }
@@ -172,12 +165,10 @@ impl TwinView {
         if let Some(d) = design {
             let is_changed = |u: &str| changed.iter().any(|c| c == u);
             let is_selected = |u: &str| selection.iter().any(|c| c == u);
-            let changed_color = p.danger;
-            // ---- buildings --------------------------------------------------------------------
             if layers.buildings {
                 for e in d.by_kind("building") {
                     let fill = if is_changed(&e.element_uuid) {
-                        changed_color.gamma_multiply(0.35)
+                        p.red.gamma_multiply(0.3)
                     } else {
                         p.map_building
                     };
@@ -194,11 +185,10 @@ impl TwinView {
                     }
                 }
             }
-            // ---- cables -------------------------------------------------------------------------
             for (kind, w, on) in [
-                ("drop", 1.0f32, layers.drops),
-                ("distribution", 2.4, layers.distribution),
-                ("feeder", 3.8, layers.feeder),
+                ("drop", 0.9f32, layers.drops),
+                ("distribution", 2.2, layers.distribution),
+                ("feeder", 3.4, layers.feeder),
             ] {
                 if !on {
                     continue;
@@ -206,15 +196,15 @@ impl TwinView {
                 for e in d.by_kind(kind) {
                     if let Geometry::LineString(line) = &e.geometry {
                         let pts: Vec<Pos2> = line.iter().map(|q| self.ll(rect, *q)).collect();
-                        let mut c = p.kind(kind);
-                        if is_changed(&e.element_uuid) {
-                            c = changed_color;
-                        }
-                        let sel = is_selected(&e.element_uuid);
-                        if sel {
+                        let c = if is_changed(&e.element_uuid) {
+                            p.red
+                        } else {
+                            p.kind(kind)
+                        };
+                        if is_selected(&e.element_uuid) {
                             painter.add(Shape::line(
                                 pts.clone(),
-                                Stroke::new(w + 5.0, p.accent.gamma_multiply(0.35)),
+                                Stroke::new(w + 6.0, p.accent.gamma_multiply(0.35)),
                             ));
                         }
                         painter.add(Shape::line(pts.clone(), Stroke::new(w, c)));
@@ -224,13 +214,12 @@ impl TwinView {
                     }
                 }
             }
-            // ---- points -------------------------------------------------------------------------
             for (kind, r, on) in [
-                ("home", 2.2f32, layers.homes),
-                ("chamber", 3.2, layers.chambers),
-                ("fat", 5.5, layers.fats),
-                ("fdh", 7.5, layers.fdhs),
-                ("pop", 9.5, true),
+                ("home", 2.0f32, layers.homes),
+                ("chamber", 3.0, layers.chambers),
+                ("fat", 5.0, layers.fats),
+                ("fdh", 7.0, layers.fdhs),
+                ("pop", 9.0, true),
             ] {
                 if !on {
                     continue;
@@ -243,15 +232,16 @@ impl TwinView {
                     if !rect.expand(20.0).contains(pos) {
                         continue;
                     }
-                    let mut c = p.kind(kind);
-                    if is_changed(&e.element_uuid) {
-                        c = changed_color;
-                    }
+                    let c = if is_changed(&e.element_uuid) {
+                        p.red
+                    } else {
+                        p.kind(kind)
+                    };
                     if is_selected(&e.element_uuid) {
-                        painter.circle_filled(pos, r + 7.0, p.accent.gamma_multiply(0.25));
-                        painter.circle_stroke(pos, r + 5.0, Stroke::new(2.0, p.accent));
+                        painter.circle_filled(pos, r + 8.0, p.accent.gamma_multiply(0.25));
+                        painter.circle_stroke(pos, r + 5.0, Stroke::new(1.5, p.accent));
                     }
-                    let white = Stroke::new(1.0, p.surface);
+                    let edge = Stroke::new(1.0, p.map_bg);
                     match kind {
                         "fat" => {
                             painter.add(Shape::convex_polygon(
@@ -261,7 +251,7 @@ impl TwinView {
                                     pos + Vec2::new(-r - 1.0, r),
                                 ],
                                 c,
-                                white,
+                                edge,
                             ));
                         }
                         "fdh" => {
@@ -280,13 +270,13 @@ impl TwinView {
                         }
                         "pop" => {
                             painter.circle_filled(pos, r, c);
-                            painter.circle_stroke(pos, r, Stroke::new(2.0, p.surface));
+                            painter.circle_stroke(pos, r, Stroke::new(2.0, p.map_bg));
                             painter.text(
                                 pos,
                                 Align2::CENTER_CENTER,
                                 "P",
-                                FontId::proportional(11.0),
-                                p.surface,
+                                font(10.0, Weight::Semibold),
+                                p.map_bg,
                             );
                         }
                         _ => {
@@ -300,52 +290,32 @@ impl TwinView {
             }
         }
 
-        // ---- overlays: scale bar, zoom buttons, legend ----------------------------------------
         self.scale_bar(&painter, rect, p);
+        // floating toolbar
         let mut refit = false;
         let mut zoom: Option<f64> = None;
-        let controls = Rect::from_min_size(
-            rect.right_top() + Vec2::new(-46.0, 10.0),
-            Vec2::new(36.0, 100.0),
-        );
-        egui::Area::new(egui::Id::unique("twin-controls"))
-            .fixed_pos(controls.min)
+        egui::Area::new(egui::Id::unique("twin-toolbar"))
+            .fixed_pos(rect.right_top() + vec2(-10.0, 10.0))
+            .pivot(Align2::RIGHT_TOP)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                if ui
-                    .add(
-                        egui::Button::new("+")
-                            .min_size(Vec2::splat(30.0))
-                            .corner_radius(CornerRadius::same(6)),
-                    )
-                    .on_hover_text("Zoom in")
-                    .clicked()
-                {
-                    zoom = Some(1.5);
-                }
-                if ui
-                    .add(
-                        egui::Button::new("−")
-                            .min_size(Vec2::splat(30.0))
-                            .corner_radius(CornerRadius::same(6)),
-                    )
-                    .on_hover_text("Zoom out")
-                    .clicked()
-                {
-                    zoom = Some(1.0 / 1.5);
-                }
-                if ui
-                    .add(
-                        egui::Button::new("fit")
-                            .min_size(Vec2::splat(30.0))
-                            .corner_radius(CornerRadius::same(6)),
-                    )
-                    .on_hover_text("Fit the design (F)")
-                    .clicked()
-                {
-                    refit = true;
-                }
+                float_frame(p)
+                    .inner_margin(egui::Margin::same(3))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        if icon_button_sized(ui, p, Icon::Plus, "Zoom in", 26.0, false).clicked() {
+                            zoom = Some(1.5);
+                        }
+                        if icon_button_sized(ui, p, Icon::Minus, "Zoom out", 26.0, false).clicked()
+                        {
+                            zoom = Some(1.0 / 1.5);
+                        }
+                        if icon_button_sized(ui, p, Icon::Fit, "Fit the design  (F)", 26.0, false)
+                            .clicked()
+                        {
+                            refit = true;
+                        }
+                    });
             });
         if let Some(z) = zoom {
             self.zoom_by(z);
@@ -353,7 +323,7 @@ impl TwinView {
         if refit {
             self.refit();
         }
-        self.legend(ui, rect, p, layers, design);
+        self.layer_list(ui, rect, p, layers, design);
 
         let hovered = if click_pos.is_none() {
             best.as_ref().map(|h| h.uuid.clone())
@@ -369,17 +339,17 @@ impl TwinView {
         let cursor = hover_pos.map(|q| self.screen_to_lonlat(rect, q));
         if let (Some(d), Some(h)) = (design, hovered.as_deref()) {
             if let Some(e) = d.get(h) {
-                let summary = hover_summary(e);
+                let lines = hover_summary(e);
                 response.clone().on_hover_ui_at_pointer(|ui| {
-                    ui.label(egui::RichText::new(e.name()).strong());
-                    for line in summary {
-                        ui.label(egui::RichText::new(line).small());
+                    ui.label(text(e.name(), 12.0, Weight::Semibold, p.text));
+                    for l in lines {
+                        ui.label(text(l, 11.5, Weight::Regular, p.text2));
                     }
                 });
             }
         }
         if hovered.is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
         TwinResponse {
             clicked,
@@ -407,8 +377,7 @@ impl TwinView {
     }
 
     fn scale_bar(&self, painter: &egui::Painter, rect: Rect, p: &Palette) {
-        let target_px = 110.0;
-        let metres = target_px / self.scale;
+        let metres = 110.0 / self.scale;
         let nice = [
             1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0,
         ];
@@ -418,18 +387,13 @@ impl TwinView {
             .min_by(|a, b| (a - metres).abs().partial_cmp(&(b - metres).abs()).unwrap())
             .unwrap_or(100.0);
         let px = (m * self.scale) as f32;
-        let origin = rect.left_bottom() + Vec2::new(14.0, -16.0);
+        let origin = rect.left_bottom() + vec2(12.0, -12.0);
+        let c = p.text2;
+        painter.line_segment([origin, origin + vec2(px, 0.0)], Stroke::new(1.5, c));
+        painter.line_segment([origin, origin + vec2(0.0, -4.0)], Stroke::new(1.5, c));
         painter.line_segment(
-            [origin, origin + Vec2::new(px, 0.0)],
-            Stroke::new(2.0, p.text),
-        );
-        painter.line_segment(
-            [origin, origin + Vec2::new(0.0, -5.0)],
-            Stroke::new(2.0, p.text),
-        );
-        painter.line_segment(
-            [origin + Vec2::new(px, 0.0), origin + Vec2::new(px, -5.0)],
-            Stroke::new(2.0, p.text),
+            [origin + vec2(px, 0.0), origin + vec2(px, -4.0)],
+            Stroke::new(1.5, c),
         );
         let label = if m >= 1000.0 {
             format!("{} km", m / 1000.0)
@@ -437,15 +401,15 @@ impl TwinView {
             format!("{m} m")
         };
         painter.text(
-            origin + Vec2::new(px / 2.0, -8.0),
-            Align2::CENTER_BOTTOM,
+            origin + vec2(px + 6.0, 0.0),
+            Align2::LEFT_BOTTOM,
             label,
-            FontId::proportional(11.0),
-            p.text,
+            mono(10.5),
+            c,
         );
     }
 
-    fn legend(
+    fn layer_list(
         &self,
         ui: &mut Ui,
         rect: Rect,
@@ -454,111 +418,109 @@ impl TwinView {
         design: Option<&Design>,
     ) {
         let counts = design.map(Design::counts).unwrap_or_default();
-        let width = 176.0;
-        egui::Area::new(egui::Id::unique("twin-legend"))
-            .fixed_pos(rect.right_bottom() - Vec2::new(12.0, 12.0))
+        egui::Area::new(egui::Id::unique("twin-layers"))
+            .fixed_pos(rect.right_bottom() - vec2(10.0, 10.0))
             .pivot(Align2::RIGHT_BOTTOM)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::new()
-                    .fill(p.surface.gamma_multiply(0.94))
-                    .stroke(Stroke::new(1.0, p.border))
-                    .corner_radius(CornerRadius::same(8))
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_width(width - 16.0);
-                        ui.label(
-                            egui::RichText::new("LAYERS")
-                                .small()
-                                .strong()
-                                .color(p.text_muted),
-                        );
-                        let rows: [(&str, &str, &mut bool); 9] = [
-                            ("Feeder", "feeder", &mut layers.feeder),
-                            ("Distribution", "distribution", &mut layers.distribution),
-                            ("Drops", "drop", &mut layers.drops),
-                            ("FDH cabinets", "fdh", &mut layers.fdhs),
-                            ("FATs", "fat", &mut layers.fats),
-                            ("Chambers", "chamber", &mut layers.chambers),
-                            ("Homes", "home", &mut layers.homes),
-                            ("Buildings", "building", &mut layers.buildings),
-                            ("Streets", "street", &mut layers.streets),
-                        ];
-                        for (label, kind, on) in rows {
-                            ui.horizontal(|ui| {
-                                ui.checkbox(on, "");
-                                let c = match kind {
-                                    "building" => p.map_building_edge,
-                                    "street" => p.map_street_major,
-                                    k => p.kind(k),
-                                };
-                                let (r, _) =
-                                    ui.allocate_exact_size(Vec2::new(14.0, 10.0), Sense::hover());
-                                let painter = ui.painter();
-                                match kind {
-                                    "feeder" | "distribution" | "drop" => {
-                                        let w = match kind {
-                                            "feeder" => 3.5,
-                                            "distribution" => 2.4,
-                                            _ => 1.0,
-                                        };
-                                        painter.line_segment(
-                                            [r.left_center(), r.right_center()],
-                                            Stroke::new(w, c),
-                                        );
-                                    }
-                                    "fat" => {
-                                        painter.add(Shape::convex_polygon(
-                                            vec![r.center_top(), r.right_bottom(), r.left_bottom()],
-                                            c,
-                                            Stroke::NONE,
-                                        ));
-                                    }
-                                    "fdh" | "chamber" => {
-                                        painter.rect_filled(
-                                            Rect::from_center_size(r.center(), Vec2::splat(8.0)),
-                                            1.0,
-                                            c,
-                                        );
-                                    }
-                                    "street" => {
-                                        painter.line_segment(
-                                            [r.left_center(), r.right_center()],
-                                            Stroke::new(2.0, c),
-                                        );
-                                    }
-                                    "building" => {
-                                        painter.rect_filled(
-                                            Rect::from_center_size(
-                                                r.center(),
-                                                Vec2::new(12.0, 8.0),
-                                            ),
-                                            1.0,
-                                            p.map_building,
-                                        );
-                                    }
-                                    _ => {
-                                        painter.circle_filled(r.center(), 3.0, c);
-                                    }
-                                }
-                                let n = counts.get(kind).copied();
-                                ui.label(egui::RichText::new(label).small());
-                                if let Some(n) = n {
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(
-                                                egui::RichText::new(n.to_string())
-                                                    .small()
-                                                    .color(p.text_muted),
-                                            );
-                                        },
-                                    );
-                                }
-                            });
-                        }
+                float_frame(p).show(ui, |ui| {
+                    ui.set_width(150.0);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.horizontal(|ui| {
+                        ui.add_space(2.0);
+                        ui.label(caps("Layers", p.text3));
                     });
+                    ui.add_space(4.0);
+                    let rows: [(&str, &str, &mut bool); 9] = [
+                        ("Feeder", "feeder", &mut layers.feeder),
+                        ("Distribution", "distribution", &mut layers.distribution),
+                        ("Drops", "drop", &mut layers.drops),
+                        ("FDH cabinets", "fdh", &mut layers.fdhs),
+                        ("FATs", "fat", &mut layers.fats),
+                        ("Chambers", "chamber", &mut layers.chambers),
+                        ("Homes", "home", &mut layers.homes),
+                        ("Buildings", "building", &mut layers.buildings),
+                        ("Streets", "street", &mut layers.streets),
+                    ];
+                    for (label, kind, on) in rows {
+                        let (r, resp) = ui
+                            .allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(r, 3.0, p.bg3);
+                        }
+                        if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                            *on = !*on;
+                        }
+                        let alpha = if *on { 1.0 } else { 0.35 };
+                        let c = match kind {
+                            "building" => p.map_building_edge,
+                            "street" => p.map_street_major,
+                            k => p.kind(k),
+                        }
+                        .gamma_multiply(alpha);
+                        let sw = Rect::from_center_size(
+                            pos2(r.left() + 12.0, r.center().y),
+                            vec2(14.0, 10.0),
+                        );
+                        let painter = ui.painter();
+                        match kind {
+                            "feeder" | "distribution" | "drop" | "street" => {
+                                let w = match kind {
+                                    "feeder" => 3.0,
+                                    "distribution" => 2.2,
+                                    "street" => 2.0,
+                                    _ => 1.0,
+                                };
+                                painter.line_segment(
+                                    [sw.left_center(), sw.right_center()],
+                                    Stroke::new(w, c),
+                                );
+                            }
+                            "fat" => {
+                                painter.add(Shape::convex_polygon(
+                                    vec![sw.center_top(), sw.right_bottom(), sw.left_bottom()],
+                                    c,
+                                    Stroke::NONE,
+                                ));
+                            }
+                            "fdh" | "chamber" => {
+                                painter.rect_filled(
+                                    Rect::from_center_size(sw.center(), Vec2::splat(8.0)),
+                                    1.0,
+                                    c,
+                                );
+                            }
+                            "building" => {
+                                painter.rect_filled(
+                                    Rect::from_center_size(sw.center(), vec2(12.0, 8.0)),
+                                    1.0,
+                                    p.map_building.gamma_multiply(alpha),
+                                );
+                            }
+                            _ => {
+                                painter.circle_filled(sw.center(), 3.0, c);
+                            }
+                        }
+                        painter.text(
+                            pos2(r.left() + 26.0, r.center().y),
+                            Align2::LEFT_CENTER,
+                            label,
+                            font(11.5, Weight::Regular),
+                            if *on { p.text } else { p.text3 },
+                        );
+                        if let Some(n) = counts.get(kind) {
+                            painter.text(
+                                pos2(r.right() - 4.0, r.center().y),
+                                Align2::RIGHT_CENTER,
+                                n.to_string(),
+                                mono(10.5),
+                                p.text3,
+                            );
+                        }
+                    }
+                });
             });
+        let _ = icons::lerp;
     }
 }
 

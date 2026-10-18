@@ -1,11 +1,10 @@
 //! A small Markdown renderer for chat replies: headings, paragraphs, bullet and numbered lists,
-//! block quotes, fenced code, inline `code`, **bold** and *italic*. Enough for what the folks
-//! write, without pulling a second UI toolkit version into the app.
+//! block quotes, fenced code, inline `code`, **bold** and *italic*.
 
 use egui::text::LayoutJob;
-use egui::{Color32, FontId, RichText, TextFormat, Ui};
+use egui::{Color32, TextFormat, Ui};
 
-use crate::theme::Palette;
+use crate::theme::{font, mono, Palette, Weight};
 
 pub fn render(ui: &mut Ui, p: &Palette, text: &str) {
     let mut lines = text.lines().peekable();
@@ -13,7 +12,7 @@ pub fn render(ui: &mut Ui, p: &Palette, text: &str) {
     let flush = |ui: &mut Ui, paragraph: &mut Vec<String>| {
         if !paragraph.is_empty() {
             let joined = paragraph.join(" ");
-            inline(ui, p, &joined, p.text, 14.5, false);
+            inline(ui, p, &joined, p.text, 13.0, Weight::Regular);
             paragraph.clear();
         }
     };
@@ -21,12 +20,11 @@ pub fn render(ui: &mut Ui, p: &Palette, text: &str) {
         let trimmed = line.trim_end();
         if trimmed.trim().is_empty() {
             flush(ui, &mut paragraph);
-            ui.add_space(2.0);
+            ui.add_space(3.0);
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("```") {
+        if trimmed.starts_with("```") {
             flush(ui, &mut paragraph);
-            let _lang = rest.trim();
             let mut code = String::new();
             for l in lines.by_ref() {
                 if l.trim_start().starts_with("```") {
@@ -38,24 +36,23 @@ pub fn render(ui: &mut Ui, p: &Palette, text: &str) {
             code_block(ui, p, code.trim_end_matches('\n'));
             continue;
         }
-        if let Some(h) = heading(trimmed) {
+        if let Some((level, body)) = heading(trimmed) {
             flush(ui, &mut paragraph);
-            let (level, body) = h;
             let size = match level {
-                1 => 19.0,
-                2 => 17.0,
-                _ => 15.5,
+                1 => 15.0,
+                2 => 14.0,
+                _ => 13.0,
             };
             ui.add_space(4.0);
-            inline(ui, p, body, p.text, size, true);
+            inline(ui, p, body, p.text, size, Weight::Semibold);
             continue;
         }
         if let Some(body) = trimmed.trim_start().strip_prefix("> ") {
             flush(ui, &mut paragraph);
             ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(egui::vec2(3.0, 18.0), egui::Sense::hover());
-                ui.painter().rect_filled(r, 1.0, p.accent);
-                inline(ui, p, body, p.text_muted, 14.5, false);
+                let (r, _) = ui.allocate_exact_size(egui::vec2(2.0, 16.0), egui::Sense::hover());
+                ui.painter().rect_filled(r, 1.0, p.line_strong);
+                inline(ui, p, body, p.text2, 13.0, Weight::Regular);
             });
             continue;
         }
@@ -63,8 +60,12 @@ pub fn render(ui: &mut Ui, p: &Palette, text: &str) {
             flush(ui, &mut paragraph);
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(indent_of(trimmed));
-                ui.label(RichText::new("•").color(p.accent));
-                inline(ui, p, item, p.text, 14.5, false);
+                ui.label(
+                    egui::RichText::new("•")
+                        .font(font(13.0, Weight::Regular))
+                        .color(p.text3),
+                );
+                inline(ui, p, item, p.text, 13.0, Weight::Regular);
             });
             continue;
         }
@@ -72,8 +73,12 @@ pub fn render(ui: &mut Ui, p: &Palette, text: &str) {
             flush(ui, &mut paragraph);
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(indent_of(trimmed));
-                ui.label(RichText::new(format!("{num}.")).color(p.accent));
-                inline(ui, p, item, p.text, 14.5, false);
+                ui.label(
+                    egui::RichText::new(format!("{num}."))
+                        .font(font(13.0, Weight::Regular))
+                        .color(p.text3),
+                );
+                inline(ui, p, item, p.text, 13.0, Weight::Regular);
             });
             continue;
         }
@@ -93,12 +98,9 @@ fn heading(line: &str) -> Option<(usize, &str)> {
 
 fn bullet(line: &str) -> Option<&str> {
     let t = line.trim_start();
-    for prefix in ["- ", "* ", "• "] {
-        if let Some(rest) = t.strip_prefix(prefix) {
-            return Some(rest);
-        }
-    }
-    None
+    ["- ", "* ", "• "]
+        .iter()
+        .find_map(|prefix| t.strip_prefix(prefix))
 }
 
 fn numbered(line: &str) -> Option<(u32, &str)> {
@@ -120,25 +122,21 @@ fn indent_of(line: &str) -> f32 {
 
 fn code_block(ui: &mut Ui, p: &Palette, code: &str) {
     egui::Frame::new()
-        .fill(p.surface_alt)
-        .stroke(egui::Stroke::new(1.0, p.border))
-        .corner_radius(egui::CornerRadius::same(6))
+        .fill(p.bg3)
+        .corner_radius(egui::CornerRadius::same(4))
         .inner_margin(egui::Margin::same(8))
         .show(ui, |ui| {
-            ui.add(egui::Label::new(RichText::new(code).monospace()).wrap());
+            ui.add(
+                egui::Label::new(egui::RichText::new(code).font(mono(11.5)).color(p.text)).wrap(),
+            );
         });
 }
 
-/// Render one line with inline **bold**, *italic* and `code`.
-fn inline(ui: &mut Ui, p: &Palette, text: &str, color: Color32, size: f32, strong: bool) {
+/// One line with inline **bold**, *italic* and `code`.
+fn inline(ui: &mut Ui, p: &Palette, text: &str, color: Color32, size: f32, weight: Weight) {
     let mut job = LayoutJob::default();
     job.wrap.max_width = ui.available_width();
-    let base = TextFormat {
-        font_id: FontId::proportional(size),
-        color,
-        ..Default::default()
-    };
-    let mut bold = strong;
+    let mut bold = weight == Weight::Semibold;
     let mut italic = false;
     let mut buf = String::new();
     let chars: Vec<char> = text.chars().collect();
@@ -147,29 +145,17 @@ fn inline(ui: &mut Ui, p: &Palette, text: &str, color: Color32, size: f32, stron
         if buf.is_empty() {
             return;
         }
-        let mut fmt = base.clone();
+        let mut fmt = TextFormat {
+            font_id: font(size, if bold { Weight::Semibold } else { weight }),
+            color,
+            ..Default::default()
+        };
         if code {
-            fmt.font_id = FontId::monospace(size - 1.0);
-            fmt.background = p.surface_alt;
-            fmt.color = p.accent;
-        } else {
-            if bold {
-                fmt.font_id = FontId::proportional(size);
-                fmt.color = color;
-                fmt.underline = egui::Stroke::NONE;
-                // egui has no bold weight in the default font: emphasise with the accent colour.
-                fmt.color = if color == p.text { p.text } else { color };
-                fmt.extra_letter_spacing = 0.2;
-            }
-            if italic {
-                fmt.italics = true;
-            }
+            fmt.font_id = mono(size - 1.0);
+            fmt.background = p.bg3;
+            fmt.color = p.text;
         }
-        if bold && !code {
-            // Simulate weight with a subtle stroke-like offset: egui draws text once, so we
-            // use a slightly larger size and letter spacing instead.
-            fmt.font_id = FontId::proportional(size + 0.5);
-        }
+        fmt.italics = italic && !code;
         job.append(buf, 0.0, fmt);
         buf.clear();
     };

@@ -203,7 +203,7 @@ impl AppState {
             client,
             rx,
             connected: false,
-            palette: Palette::light(),
+            palette: Palette::dark(),
             crew: Vec::new(),
             folk_states: BTreeMap::new(),
             messages: Vec::new(),
@@ -535,7 +535,7 @@ impl AppState {
                 if f.data["engine"].as_str() == Some("ready") {
                     self.refresh_project();
                     self.load_recents();
-                } else if f.data["engine"].as_str() == Some("exited") {
+                } else if f.data["engine"].as_str() == Some("exited") && self.project.is_some() {
                     self.toasts
                         .error("The design engine stopped. Re-open the project to restart it.");
                 }

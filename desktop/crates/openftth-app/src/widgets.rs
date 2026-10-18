@@ -1,115 +1,308 @@
-//! Small reusable pieces: status dots, pills, KPI tiles, cards, toasts, time formatting.
+//! Controls painted to the design system: text helpers, caps labels, hairlines, panel headers,
+//! quiet/prominent buttons, icon buttons, key-value rows, segmented progress and toasts.
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use egui::{Color32, CornerRadius, Frame, Margin, Response, RichText, Stroke, Ui, Vec2};
+use egui::{
+    pos2, vec2, Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, Response, RichText, Sense,
+    Stroke, Ui, Vec2,
+};
 
-use crate::theme::{Palette, RADIUS, RADIUS_SM};
+use crate::icons::{self, Icon};
+use crate::theme::{font, mono, Palette, Weight, R, R_FLOAT};
 
-/// A coloured disc (the default font has no bullet glyph).
+pub fn text(content: impl Into<String>, size: f32, weight: Weight, color: Color32) -> RichText {
+    RichText::new(content).font(font(size, weight)).color(color)
+}
+
+pub fn mono_text(content: impl Into<String>, size: f32, color: Color32) -> RichText {
+    RichText::new(content).font(mono(size)).color(color)
+}
+
+/// Uppercase section label with letter spacing.
+pub fn caps(content: &str, color: Color32) -> RichText {
+    RichText::new(content.to_uppercase())
+        .font(font(10.5, Weight::Semibold))
+        .color(color)
+        .extra_letter_spacing(0.9)
+}
+
+pub fn hairline(ui: &mut Ui, p: &Palette) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(
+        rect.left()..=rect.right(),
+        rect.center().y,
+        Stroke::new(1.0, p.line),
+    );
+}
+
+pub fn vline(ui: &mut Ui, p: &Palette, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(1.0, height), Sense::hover());
+    ui.painter().vline(
+        rect.center().x,
+        rect.top()..=rect.bottom(),
+        Stroke::new(1.0, p.line),
+    );
+}
+
+/// Panel header strip: caps title on the left, anything on the right, hairline below.
+pub fn panel_header(ui: &mut Ui, p: &Palette, title: &str, right: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.set_height(26.0);
+        ui.add_space(2.0);
+        ui.label(caps(title, p.text3));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+    });
+    hairline(ui, p);
+}
+
+pub fn section(ui: &mut Ui, p: &Palette, title: &str) {
+    ui.add_space(8.0);
+    ui.label(caps(title, p.text3));
+    ui.add_space(2.0);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Quiet,
+    Prominent,
+    Danger,
+    Ghost,
+}
+
+/// A compact painted button.
+pub fn button(ui: &mut Ui, p: &Palette, label: &str, kind: Kind) -> Response {
+    button_ex(ui, p, None, label, kind, true)
+}
+
+pub fn button_enabled(
+    ui: &mut Ui,
+    p: &Palette,
+    label: &str,
+    kind: Kind,
+    enabled: bool,
+) -> Response {
+    button_ex(ui, p, None, label, kind, enabled)
+}
+
+pub fn button_ex(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: Option<Icon>,
+    label: &str,
+    kind: Kind,
+    enabled: bool,
+) -> Response {
+    let fg = match kind {
+        Kind::Prominent => Color32::WHITE,
+        Kind::Danger => p.red,
+        _ => p.text,
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font(12.0, Weight::Medium), fg);
+    let icon_w = if icon.is_some() { 16.0 } else { 0.0 };
+    let pad = if label.is_empty() { 0.0 } else { 20.0 };
+    let size = vec2(
+        galley.size().x
+            + pad
+            + icon_w
+            + if icon.is_some() && !label.is_empty() {
+                4.0
+            } else {
+                6.0
+            },
+        24.0,
+    );
+    let (rect, response) = ui.allocate_exact_size(
+        size,
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    let hovered = enabled && response.hovered();
+    let down = response.is_pointer_button_down_on();
+    let base = match kind {
+        Kind::Prominent => p.accent,
+        Kind::Ghost => Color32::TRANSPARENT,
+        _ => p.bg2,
+    };
+    let mut fill = if hovered {
+        match kind {
+            Kind::Prominent => icons::lerp(p.accent, Color32::WHITE, 0.12),
+            _ => p.bg3,
+        }
+    } else {
+        base
+    };
+    if down {
+        fill = fill.gamma_multiply(0.8);
+    }
+    let mut fg = fg;
+    if !enabled {
+        fill = fill.gamma_multiply(0.5);
+        fg = fg.gamma_multiply(0.4);
+    }
+    let painter = ui.painter();
+    painter.rect_filled(rect, R as f32, fill);
+    if kind == Kind::Quiet || kind == Kind::Danger {
+        painter.rect_stroke(
+            rect,
+            R as f32,
+            Stroke::new(1.0, if hovered { p.line_strong } else { p.line }),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let mut x = rect.left() + if label.is_empty() { 4.0 } else { 10.0 };
+    if let Some(ic) = icon {
+        icons::paint(
+            painter,
+            icons::square(pos2(x + 8.0, rect.center().y), 14.0),
+            ic,
+            fg,
+        );
+        x += icon_w + 2.0;
+    }
+    painter.galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, fg);
+    if enabled {
+        response.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        response
+    }
+}
+
+/// A square icon-only button (toolbar, row actions).
+pub fn icon_button(ui: &mut Ui, p: &Palette, icon: Icon, tooltip: &str) -> Response {
+    icon_button_sized(ui, p, icon, tooltip, 24.0, false)
+}
+
+pub fn icon_button_sized(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: Icon,
+    tooltip: &str,
+    size: f32,
+    raised: bool,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    let hovered = response.hovered();
+    let painter = ui.painter();
+    if raised || hovered {
+        painter.rect_filled(rect, R as f32, if hovered { p.bg3 } else { p.bg2 });
+    }
+    let color = if hovered { p.text } else { p.text2 };
+    icons::paint(
+        painter,
+        icons::square(rect.center(), size * 0.6),
+        icon,
+        color,
+    );
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    if tooltip.is_empty() {
+        response
+    } else {
+        response.on_hover_text(tooltip)
+    }
+}
+
+/// Small status disc.
 pub fn dot(ui: &mut Ui, color: Color32, r: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(r * 2.0 + 2.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(r * 2.0 + 2.0), Sense::hover());
     ui.painter().circle_filled(rect.center(), r, color);
 }
 
-/// A pulsing disc for "working" states.
 pub fn pulse_dot(ui: &mut Ui, color: Color32, r: f32) {
     let t = ui.input(|i| i.time) as f32;
-    let k = 0.65 + 0.35 * (t * 4.0).sin();
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(r * 2.0 + 2.0), egui::Sense::hover());
+    let k = 0.6 + 0.4 * (t * 5.0).sin();
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(r * 2.0 + 2.0), Sense::hover());
     ui.painter()
-        .circle_filled(rect.center(), r * k, color.gamma_multiply(0.6 + 0.4 * k));
+        .circle_filled(rect.center(), r, color.gamma_multiply(0.45 + 0.55 * k));
     ui.ctx().request_repaint_after(Duration::from_millis(40));
 }
 
-/// A small rounded label with a tinted background.
-pub fn pill(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) -> Response {
-    Frame::new()
-        .fill(bg)
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin::symmetric(8, 2))
-        .show(ui, |ui| ui.label(RichText::new(text).small().color(fg)))
-        .response
+/// A small tinted tag.
+pub fn tag(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) -> Response {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font(10.5, Weight::Medium), fg);
+    let size = vec2(galley.size().x + 10.0, 17.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_filled(rect, 3.0, bg);
+    ui.painter().galley(
+        pos2(rect.left() + 5.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        fg,
+    );
+    response
 }
 
-/// A card: surface background, hairline border, rounded corners, inner padding.
-pub fn card<R>(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
-    Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(RADIUS))
-        .inner_margin(Margin::same(12))
-        .show(ui, add)
-        .inner
+/// A key / value row in a properties grid.
+pub fn kv(ui: &mut Ui, p: &Palette, key: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(20.0);
+        let (r, _) = ui.allocate_exact_size(vec2(108.0, 18.0), Sense::hover());
+        ui.painter().text(
+            pos2(r.left(), r.center().y),
+            egui::Align2::LEFT_CENTER,
+            key,
+            font(11.5, Weight::Regular),
+            p.text3,
+        );
+        ui.add(egui::Label::new(text(value, 12.0, Weight::Regular, p.text)).truncate());
+    });
 }
 
-/// A tinted card (approvals, warnings).
-pub fn tinted_card<R>(
-    ui: &mut Ui,
-    fill: Color32,
-    border: Color32,
-    add: impl FnOnce(&mut Ui) -> R,
-) -> R {
-    Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(1.0, border))
-        .corner_radius(CornerRadius::same(RADIUS))
-        .inner_margin(Margin::same(12))
-        .show(ui, add)
-        .inner
+/// A raised floating panel (map overlays).
+pub fn float_frame(p: &Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(p.bg2.gamma_multiply(0.96))
+        .stroke(Stroke::new(1.0, p.line_strong))
+        .corner_radius(CornerRadius::same(R_FLOAT))
+        .inner_margin(Margin::same(6))
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 2],
+            blur: 8,
+            spread: 0,
+            color: Color32::from_black_alpha(90),
+        })
 }
 
-/// A KPI tile: big value, small caption.
-pub fn kpi(ui: &mut Ui, p: &Palette, value: &str, caption: &str, accent: Option<Color32>) {
-    Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(RADIUS))
-        .inner_margin(Margin::symmetric(14, 10))
+/// Segmented progress (stages): filled up to `done` of `total`, current segment brighter.
+pub fn segments(ui: &mut Ui, p: &Palette, total: usize, done: Option<usize>, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 4.0), Sense::hover());
+    let gap = 2.0;
+    let w = (rect.width() - gap * (total as f32 - 1.0)) / total as f32;
+    for i in 0..total {
+        let r = Rect::from_min_size(
+            pos2(rect.left() + i as f32 * (w + gap), rect.top()),
+            vec2(w, rect.height()),
+        );
+        let color = match done {
+            Some(d) if i < d => p.accent.gamma_multiply(0.7),
+            Some(d) if i == d => p.accent,
+            _ => p.bg3,
+        };
+        ui.painter().rect_filled(r, 1.0, color);
+    }
+}
+
+/// A metric block: large value, small label, no border.
+pub fn metric(ui: &mut Ui, p: &Palette, value: &str, label: &str, color: Option<Color32>) {
+    egui::Frame::new()
+        .fill(p.bg2)
+        .corner_radius(CornerRadius::same(R))
+        .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
-            ui.set_min_width(120.0);
+            ui.set_min_width(112.0);
             ui.vertical(|ui| {
-                ui.label(
-                    RichText::new(value)
-                        .size(20.0)
-                        .strong()
-                        .color(accent.unwrap_or(p.text)),
-                );
-                ui.label(RichText::new(caption).small().color(p.text_muted));
+                ui.label(text(value, 17.0, Weight::Semibold, color.unwrap_or(p.text)));
+                ui.label(text(label, 10.5, Weight::Regular, p.text3));
             });
         });
 }
 
-pub fn section_title(ui: &mut Ui, p: &Palette, text: &str) {
-    ui.add_space(2.0);
-    ui.label(
-        RichText::new(text.to_uppercase())
-            .small()
-            .strong()
-            .color(p.text_muted),
-    );
-}
-
-/// A primary (accent) button.
-pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).color(Color32::WHITE).strong())
-            .fill(p.accent)
-            .corner_radius(CornerRadius::same(RADIUS_SM)),
-    )
-}
-
-/// A quiet secondary button.
-pub fn ghost_button(ui: &mut Ui, p: &Palette, text: &str) -> Response {
-    ui.add(
-        egui::Button::new(RichText::new(text).color(p.text))
-            .fill(p.surface_alt)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(CornerRadius::same(RADIUS_SM)),
-    )
-}
-
-/// Short relative time for a unix-ms timestamp.
 pub fn relative_time(at_ms: i64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -117,27 +310,28 @@ pub fn relative_time(at_ms: i64) -> String {
         .unwrap_or(0);
     let s = ((now - at_ms) / 1000).max(0);
     match s {
-        0..=9 => "just now".into(),
-        10..=59 => format!("{s}s ago"),
-        60..=3599 => format!("{}m ago", s / 60),
-        3600..=86399 => format!("{}h ago", s / 3600),
-        _ => format!("{}d ago", s / 86400),
+        0..=9 => "now".into(),
+        10..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m", s / 60),
+        3600..=86399 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86400),
     }
 }
 
-/// Clock time (HH:MM) for a unix-ms timestamp, in local time if the offset is known.
+/// Wall-clock time of a timestamp in the user's local time zone.
 pub fn clock_time(at_ms: i64) -> String {
-    let secs = at_ms / 1000;
-    let day = secs.rem_euclid(86400);
-    format!("{:02}:{:02}", day / 3600, (day % 3600) / 60)
+    use chrono::TimeZone;
+    match chrono::Local.timestamp_millis_opt(at_ms).single() {
+        Some(t) => t.format("%H:%M").to_string(),
+        None => String::new(),
+    }
 }
 
 pub fn short_id(id: &str) -> &str {
-    &id[..id.len().min(8)]
+    &id[..id.len().min(7)]
 }
 
-pub fn fmt_money(v: f64, currency: &str) -> String {
-    let n = v.round() as i64;
+pub fn fmt_int(n: i64) -> String {
     let digits = n.abs().to_string();
     let mut out = String::new();
     for (i, ch) in digits.chars().enumerate() {
@@ -146,7 +340,13 @@ pub fn fmt_money(v: f64, currency: &str) -> String {
         }
         out.push(ch);
     }
-    format!("{}{} {}", if n < 0 { "-" } else { "" }, out, currency)
+    format!("{}{}", if n < 0 { "-" } else { "" }, out)
+}
+
+pub fn fmt_money(v: f64, currency: &str) -> String {
+    format!("{} {currency}", fmt_int(v.round() as i64))
+        .trim_end()
+        .to_string()
 }
 
 pub fn fmt_metres(m: f64) -> String {
@@ -155,6 +355,19 @@ pub fn fmt_metres(m: f64) -> String {
     } else {
         format!("{m:.0} m")
     }
+}
+
+pub fn truncate(text: &str, n: usize) -> String {
+    if text.chars().count() <= n {
+        text.to_string()
+    } else {
+        format!("{}…", text.chars().take(n).collect::<String>())
+    }
+}
+
+#[allow(dead_code)]
+pub fn label_font(size: f32) -> FontId {
+    font(size, Weight::Regular)
 }
 
 // ---- toasts -------------------------------------------------------------------------------
@@ -179,30 +392,24 @@ pub struct Toasts {
 
 impl Toasts {
     pub fn push(&mut self, kind: ToastKind, text: impl Into<String>) {
-        let secs = match kind {
-            ToastKind::Error => 8,
-            _ => 4,
-        };
+        let secs = if kind == ToastKind::Error { 8 } else { 4 };
         self.items.push(Toast {
             kind,
             text: text.into(),
             until: Instant::now() + Duration::from_secs(secs),
         });
-        if self.items.len() > 5 {
+        if self.items.len() > 4 {
             self.items.remove(0);
         }
     }
-
-    pub fn error(&mut self, text: impl Into<String>) {
-        self.push(ToastKind::Error, text);
+    pub fn error(&mut self, t: impl Into<String>) {
+        self.push(ToastKind::Error, t);
     }
-
-    pub fn info(&mut self, text: impl Into<String>) {
-        self.push(ToastKind::Info, text);
+    pub fn info(&mut self, t: impl Into<String>) {
+        self.push(ToastKind::Info, t);
     }
-
-    pub fn success(&mut self, text: impl Into<String>) {
-        self.push(ToastKind::Success, text);
+    pub fn success(&mut self, t: impl Into<String>) {
+        self.push(ToastKind::Success, t);
     }
 
     pub fn show(&mut self, ctx: &egui::Context, p: &Palette) {
@@ -212,26 +419,31 @@ impl Toasts {
             return;
         }
         egui::Area::new(egui::Id::unique("toasts"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -40.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, vec2(-14.0, -32.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 for t in &self.items {
-                    let (fg, bg) = match t.kind {
-                        ToastKind::Info => (p.text, p.surface),
-                        ToastKind::Success => (Color32::WHITE, p.success),
-                        ToastKind::Error => (Color32::WHITE, p.danger),
+                    let bar = match t.kind {
+                        ToastKind::Info => p.accent,
+                        ToastKind::Success => p.green,
+                        ToastKind::Error => p.red,
                     };
-                    Frame::new()
-                        .fill(bg)
-                        .stroke(Stroke::new(1.0, p.border))
-                        .corner_radius(CornerRadius::same(RADIUS))
-                        .inner_margin(Margin::symmetric(12, 8))
+                    float_frame(p)
+                        .inner_margin(Margin::symmetric(10, 8))
                         .show(ui, |ui| {
-                            ui.set_max_width(360.0);
-                            ui.label(RichText::new(&t.text).color(fg));
+                            ui.set_max_width(340.0);
+                            ui.horizontal(|ui| {
+                                let (r, _) =
+                                    ui.allocate_exact_size(vec2(3.0, 16.0), Sense::hover());
+                                ui.painter().rect_filled(r, 1.0, bar);
+                                ui.add(
+                                    egui::Label::new(text(&t.text, 12.0, Weight::Regular, p.text))
+                                        .wrap(),
+                                );
+                            });
                         });
                 }
             });
-        ctx.request_repaint_after(Duration::from_millis(500));
+        ctx.request_repaint_after(Duration::from_millis(400));
     }
 }
