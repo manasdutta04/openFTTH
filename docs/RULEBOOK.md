@@ -25,6 +25,7 @@ called anything but "draft".
 | `distances` | cluster_homes, place_fdh, validate | max drop (street distance), max FDH→FAT, logical reach, pulling distance |
 | `loss_db`, `connectors_per_path` | validate | connector/splice/splitter losses, fibre attenuation per wavelength, design margin, connectors counted on a path (ODF, FDH in/out, FAT, ONT) |
 | `fdh`, `fat`, `chambers`, `closures`, `slack`, `ducts` | solve | capacities, fill limits, placements, sizes |
+| `routing` | twin | OSM highway classes no cable may follow (motorways, staircases, planned roads, …); those ways never enter the route graph |
 | `surfaces`, `highway_to_surface`, `crossings` | twin, boq | trench + reinstatement cost per metre by surface; which surface each OSM highway class trenches in |
 | `units`, `labour` | boq | unit prices |
 

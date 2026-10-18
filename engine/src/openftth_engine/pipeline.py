@@ -24,7 +24,7 @@ from .interchange import Design, Feature, Metadata, stable_uuid
 from .project import Project
 from .results import Decision, ToolResult
 from .rules import Rulebook
-from .solve.cluster import Demand, capacitated_sites
+from .solve.cluster import Demand, capacitated_sites, repair_reach
 from .solve.routing import RoutedTree, route_tree
 from .twin import Twin, build_twin
 from .validate import run_all_checks
@@ -421,6 +421,9 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
         time_limit_s=time_limit_s,
         k_nearest=1000,
     )
+    # The clustering prices distance to the nearest candidate, so a FAT can end up on a cabinet
+    # that is within reach as the crow flies but not along the street: check and move those.
+    sites, moved, stranded = repair_reach(twin.graph, sites, r.distances.max_dist_m, capacity)
     s.design.remove_where(kind="fdh")
     fat_by_id = {f.element_uuid: f for f in fats}
     for i, site in enumerate(sites):
@@ -462,7 +465,12 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
             stage="solve",
             tool="place_fdh",
             reason=f"FDHs placed by capacitated clustering of FATs (CP-SAT, status {','.join(stats.status)}) at street intersections, ≤ {capacity} units per cabinet ({r.fdh.max_fill_pct:g}% of {cap_max}), each FAT within {r.distances.max_dist_m:g} m; cabinet size then shrunk to the smallest that fits.",
-            values={"fdhs": len(sites), "capacity_used": capacity},
+            values={
+                "fdhs": len(sites),
+                "capacity_used": capacity,
+                "fats_moved": moved,
+                "fats_stranded": stranded,
+            },
         ),
         Decision(
             stage="solve",
@@ -828,10 +836,15 @@ def validate_design(s: Session) -> ToolResult:
     before = s.design.copy()
     violations, stats = run_all_checks(s.design, s.rules)
     summary = violation_summary(violations)
+    warnings_summary = violation_summary(violations, "warning")
+    errors = [v for v in violations if v.severity == "error"]
     data = {
         "violations": [v.__dict__ for v in violations[:200]],
         "summary": summary,
+        "warnings_summary": warnings_summary,
         "power_budget": stats,
+        # The check commits its own version; this is the design it looked at.
+        "design_version": s.project.head(),
     }
     (s.project.deliver_dir / "validation.json").write_text(_json(data), encoding="utf-8")
     decisions = [
@@ -843,14 +856,17 @@ def validate_design(s: Session) -> ToolResult:
             source="rulebook",
         )
     ]
-    msg = "no violations" if not violations else ", ".join(f"{k}: {v}" for k, v in summary.items())
+    msg = "no violations" if not errors else ", ".join(f"{k}: {v}" for k, v in summary.items())
+    nwarn = len(violations) - len(errors)
+    if nwarn:
+        msg += f"; {nwarn} warning(s) for the engineer to accept"
     return _commit(
         s,
         ToolResult(
             tool="check_rules",
             summary=f"{msg}; worst ODN loss {stats.get('worst_db')} dB of {s.rules.pon.budget_db} dB",
             decisions=decisions,
-            warnings=[v.message for v in violations[:10]],
+            warnings=[f"{v.severity}: {v.message}" for v in violations[:10]],
             data=data,
         ),
         before,

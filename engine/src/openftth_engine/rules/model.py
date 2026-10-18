@@ -52,7 +52,9 @@ class Pon(StrictModel):
 
 class Fibers(StrictModel):
     drop: int = Field(2, description="Fibres per drop cable")
-    distribution: list[int] = Field([12, 24, 48, 96], description="Distribution cable ladder")
+    distribution: list[int] = Field(
+        [12, 24, 48, 96, 144, 288], description="Distribution cable ladder"
+    )
     feeder: list[int] = Field([96, 144, 288], description="Feeder cable ladder")
     spare_pct: float = Field(20.0, description="Spare fibres as % of demand, rounded up to ladder")
     take_rate: float = Field(1.0, description="Share of homes passed that get a drop (0–1)")
@@ -135,6 +137,28 @@ class SurfaceCost(StrictModel):
     reinstatement_per_m: float = 0.0
 
 
+class Routing(StrictModel):
+    exclude_highways: list[str] = Field(
+        [
+            "motorway",
+            "motorway_link",
+            "trunk",
+            "trunk_link",
+            "steps",
+            "escalator",
+            "elevator",
+            "corridor",
+            "platform",
+            "raceway",
+            "bus_guideway",
+            "proposed",
+            "construction",
+            "abandoned",
+        ],
+        description="OSM highway classes no cable may follow: you cannot trench a motorway or a staircase",
+    )
+
+
 class Surfaces(StrictModel):
     asphalt: SurfaceCost = SurfaceCost(trench_per_m=90.0, reinstatement_per_m=35.0)
     pavement: SurfaceCost = SurfaceCost(trench_per_m=60.0, reinstatement_per_m=20.0)
@@ -198,6 +222,7 @@ class Rulebook(StrictModel):
     ducts: Ducts = Ducts()
     surfaces: Surfaces = Surfaces()
     crossings: Crossings = Crossings()
+    routing: Routing = Routing()
     highway_to_surface: dict[str, SurfaceClass] = Field(
         default_factory=lambda: {
             "motorway": "asphalt",

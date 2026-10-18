@@ -99,6 +99,19 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
                 "rule violations",
                 Some(if n == 0 { p.green } else { p.red }),
             );
+            let warnings: u64 = v["warnings_summary"]
+                .as_object()
+                .map(|m| m.values().filter_map(|x| x.as_u64()).sum())
+                .unwrap_or(0);
+            if warnings > 0 {
+                metric(
+                    ui,
+                    &p,
+                    &warnings.to_string(),
+                    "exceptions to accept",
+                    Some(p.amber),
+                );
+            }
             if let Some(w) = v["power_budget"]["worst_db"].as_f64() {
                 let budget = v["power_budget"]["budget_db"].as_f64().unwrap_or(28.0);
                 metric(

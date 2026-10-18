@@ -17,7 +17,7 @@ pon:
 
 fibers:
   drop: 2                   # assumed: 2F drop, one spare
-  distribution: [12, 24, 48, 96]
+  distribution: [12, 24, 48, 96, 144, 288]   # assumed: dense blocks need the big sizes on trunk sections
   feeder: [96, 144, 288]
   spare_pct: 20             # assumed
   take_rate: 1.0            # homes passed == homes connected for the budget

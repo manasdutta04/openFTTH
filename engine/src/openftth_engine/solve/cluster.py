@@ -266,3 +266,43 @@ def _merge_same_node(sites: list[Site], capacity: int) -> list[Site]:
             b.members.sort(key=lambda m: m.key)
         out.extend(bins)
     return out
+
+
+def repair_reach(
+    G: nx.Graph, sites: list[Site], max_dist_m: float, capacity: int
+) -> tuple[list[Site], int, int]:
+    """Move members whose street distance to their site exceeds `max_dist_m` to the nearest
+    site that has room and is within reach. Returns (sites, moved, stranded)."""
+    dist_from: dict[int, dict[int, float]] = {}
+    for site in sites:
+        if site.node not in dist_from:
+            dist_from[site.node] = nx.single_source_dijkstra_path_length(
+                G, site.node, cutoff=max_dist_m * 1.5, weight="length_m"
+            )
+    moved = stranded = 0
+    for site in sites:
+        for m in list(site.members):
+            here = dist_from[site.node].get(m.node, float("inf")) + m.offset_m
+            if here <= max_dist_m:
+                site.distances_m[m.key] = here
+                continue
+            options = []
+            for other in sites:
+                if other is site:
+                    continue
+                d = dist_from[other.node].get(m.node, float("inf")) + m.offset_m
+                if d <= max_dist_m and other.units + m.units <= capacity:
+                    options.append((d, other.node, other.slot, other))
+            if not options:
+                stranded += 1
+                site.distances_m[m.key] = here
+                continue
+            options.sort(key=lambda t: (t[0], t[1], t[2]))
+            d, _, _, target = options[0]
+            site.members.remove(m)
+            site.distances_m.pop(m.key, None)
+            target.members.append(m)
+            target.distances_m[m.key] = d
+            moved += 1
+    sites = [s for s in sites if s.members]
+    return sites, moved, stranded

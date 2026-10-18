@@ -64,17 +64,38 @@ def check_capacity(design: Design, rules: Rulebook) -> list[Violation]:
 
 def check_distances(design: Design, rules: Rulebook) -> list[Violation]:
     out: list[Violation] = []
+    homes = {h.element_uuid: h for h in design.by_kind("home")}
+    limit = rules.distances.max_drop_m
     for drop in design.by_kind("drop"):
         length = float(drop.props.get("length_m", 0.0))
-        if length > rules.distances.max_drop_m:
-            out.append(
-                Violation(
-                    "distance",
-                    drop.element_uuid,
-                    f"drop {length:.0f} m > max_drop_m {rules.distances.max_drop_m:g}",
-                    {"length_m": length},
+        if length > limit:
+            home = homes.get(str(drop.openftth.get("home", "")))
+            offset = float(home.openftth.get("offset_m", 0.0)) if home else 0.0
+            if offset > limit:
+                # No FAT placement can bring this drop under the limit: the building itself sits
+                # farther from the nearest street than the rule allows. An exception for the
+                # engineer (private-plot trench, aerial span, or a corrected address), not a
+                # solver error.
+                out.append(
+                    Violation(
+                        "distance",
+                        drop.element_uuid,
+                        f"drop {length:.0f} m > max_drop_m {limit:g}: the home is {offset:.0f} m "
+                        "from the nearest street, so no FAT placement can satisfy the rule; needs a "
+                        "private-plot trench or a corrected address",
+                        {"length_m": length, "offset_m": offset},
+                        severity="warning",
+                    )
                 )
-            )
+            else:
+                out.append(
+                    Violation(
+                        "distance",
+                        drop.element_uuid,
+                        f"drop {length:.0f} m > max_drop_m {limit:g}",
+                        {"length_m": length},
+                    )
+                )
     for home in design.by_kind("home"):
         d = float(home.openftth.get("distribution_path_m", 0.0))
         if d > rules.distances.max_dist_m:
@@ -165,10 +186,12 @@ def run_all_checks(design: Design, rules: Rulebook) -> tuple[list[Violation], di
     return v + pb, stats
 
 
-def violation_summary(violations: list[Violation]) -> dict[str, int]:
+def violation_summary(violations: list[Violation], severity: str = "error") -> dict[str, int]:
+    """Count violations of one severity per check (errors block delivery, warnings do not)."""
     out: dict[str, int] = {}
     for v in violations:
-        out[v.check] = out.get(v.check, 0) + 1
+        if v.severity == severity:
+            out[v.check] = out.get(v.check, 0) + 1
     return out
 
 

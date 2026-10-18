@@ -30,16 +30,20 @@ class Twin:
     streets: gpd.GeoDataFrame  # projected; highway, surface, cost_per_m, osm_id, geometry
     decisions: list[Decision] = field(default_factory=list)
     _tree: cKDTree | None = None
+    _tree_nodes: np.ndarray | None = None
 
     @property
     def kdtree(self) -> cKDTree:
+        """Spatial index over the nodes of the routable graph only (fragments are left out)."""
         if self._tree is None:
-            self._tree = cKDTree(self.xy)
+            self._tree_nodes = np.fromiter(sorted(self.graph.nodes), dtype=int)
+            self._tree = cKDTree(self.xy[self._tree_nodes])
         return self._tree
 
     def nearest_node(self, x: float, y: float) -> tuple[int, float]:
         d, i = self.kdtree.query([x, y])
-        return int(i), float(d)
+        assert self._tree_nodes is not None
+        return int(self._tree_nodes[i]), float(d)
 
     def node_point(self, node: int) -> Point:
         return Point(self.xy[node])
@@ -62,6 +66,25 @@ def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules
     if streets_wgs.empty:
         raise ValueError("no streets in the area; cannot build a twin")
     crs = streets_wgs.estimate_utm_crs()
+    decisions: list[Decision] = []
+    excluded = set(rules.routing.exclude_highways)
+    keep = ~streets_wgs["highway"].astype(str).isin(excluded)
+    dropped_ways = int((~keep).sum())
+    if dropped_ways:
+        classes = sorted(set(streets_wgs.loc[~keep, "highway"].astype(str)))
+        decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{dropped_ways} way(s) of class {', '.join(classes)} left out of the route graph: "
+                "no trench goes along a motorway, a staircase or a planned road.",
+                values={"excluded_ways": dropped_ways, "classes": classes},
+                source="rulebook",
+            )
+        )
+    streets_wgs = streets_wgs[keep]
+    if streets_wgs.empty:
+        raise ValueError("no routable streets in the area; cannot build a twin")
     streets = streets_wgs.to_crs(crs).copy()
     homes = homes_wgs.to_crs(crs).copy() if not homes_wgs.empty else homes_wgs.copy()
 
@@ -117,7 +140,6 @@ def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules
                 )
 
     xy_arr = np.asarray(xy, dtype=float)
-    decisions: list[Decision] = []
 
     # Keep the largest connected component; report the rest as a data gap.
     comps = sorted(nx.connected_components(G), key=len, reverse=True)

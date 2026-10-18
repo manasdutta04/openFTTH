@@ -239,7 +239,9 @@
             12,
             24,
             48,
-            96
+            96,
+            144,
+            288
           ],
           "description": "Distribution cable ladder",
           "items": {
@@ -432,6 +434,37 @@
         }
       },
       "title": "Pon",
+      "type": "object"
+    },
+    "Routing": {
+      "additionalProperties": false,
+      "properties": {
+        "exclude_highways": {
+          "default": [
+            "motorway",
+            "motorway_link",
+            "trunk",
+            "trunk_link",
+            "steps",
+            "escalator",
+            "elevator",
+            "corridor",
+            "platform",
+            "raceway",
+            "bus_guideway",
+            "proposed",
+            "construction",
+            "abandoned"
+          ],
+          "description": "OSM highway classes no cable may follow: you cannot trench a motorway or a staircase",
+          "items": {
+            "type": "string"
+          },
+          "title": "Exclude Highways",
+          "type": "array"
+        }
+      },
+      "title": "Routing",
       "type": "object"
     },
     "Slack": {
@@ -651,7 +684,9 @@
           12,
           24,
           48,
-          96
+          96,
+          144,
+          288
         ],
         "feeder": [
           96,
@@ -804,6 +839,27 @@
       "$ref": "#/$defs/Crossings",
       "default": {
         "road_drill_per_m": 180.0
+      }
+    },
+    "routing": {
+      "$ref": "#/$defs/Routing",
+      "default": {
+        "exclude_highways": [
+          "motorway",
+          "motorway_link",
+          "trunk",
+          "trunk_link",
+          "steps",
+          "escalator",
+          "elevator",
+          "corridor",
+          "platform",
+          "raceway",
+          "bus_guideway",
+          "proposed",
+          "construction",
+          "abandoned"
+        ]
       }
     },
     "highway_to_surface": {
