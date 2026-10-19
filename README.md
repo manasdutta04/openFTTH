@@ -39,6 +39,20 @@ for the roadmap and [docs/DEMO.md](docs/DEMO.md) for the current gate demo.
 | `macos/` | Swift package for the Mac app (later). |
 | `docs/` | Plan, protocol, rulebook and design-model documentation. |
 
+## Install the desktop app (Windows, free)
+
+Everything openFTTH needs is free. With Node.js 23.6 or newer, Rust and uv installed:
+
+```powershell
+.\tools\install-desktop.ps1
+```
+
+This builds the app and adds openFTTH to the Start menu and the desktop. The app starts its
+own harness and design engine when opened. **Design automatically** designs a whole area with
+the engine alone, so it needs no AI, account or key. To talk to the crew for free, install
+[Ollama](https://ollama.com) and pick it in the composer's engine menu. The engine menu says
+what each option costs. `install-desktop.ps1 -Uninstall` removes the shortcuts.
+
 ## Quick start (engine only)
 
 ```bash
