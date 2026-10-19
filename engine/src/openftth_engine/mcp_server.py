@@ -285,6 +285,31 @@ def apply_scenario(name: str, time_limit_s: float = 20.0) -> dict[str, Any]:
     return _out(pipeline.apply_scenario(_s(), name, time_limit_s))
 
 
+# ---- the engineer's own moves (the app calls these through the harness; no crew member has them)
+
+
+@mcp.tool()
+def move_site(element_uuid: str, lon: float, lat: float, reason: str) -> dict[str, Any]:
+    """Move the POP, an FDH or an outdoor FAT to a new position; the point snaps to the street
+    graph and every route downstream is planned and sized again, as one version. Records the
+    engineer's reason."""
+    return _out(pipeline.move_site(_s(), element_uuid, lon, lat, reason))
+
+
+@mcp.tool()
+def exclude_building(element_uuid: str, reason: str) -> dict[str, Any]:
+    """Take a building out of the design: its homes and drops go, FAT and cabinet units are
+    reduced, routes are planned again. The exclusion survives a re-import."""
+    return _out(pipeline.exclude_building(_s(), element_uuid, reason))
+
+
+@mcp.tool()
+def forbid_street(osm_id: str, reason: str) -> dict[str, Any]:
+    """Mark a street (OSM way id) as no-dig: it leaves the route graph, sites on it move to
+    the nearest remaining street node, routes are planned again. Kept with the project inputs."""
+    return _out(pipeline.forbid_street(_s(), osm_id, reason))
+
+
 # ---- risky tools (never on an allow-list; need an approval_id) ---------------------------------
 
 

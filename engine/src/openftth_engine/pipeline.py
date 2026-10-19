@@ -45,6 +45,9 @@ class Session:
     twin: Twin | None = None
     trees: dict[str, RoutedTree] = field(default_factory=dict)  # "feeder" | fdh uuid → tree
     cache: dict[str, Any] = field(default_factory=dict)
+    # While a steering tool re-runs solvers, their commits are collected here instead of
+    # written, so the engineer's change lands as one version.
+    deferred: list[ToolResult] | None = None
 
     @property
     def pid(self) -> str:
@@ -74,8 +77,46 @@ def _wgs(twin: Twin, geom) -> Any:
 def _commit(s: Session, result: ToolResult, before: Design | None = None) -> ToolResult:
     if before is not None:
         result.changes = before.diff(s.design).summary()
+    if s.deferred is not None:
+        s.deferred.append(result)
+        return result
     s.project.commit(result, s.design)
     return result
+
+
+# The engineer's own inputs that live in the project meta next to the area and OSM paths and
+# survive a re-import: buildings taken out of the design and streets that must not be dug up.
+STEERING_INPUTS = ("excluded_buildings", "no_dig")
+
+
+def _steering(s: Session, key: str) -> list[dict[str, Any]]:
+    inputs = s.project.meta.setdefault("inputs", {})
+    return list(inputs.get(key) or [])
+
+
+def _excluded_osm_ids(s: Session) -> set[str]:
+    return {str(x["osm_id"]) for x in _steering(s, "excluded_buildings")}
+
+
+def _no_dig_ids(s: Session) -> set[str]:
+    return {str(x["osm_id"]) for x in _steering(s, "no_dig")}
+
+
+def _finish_twin(s: Session, twin: Twin) -> Twin:
+    """Apply the engineer's no-dig list to a freshly built twin."""
+    no_dig = _no_dig_ids(s)
+    if no_dig:
+        twin.forbid_ways(no_dig)
+    else:
+        twin.streets["no_dig"] = False
+    return twin
+
+
+def _write_streets(s: Session, twin: Twin) -> None:
+    """The twin's street layer for the renderer, with the no-dig flag per way."""
+    cols = ["highway", "surface", "cost_per_m", "osm_id", "no_dig", "geometry"]
+    streets = twin.streets[cols].to_crs(4326)
+    streets.to_file(s.project.twin_dir / "streets.geojson", driver="GeoJSON")
 
 
 # ---- Ingest / Twin ------------------------------------------------------------------------
@@ -87,6 +128,9 @@ def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path)
     area = load_area(area_path)
     osm = import_osm(osm_path, area)
     homes_wgs, decisions = homes_from_buildings(osm.buildings, s.rules)
+    excluded = {x["osm_id"]: x for x in _steering(s, "excluded_buildings")}
+    if excluded and not homes_wgs.empty:
+        homes_wgs = homes_wgs[~homes_wgs["osm_id"].astype(str).isin(set(excluded))].copy()
 
     s.design.remove_where(kind="building")
     s.design.remove_where(kind="service_area")
@@ -102,6 +146,9 @@ def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path)
         )
     )
     for b in osm.buildings.itertuples(index=False):
+        extra: dict[str, Any] = {}
+        if str(b.osm_id) in excluded:
+            extra = {"excluded": True, "excluded_reason": excluded[str(b.osm_id)]["reason"]}
         s.design.add(
             Feature(
                 element_uuid=s.uid("building", b.osm_id),
@@ -112,15 +159,17 @@ def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path)
                     "street": b.street if isinstance(b.street, str) else None,
                     "street_number": b.housenumber if isinstance(b.housenumber, str) else None,
                 },
-                openftth={"kind": "building", "osm_id": b.osm_id},
+                openftth={"kind": "building", "osm_id": b.osm_id, **extra},
             )
         )
     s.cache["osm"] = osm
     s.cache["homes_wgs"] = homes_wgs
     s.cache["area"] = area
+    previous = s.project.meta.get("inputs") or {}
     s.project.meta["inputs"] = {
         "area": str(Path(area_path).resolve()),
         "osm": str(Path(osm_path).resolve()),
+        **{k: previous[k] for k in STEERING_INPUTS if previous.get(k)},
     }
     result = ToolResult(
         tool="import_osm",
@@ -139,7 +188,7 @@ def build_twin_tool(s: Session) -> ToolResult:
     s.project.set_stage("twin")
     before = s.design.copy()
     osm = s.cache["osm"]
-    twin = build_twin(osm.streets, s.cache["homes_wgs"], s.rules)
+    twin = _finish_twin(s, build_twin(osm.streets, s.cache["homes_wgs"], s.rules))
     s.twin = twin
     # Homes become `to` features (one per building, with a unit count). A home that is
     # already in the design keeps what the solvers put on it (its FAT, PON, drop and path
@@ -167,8 +216,7 @@ def build_twin_tool(s: Session) -> ToolResult:
             )
         )
     # Twin streets (openFTTH-specific layer) for the renderer.
-    streets = twin.streets[["highway", "surface", "cost_per_m", "osm_id", "geometry"]].to_crs(4326)
-    streets.to_file(s.project.twin_dir / "streets.geojson", driver="GeoJSON")
+    _write_streets(s, twin)
     result = ToolResult(
         tool="build_twin",
         summary=f"street graph {twin.graph.number_of_nodes()} nodes / {twin.graph.number_of_edges()} edges in {twin.crs.to_string()}, {len(twin.homes)} homes snapped",
@@ -1020,8 +1068,11 @@ def _twin(s: Session) -> Twin:
         area = load_area(inputs["area"])
         osm = import_osm(inputs["osm"], area)
         homes_wgs, _ = homes_from_buildings(osm.buildings, s.rules)
+        excluded = _excluded_osm_ids(s)
+        if excluded and not homes_wgs.empty:
+            homes_wgs = homes_wgs[~homes_wgs["osm_id"].astype(str).isin(excluded)].copy()
         s.cache.update({"osm": osm, "homes_wgs": homes_wgs, "area": area})
-        s.twin = build_twin(osm.streets, homes_wgs, s.rules)
+        s.twin = _finish_twin(s, build_twin(osm.streets, homes_wgs, s.rules))
         pops = s.design.by_kind("pop")
         if pops:
             s.cache["pop_node"] = int(pops[0].openftth["node"])
@@ -1813,3 +1864,379 @@ def apply_scenario(s: Session, name: str, time_limit_s: float = 20.0) -> ToolRes
         version=results[-1].version,
         data={"overrides": overrides, "steps": [r.tool for r in applied + results]},
     )
+
+
+# ---- Manual steering ----------------------------------------------------------------------
+# The engineer's own changes. Each one is an ordinary tool call: ids and a reason in, the
+# snapped numbers out, every dependent solver run again, and the lot recorded as one version
+# with a `source="user"` decision. The crew re-validates afterwards; nothing here bypasses a
+# check. The app calls these through the harness; they are on no crew member's allow-list.
+
+MOVABLE_KINDS = ("pop", "fdh", "fat")
+
+# What a moved site, an excluded building or a no-dig street invalidates, in run order. Only
+# the tools whose output already exists run again, so a steer before routing is just the edit.
+# Chambers come from the cached route trees, so both routing tools always precede them.
+RERUN_CHAIN = (
+    "route_feeder",
+    "route_distribution",
+    "route_drops",
+    "place_chambers",
+    "size_cables",
+    "assign_fibers",
+)
+
+
+def _ran(s: Session, tool: str) -> bool:
+    """Whether a solver's output is in the design, so a steer has to run it again."""
+    d = s.design
+    if tool == "route_feeder":
+        return bool(d.by_kind("feeder"))
+    if tool == "route_distribution":
+        return bool(d.by_kind("distribution"))
+    if tool == "route_drops":
+        return bool(d.by_kind("drop")) or any(
+            "path_to_pop_m" in h.openftth for h in d.by_kind("home")
+        )
+    if tool == "place_chambers":
+        return bool(d.by_kind("chamber"))
+    if tool == "size_cables":
+        return any("tube_count" in c.props for c in d.by_kind("feeder") + d.by_kind("distribution"))
+    if tool == "assign_fibers":
+        return any("fibers_used" in c.openftth for c in d.by_kind("distribution"))
+    return False
+
+
+def _rerun(s: Session, chain: tuple[str, ...] = RERUN_CHAIN) -> list[ToolResult]:
+    """Run the solvers whose output exists again, in order, collecting their results instead
+    of committing each one; the caller records everything as one version."""
+    todo = [name for name in chain if _ran(s, name)]
+    s.deferred = []
+    try:
+        for name in todo:
+            globals()[name](s)
+    finally:
+        out, s.deferred = s.deferred, None
+    return out
+
+
+def _merge(result: ToolResult, sub: list[ToolResult]) -> ToolResult:
+    """Fold the re-run solvers' decisions and warnings into the steering tool's result."""
+    for r in sub:
+        result.decisions.extend(r.decisions)
+        result.warnings.extend(r.warnings)
+    if sub:
+        result.summary += "; re-ran " + ", ".join(r.tool for r in sub)
+    result.data["reran"] = [r.tool for r in sub]
+    return result
+
+
+def _rejected(tool: str, why: str) -> ToolResult:
+    return ToolResult(tool=tool, summary=f"rejected: {why}", warnings=[why])
+
+
+def _to_metric(twin: Twin, lon: float, lat: float) -> Point:
+    return gpd.GeoSeries([Point(lon, lat)], crs=4326).to_crs(twin.crs).iloc[0]
+
+
+def _label(f: Feature) -> str:
+    return str(f.props.get("name") or f"{f.kind} {f.element_uuid[:8]}")
+
+
+def move_site(s: Session, element_uuid: str, lon: float, lat: float, reason: str) -> ToolResult:
+    """The engineer moves the POP, an FDH or an outdoor FAT. The point snaps to the nearest
+    routable street node; the site keeps its id and its connections; everything routed from
+    it is routed and sized again, as one version with the reason on record."""
+    reason = (reason or "").strip()
+    if not reason:
+        return _rejected("move_site", "a reason is required; every manual move records why")
+    if element_uuid not in s.design:
+        return _rejected("move_site", f"no element {element_uuid} in the design")
+    f = s.design.get(element_uuid)
+    kind = f.kind
+    if kind not in MOVABLE_KINDS:
+        return _rejected(
+            "move_site",
+            f"a {kind} cannot be moved by hand; only the POP, cabinets (FDH) and outdoor FATs can",
+        )
+    if kind == "fat" and f.openftth.get("mdu"):
+        return _rejected(
+            "move_site",
+            "an indoor FAT sits in its building; exclude the building or change fat.max_homes instead",
+        )
+    s.project.set_stage("solve")
+    twin = _twin(s)
+    before = s.design.copy()
+    name = _label(f)
+    old_node = int(f.openftth["node"])
+    p = _to_metric(twin, lon, lat)
+    node, snap_m = twin.nearest_node(p.x, p.y)
+    if int(node) == old_node:
+        return _rejected(
+            "move_site", f"{name} already stands on the street node nearest to that point"
+        )
+    moved_m = float(twin.node_point(old_node).distance(twin.node_point(node)))
+    f.geometry = _wgs(twin, twin.node_point(node))
+    f.openftth["node"] = int(node)
+    f.openftth["placed_by"] = "engineer"
+    f.openftth["placed_reason"] = reason
+    if kind == "pop":
+        s.cache["pop_node"] = int(node)
+    decisions = [
+        Decision(
+            stage="solve",
+            tool="move_site",
+            element=element_uuid,
+            reason=(
+                f"{name} moved {moved_m:.0f} m by the engineer: {reason}. "
+                f"The point was snapped {snap_m:.0f} m to the nearest routable street node."
+            ),
+            values={
+                "moved_m": round(moved_m, 1),
+                "snap_m": round(snap_m, 1),
+                "node": int(node),
+                "from_node": old_node,
+            },
+            source="user",
+        )
+    ]
+    warnings: list[str] = []
+    if kind == "fat":
+        fdh_id = f.openftth.get("fdh_id")
+        if fdh_id and fdh_id in s.design:
+            fdh_node = int(s.design.get(fdh_id).openftth["node"])
+            try:
+                dist = float(
+                    nx.shortest_path_length(twin.graph, int(node), fdh_node, weight="length_m")
+                )
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                dist = math.inf
+            limit = s.rules.distances.max_dist_m
+            if dist > limit:
+                warnings.append(
+                    f"{name} is now {dist:.0f} m along the street from its cabinet, over max_dist_m ({limit:g} m); the Checker will flag it"
+                )
+    sub = _rerun(s)
+    result = _merge(
+        ToolResult(
+            tool="move_site",
+            summary=f"{name} moved {moved_m:.0f} m to street node {node}",
+            decisions=decisions,
+            warnings=warnings,
+            data={
+                "element": element_uuid,
+                "kind": kind,
+                "node": int(node),
+                "moved_m": round(moved_m, 1),
+                "snap_m": round(snap_m, 1),
+            },
+        ),
+        sub,
+    )
+    return _commit(s, result, before)
+
+
+def exclude_building(s: Session, element_uuid: str, reason: str) -> ToolResult:
+    """The engineer takes a building out of the design (not a dwelling, out of scope, will
+    not take the service). Its homes and drops go, its FAT and cabinet lose the units, and
+    the exclusion is kept with the project inputs so a re-import or a twin rebuild honours it."""
+    reason = (reason or "").strip()
+    if not reason:
+        return _rejected("exclude_building", "a reason is required")
+    if element_uuid not in s.design:
+        return _rejected("exclude_building", f"no element {element_uuid} in the design")
+    b = s.design.get(element_uuid)
+    if b.kind != "building":
+        return _rejected("exclude_building", f"{element_uuid} is a {b.kind}, not a building")
+    if b.openftth.get("excluded"):
+        return _rejected("exclude_building", "that building is already excluded")
+    s.project.set_stage("solve")
+    before = s.design.copy()
+    osm_id = str(b.openftth.get("osm_id", ""))
+    name = f"building {osm_id}"
+    homes = [h for h in s.design.by_kind("home") if h.openftth.get("building") == element_uuid]
+    units = sum(int(h.openftth.get("units", 0)) for h in homes)
+    b.openftth["excluded"] = True
+    b.openftth["excluded_reason"] = reason
+    s.project.meta.setdefault("inputs", {})["excluded_buildings"] = _steering(
+        s, "excluded_buildings"
+    ) + [{"osm_id": osm_id, "element": element_uuid, "reason": reason}]
+    if s.twin is not None and not s.twin.homes.empty:
+        s.twin.homes = s.twin.homes[s.twin.homes["osm_id"].astype(str) != osm_id].copy()
+    hw = s.cache.get("homes_wgs")
+    if hw is not None and not hw.empty:
+        s.cache["homes_wgs"] = hw[hw["osm_id"].astype(str) != osm_id].copy()
+
+    # Detach the homes: a dedicated indoor FAT goes with its building, a shared FAT loses
+    # the units, and so does the cabinet above it. Ids of everything that stays are unchanged.
+    fats_removed = 0
+    fats_reduced: set[str] = set()
+    for h in homes:
+        fat_ids = [x for x in (h.openftth.get("fat_ids") or [h.openftth.get("fat_id")]) if x]
+        for fid in fat_ids:
+            if fid not in s.design:
+                continue
+            fat = s.design.get(fid)
+            fdh_id = fat.openftth.get("fdh_id")
+            fdh = s.design.get(fdh_id) if fdh_id and fdh_id in s.design else None
+            if fat.openftth.get("mdu"):
+                lost = int(fat.openftth.get("units", 0))
+                s.design.remove(fid)
+                fats_removed += 1
+            else:
+                lost = int(h.openftth.get("units", 0))
+                left = max(0, int(fat.openftth.get("units", 0)) - lost)
+                fat.openftth["units"] = left
+                fat.props["total_connections"] = left
+                fat.props["reserve_capacity"] = int(fat.props.get("port_capacity", 0)) - left
+                if left == 0:
+                    s.design.remove(fid)
+                    fats_removed += 1
+                else:
+                    fats_reduced.add(fid)
+            if fdh is not None:
+                if fid not in s.design:
+                    fdh.openftth["fats"] = max(0, int(fdh.openftth.get("fats", 0)) - 1)
+                left = max(0, int(fdh.openftth.get("units", 0)) - lost)
+                fdh.openftth["units"] = left
+                fdh.props["total_connections"] = left
+                fdh.props["reserve_capacity"] = int(fdh.props.get("port_capacity", 0)) - left
+        s.design.remove_where(kind="drop", home=h.element_uuid)
+        s.design.remove(h.element_uuid)
+
+    decisions = [
+        Decision(
+            stage="solve",
+            tool="exclude_building",
+            element=element_uuid,
+            reason=(
+                f"{name} excluded by the engineer: {reason}. "
+                f"{len(homes)} home(s) with {units} unit(s) left the design; "
+                f"{fats_removed} FAT(s) removed, {len(fats_reduced)} reduced."
+            ),
+            values={
+                "homes": len(homes),
+                "units": units,
+                "fats_removed": fats_removed,
+                "fats_reduced": len(fats_reduced),
+            },
+            source="user",
+        )
+    ]
+    warnings: list[str] = []
+    empty = [_label(x) for x in s.design.by_kind("fdh") if int(x.openftth.get("units", 0)) == 0]
+    if empty:
+        warnings.append(
+            f"{', '.join(empty)} now serve(s) nothing; ask the Planner to place cabinets again"
+        )
+    sub = _rerun(s) if homes else []
+    result = _merge(
+        ToolResult(
+            tool="exclude_building",
+            summary=f"{name} excluded: {len(homes)} home(s), {units} unit(s) removed",
+            decisions=decisions,
+            warnings=warnings,
+            data={
+                "element": element_uuid,
+                "osm_id": osm_id,
+                "homes": len(homes),
+                "units": units,
+                "fats_removed": fats_removed,
+            },
+        ),
+        sub,
+    )
+    return _commit(s, result, before)
+
+
+def forbid_street(s: Session, osm_id: str, reason: str) -> ToolResult:
+    """The engineer marks a street as no-dig (fresh asphalt, a pending permit, a private
+    road). Its ways leave the route graph for good: the list is kept with the project inputs,
+    sites and homes that stood on it move to the nearest remaining street node, and every
+    route is planned again around it, as one version."""
+    reason = (reason or "").strip()
+    osm_id = str(osm_id or "").strip()
+    if not reason:
+        return _rejected("forbid_street", "a reason is required")
+    if not osm_id:
+        return _rejected("forbid_street", "an OSM way id is required")
+    if osm_id in _no_dig_ids(s):
+        return _rejected("forbid_street", f"way {osm_id} is already on the no-dig list")
+    twin = _twin(s)
+    rows = twin.streets[twin.streets["osm_id"].astype(str) == osm_id]
+    if rows.empty:
+        return _rejected("forbid_street", f"no street with OSM id {osm_id} in the twin")
+    s.project.set_stage("solve")
+    before = s.design.copy()
+    highway = str(rows["highway"].iloc[0])
+    s.project.meta.setdefault("inputs", {})["no_dig"] = _steering(s, "no_dig") + [
+        {"osm_id": osm_id, "reason": reason}
+    ]
+    edges, length_m = twin.forbid_ways(_no_dig_ids(s))
+    twin.resnap_homes()
+
+    # Whatever stood on a node that left the graph moves to the nearest remaining one: a
+    # site moves bodily (it sits on the street), a home only changes its street node.
+    resnapped = 0
+    sited = (
+        s.design.by_kind("pop")
+        + s.design.by_kind("fdh")
+        + s.design.by_kind("fat")
+        + s.design.by_kind("home")
+    )
+    for f in sited:
+        node = int(f.openftth["node"])
+        if node in twin.graph:
+            continue
+        c = f.geometry.representative_point()
+        p = _to_metric(twin, c.x, c.y)
+        new, d = twin.nearest_node(p.x, p.y)
+        f.openftth["node"] = int(new)
+        if f.kind == "home":
+            f.openftth["offset_m"] = round(float(d), 1)
+        elif not f.openftth.get("mdu"):
+            f.geometry = _wgs(twin, twin.node_point(new))
+        if f.kind == "pop":
+            s.cache["pop_node"] = int(new)
+        resnapped += 1
+    _write_streets(s, twin)
+
+    decisions = [
+        Decision(
+            stage="twin",
+            tool="forbid_street",
+            reason=(
+                f"{highway} way {osm_id} marked no-dig by the engineer: {reason}. "
+                f"{edges} graph edge(s), {length_m:.0f} m, left the route graph"
+                + (
+                    f"; {resnapped} element(s) moved to the nearest remaining street node."
+                    if resnapped
+                    else "."
+                )
+            ),
+            values={
+                "osm_id": osm_id,
+                "edges": edges,
+                "length_m": round(length_m, 1),
+                "resnapped": resnapped,
+            },
+            source="user",
+        )
+    ]
+    sub = _rerun(s)
+    result = _merge(
+        ToolResult(
+            tool="forbid_street",
+            summary=f"{highway} {osm_id} is no-dig: {length_m:.0f} m of street left the route graph",
+            decisions=decisions,
+            data={
+                "osm_id": osm_id,
+                "highway": highway,
+                "edges": edges,
+                "length_m": round(length_m, 1),
+                "resnapped": resnapped,
+            },
+        ),
+        sub,
+    )
+    return _commit(s, result, before)

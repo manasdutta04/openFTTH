@@ -60,6 +60,43 @@ class Twin:
     def total_units(self) -> int:
         return int(self.homes["units"].sum()) if not self.homes.empty else 0
 
+    def forbid_ways(self, osm_ids: set[str]) -> tuple[int, float]:
+        """Take the given OSM ways out of the route graph (the engineer's no-dig list), keep
+        the largest connected part, and flag the streets. Node ids stay as they are so every
+        sited element keeps its node unless that node left the graph.
+
+        Returns the number of edges removed and their length in metres.
+        """
+        gone = [
+            (u, v) for u, v, d in self.graph.edges(data=True) if str(d.get("osm_id")) in osm_ids
+        ]
+        length = float(sum(self.graph[u][v]["length_m"] for u, v in gone))
+        if gone:
+            self.graph.remove_edges_from(gone)
+            comps = sorted(nx.connected_components(self.graph), key=len, reverse=True)
+            if len(comps) > 1:
+                self.graph = self.graph.subgraph(comps[0]).copy()
+            self._tree = None
+            self._tree_nodes = None
+        self.streets["no_dig"] = self.streets["osm_id"].astype(str).isin(osm_ids)
+        return len(gone), length
+
+    def resnap_homes(self) -> int:
+        """Snap the homes whose street node left the graph to the nearest remaining node."""
+        if self.homes.empty:
+            return 0
+        stale = ~self.homes["node"].isin(list(self.graph.nodes))
+        if not stale.any():
+            return 0
+        pts = np.column_stack(
+            [self.homes.loc[stale].geometry.x.values, self.homes.loc[stale].geometry.y.values]
+        )
+        d, i = self.kdtree.query(pts)
+        assert self._tree_nodes is not None
+        self.homes.loc[stale, "node"] = self._tree_nodes[i].astype(int)
+        self.homes.loc[stale, "offset_m"] = d.astype(float)
+        return int(stale.sum())
+
 
 def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules: Rulebook) -> Twin:
     """Project to a metric CRS, build the street graph, snap homes to it."""
