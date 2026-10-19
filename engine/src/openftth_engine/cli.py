@@ -87,9 +87,15 @@ def schema(
     out: Annotated[
         Path | None, typer.Option(help="Write JSON schema here instead of stdout")
     ] = None,
+    operator: Annotated[
+        bool, typer.Option("--operator", help="The operator pack schema instead")
+    ] = False,
 ) -> None:
-    """Print (or write) the rulebook JSON schema generated from the pydantic model."""
-    text = json.dumps(Rulebook.model_json_schema(by_alias=True), indent=2) + "\n"
+    """Print (or write) the rulebook (or operator pack) JSON schema from the pydantic model."""
+    from .network import OperatorPack
+
+    model = OperatorPack if operator else Rulebook
+    text = json.dumps(model.model_json_schema(by_alias=True), indent=2) + "\n"
     if out:
         out.write_text(text, encoding="utf-8")
         console.print(f"wrote {out}")

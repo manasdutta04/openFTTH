@@ -20,7 +20,13 @@ from . import pipeline
 from .results import ToolResult
 from .rules import Rulebook, list_presets, load_rulebook
 
-RISKY_TOOLS = {"route_outside_ducts", "add_trench", "export_for_construction", "rewind_design"}
+RISKY_TOOLS = {
+    "route_outside_ducts",
+    "add_trench",
+    "export_for_construction",
+    "rewind_design",
+    "post_work_order",
+}
 
 mcp = FastMCP(
     "openftth-engine",
@@ -118,6 +124,11 @@ def design_summary() -> dict[str, Any]:
         "stage": _s().project.meta.get("stage"),
         "version": _s().project.head(),
         "elements": kinds,
+        "network_of_record": _s().project.record(),
+        "work_order": next(
+            (w for w in _s().project.meta.get("work_orders", []) if w["state"] == "open"), None
+        ),
+        "operator": _s().project.meta.get("operator", "generic"),
     }
 
 
@@ -310,7 +321,82 @@ def forbid_street(osm_id: str, reason: str) -> dict[str, Any]:
     return _out(pipeline.forbid_street(_s(), osm_id, reason))
 
 
+# ---- network of record: operator pack, lifecycle, work orders, trace -------------------------
+
+
+@mcp.tool()
+def get_operator_pack() -> dict[str, Any]:
+    """The operator pack in force: object types, id patterns, required attributes, lifecycle."""
+    return _out(pipeline.get_operator_pack(_s()))
+
+
+@mcp.tool()
+def set_operator_pack(name: str) -> dict[str, Any]:
+    """Switch the project to another shipped operator pack (for example `generic`)."""
+    return _out(pipeline.set_operator_pack(_s(), name))
+
+
+@mcp.tool()
+def check_operator() -> dict[str, Any]:
+    """Check the design against the operator pack: ids, required attributes, lifecycle states,
+    and that every home's fibre reaches an OLT port. Read-only; commits nothing."""
+    return _out(pipeline.check_operator_tool(_s()))
+
+
+@mcp.tool()
+def set_lifecycle(
+    state: str,
+    reason: str,
+    element_uuids: list[str] | None = None,
+    kinds: list[str] | None = None,
+) -> dict[str, Any]:
+    """Move objects (by id, or every object of the given kinds) to a lifecycle state:
+    planned, in_construction, as_built, in_service, out_of_service, removed. The operator
+    pack decides which transitions are allowed."""
+    return _out(pipeline.set_lifecycle(_s(), state, reason, element_uuids, kinds))
+
+
+@mcp.tool()
+def open_work_order(title: str) -> dict[str, Any]:
+    """Open a work order: every change from now on belongs to it until it is posted."""
+    return _out(pipeline.open_work_order(_s(), title))
+
+
+@mcp.tool()
+def work_order_status() -> dict[str, Any]:
+    """The open work order, the network of record, and what changed since, by kind."""
+    return _out(pipeline.work_order_status(_s()))
+
+
+@mcp.tool()
+def trace_fibre(element_uuid: str) -> dict[str, Any]:
+    """Trace a home's fibre (or the home behind a drop) from its OLT port through every
+    cable, splice and splitter to the home, with the loss of each hop."""
+    return _out(pipeline.trace_fibre(_s(), element_uuid))
+
+
+@mcp.tool()
+def homes_behind(element_uuid: str) -> dict[str, Any]:
+    """Every home whose fibre passes through a cable, closure, chamber, FAT or cabinet."""
+    return _out(pipeline.homes_behind_tool(_s(), element_uuid))
+
+
 # ---- risky tools (never on an allow-list; need an approval_id) ---------------------------------
+
+
+@mcp.tool()
+def post_work_order(approval_id: str | None = None) -> dict[str, Any]:
+    """RISKY: post the open work order to the network of record. Needs the engineer's
+    approval; the operator pack and the design rules must pass with no errors."""
+    refusal = _refuse_without_approval("post_work_order", approval_id)
+    if refusal:
+        return refusal
+    r = pipeline.post_work_order(_s())
+    if r.version:
+        # The card's id travels in the permission layer; say it here so the crew can quote it.
+        r.data["approval_id"] = approval_id
+        r.summary += f"; approved by the engineer (card {str(approval_id)[:8]})"
+    return _out(r)
 
 
 @mcp.tool()

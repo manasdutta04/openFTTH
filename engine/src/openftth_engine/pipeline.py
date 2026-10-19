@@ -21,6 +21,8 @@ from .deliver import build_boq, render_map
 from .deliver.boq import boq_to_csv
 from .ingest import homes_from_buildings, import_osm, load_area
 from .interchange import Design, Feature, Metadata, stable_uuid
+from .network import check_operator, homes_behind, load_operator_pack, trace_home
+from .network.operator import OperatorPack
 from .project import Project
 from .results import Decision, ToolResult
 from .rules import Rulebook
@@ -99,7 +101,61 @@ def _wgs(twin: Twin, geom) -> Any:
     return gpd.GeoSeries([geom], crs=twin.crs).to_crs(4326).iloc[0]
 
 
+# Where an object's data comes from, by the tool that first wrote it.
+TOOL_SOURCE = {
+    "import_osm": "osm",
+    "build_twin": "osm",
+    "move_site": "user",
+    "exclude_building": "user",
+    "forbid_street": "user",
+}
+
+
+# Tools that record or change the network's state but never create design objects.
+NETWORK_TOOLS = {
+    "open_work_order",
+    "post_work_order",
+    "set_lifecycle",
+    "set_operator_pack",
+    "set_rule",
+}
+
+
+def _pack(s: Session) -> OperatorPack:
+    name = s.project.meta.get("operator", "generic")
+    if s.cache.get("operator_pack_name") != name:
+        s.cache["operator_pack"] = load_operator_pack(name)
+        s.cache["operator_pack_name"] = name
+    return s.cache["operator_pack"]
+
+
+def _stamp(s: Session, tool: str, before: Design | None) -> None:
+    """Give every object a lifecycle state and provenance. An object a solver rebuilt with the
+    same id keeps what it had; a new one starts in the pack's initial state."""
+    initial = _pack(s).lifecycle.initial
+    for f in s.design:
+        if "lifecycle" in f.openftth:
+            continue
+        prev = None
+        if before is not None and f.element_uuid in before:
+            prev = before.get(f.element_uuid)
+        if prev is not None and "lifecycle" in prev.openftth:
+            f.openftth["lifecycle"] = prev.openftth["lifecycle"]
+            if "provenance" in prev.openftth:
+                f.openftth.setdefault("provenance", prev.openftth["provenance"])
+            continue
+        f.openftth["lifecycle"] = initial
+        if tool in NETWORK_TOOLS:
+            # Made before provenance was recorded: say where such objects come from, not who.
+            src = "osm" if f.kind in ("building", "home", "service_area") else "solver"
+            prov = {"source": src, "created_by": "unrecorded"}
+        else:
+            prov = {"source": TOOL_SOURCE.get(tool, "solver"), "created_by": tool}
+        f.openftth.setdefault("provenance", prov)
+
+
 def _commit(s: Session, result: ToolResult, before: Design | None = None) -> ToolResult:
+    _stamp(s, result.tool, before)
     if before is not None:
         result.changes = before.diff(s.design).summary()
     if s.deferred is not None:
@@ -2076,6 +2132,11 @@ def move_site(s: Session, element_uuid: str, lon: float, lat: float, reason: str
     f.openftth["node"] = int(node)
     f.openftth["placed_by"] = "engineer"
     f.openftth["placed_reason"] = reason
+    f.openftth["provenance"] = {
+        **f.openftth.get("provenance", {}),
+        "source": "user",
+        "updated_by": "move_site",
+    }
     if kind == "pop":
         s.cache["pop_node"] = int(node)
     decisions = [
@@ -2336,3 +2397,327 @@ def forbid_street(s: Session, osm_id: str, reason: str) -> ToolResult:
         sub,
     )
     return _commit(s, result, before)
+
+
+# ---- Network of record --------------------------------------------------------------------
+# Operator pack, lifecycle, work orders and fibre trace (docs/PLAN-NETWORK.md, phase N1).
+# A work order records the network of record it started from; everything committed after it
+# opened belongs to it; posting moves the `refs/network/record` pointer to the new version
+# after the operator checks and the rule checks pass, and needs the engineer's approval.
+
+
+def get_operator_pack(s: Session) -> ToolResult:
+    pack = _pack(s)
+    return ToolResult(
+        tool="get_operator_pack",
+        summary=f"operator pack {pack.name}: {len(pack.objects)} object rules",
+        data=pack.model_dump(),
+    )
+
+
+def set_operator_pack(s: Session, name: str) -> ToolResult:
+    try:
+        pack = load_operator_pack(name)
+    except (FileNotFoundError, ValueError) as exc:
+        return _rejected("set_operator_pack", str(exc))
+    s.project.meta["operator"] = name
+    s.cache.pop("operator_pack_name", None)
+    return _commit(
+        s,
+        ToolResult(
+            tool="set_operator_pack",
+            summary=f"operator pack set to {pack.name}",
+            decisions=[
+                Decision(
+                    stage="rules",
+                    tool="set_operator_pack",
+                    reason=f"Objects are named, recorded and accepted by the {pack.name} operator pack: {pack.description}",
+                    values={"operator": pack.name},
+                    source="user",
+                )
+            ],
+            data={"operator": pack.name},
+        ),
+        s.design.copy(),
+    )
+
+
+def check_operator_tool(s: Session) -> ToolResult:
+    pack = _pack(s)
+    violations = check_operator(s.design, pack)
+    errors = [v for v in violations if v.severity == "error"]
+    by_rule: dict[str, int] = {}
+    for v in violations:
+        by_rule[v.rule] = by_rule.get(v.rule, 0) + 1
+    msg = (
+        "no violations"
+        if not violations
+        else ", ".join(f"{k}: {n}" for k, n in sorted(by_rule.items()))
+    )
+    return ToolResult(
+        tool="check_operator",
+        summary=f"operator pack {pack.name}: {msg}",
+        warnings=[f"{v.severity}: {v.message}" for v in violations[:10]],
+        data={
+            "operator": pack.name,
+            "errors": len(errors),
+            "warnings": len(violations) - len(errors),
+            "by_rule": by_rule,
+            "violations": [v.to_dict() for v in violations[:200]],
+            "design_version": s.project.head(),
+        },
+    )
+
+
+def set_lifecycle(
+    s: Session,
+    state: str,
+    reason: str,
+    element_uuids: list[str] | None = None,
+    kinds: list[str] | None = None,
+) -> ToolResult:
+    """Move objects to a new lifecycle state (for example in_construction when the crew starts
+    digging, as_built when the field reports it done). Every transition must be allowed by
+    the operator pack; nothing changes if one is not."""
+    reason = (reason or "").strip()
+    if not reason:
+        return _rejected("set_lifecycle", "a reason is required")
+    if not element_uuids and not kinds:
+        return _rejected("set_lifecycle", "name the objects by element_uuids or kinds")
+    pack = _pack(s)
+    missing = [u for u in (element_uuids or []) if u not in s.design]
+    if missing:
+        return _rejected("set_lifecycle", f"unknown element(s): {', '.join(missing[:5])}")
+    targets = [s.design.get(u) for u in (element_uuids or [])]
+    for k in kinds or []:
+        targets.extend(s.design.by_kind(k))
+    unique = {f.element_uuid: f for f in targets if f.kind != "service_area"}
+    targets = [unique[u] for u in sorted(unique)]
+    if not targets:
+        return _rejected("set_lifecycle", "no objects of those kinds in the design")
+    blocked = [
+        f
+        for f in targets
+        if f.openftth.get("lifecycle") != state
+        and not pack.lifecycle.allows(
+            str(f.openftth.get("lifecycle", pack.lifecycle.initial)), state
+        )
+    ]
+    if blocked:
+        f = blocked[0]
+        allowed = pack.lifecycle.transitions.get(str(f.openftth.get("lifecycle")), [])
+        return _rejected(
+            "set_lifecycle",
+            f"{len(blocked)} object(s) cannot go to {state}; e.g. {_label(f)} is "
+            f"{f.openftth.get('lifecycle')} and may go to {allowed or 'nothing'}",
+        )
+    before = s.design.copy()
+    changed = 0
+    by_kind: dict[str, int] = {}
+    for f in targets:
+        by_kind[f.kind] = by_kind.get(f.kind, 0) + 1
+        if f.openftth.get("lifecycle") != state:
+            f.openftth["lifecycle"] = state
+            changed += 1
+    return _commit(
+        s,
+        ToolResult(
+            tool="set_lifecycle",
+            summary=f"{changed} object(s) now {state}",
+            decisions=[
+                Decision(
+                    stage="deliver",
+                    tool="set_lifecycle",
+                    reason=f"{changed} object(s) moved to {state} by the engineer: {reason}.",
+                    values={"state": state, "objects": by_kind},
+                    source="user",
+                )
+            ],
+            data={"state": state, "changed": changed, "objects": by_kind},
+        ),
+        before,
+    )
+
+
+def _work_orders(s: Session) -> list[dict[str, Any]]:
+    return s.project.meta.setdefault("work_orders", [])
+
+
+def _open_work_order(s: Session) -> dict[str, Any] | None:
+    return next((w for w in _work_orders(s) if w["state"] == "open"), None)
+
+
+def open_work_order(s: Session, title: str) -> ToolResult:
+    title = (title or "").strip()
+    if not title:
+        return _rejected("open_work_order", "a title is required")
+    current = _open_work_order(s)
+    if current:
+        return _rejected(
+            "open_work_order", f"{current['id']} ({current['title']}) is still open; post it first"
+        )
+    wo = {
+        "id": f"WO-{len(_work_orders(s)) + 1:04d}",
+        "title": title,
+        "state": "open",
+        "base": s.project.record(),
+        "opened_at": s.project.head(),
+    }
+    _work_orders(s).append(wo)
+    return _commit(
+        s,
+        ToolResult(
+            tool="open_work_order",
+            summary=f"{wo['id']} opened: {title}",
+            decisions=[
+                Decision(
+                    stage="solve",
+                    tool="open_work_order",
+                    reason=f"Changes from here on belong to {wo['id']} ({title}) until it is posted to the network of record.",
+                    values={"work_order": wo["id"], "base": wo["base"]},
+                    source="user",
+                )
+            ],
+            data=dict(wo),
+        ),
+        s.design.copy(),
+    )
+
+
+def _kind_diff(old: Design, new: Design) -> dict[str, dict[str, int]]:
+    diff = old.diff(new)
+    out: dict[str, dict[str, int]] = {}
+    for key, ids, design in (
+        ("added", diff.added, new),
+        ("removed", diff.removed, old),
+        ("modified", diff.modified, new),
+    ):
+        for u in ids:
+            if u.startswith("table:"):
+                kind = u.split(":")[1]
+            else:
+                kind = design.get(u).kind if u in design else "unknown"
+            out.setdefault(kind, {"added": 0, "removed": 0, "modified": 0})[key] += 1
+    return out
+
+
+def _record_design(s: Session) -> tuple[str | None, Design]:
+    record = s.project.record()
+    return record, (s.project.design_at(record) if record else Design(s.design.metadata))
+
+
+def work_order_status(s: Session) -> ToolResult:
+    wo = _open_work_order(s)
+    record, base = _record_design(s)
+    changes = _kind_diff(base, s.design)
+    totals = {k: sum(v[k] for v in changes.values()) for k in ("added", "removed", "modified")}
+    states: dict[str, int] = {}
+    for f in s.design:
+        st = str(f.openftth.get("lifecycle", "unset"))
+        states[st] = states.get(st, 0) + 1
+    what = f"{wo['id']} open ({wo['title']})" if wo else "no work order open"
+    return ToolResult(
+        tool="work_order_status",
+        summary=f"{what}; network of record {record[:8] if record else 'empty'}; "
+        f"{totals['added']} added, {totals['removed']} removed, {totals['modified']} modified since",
+        data={
+            "work_order": wo,
+            "network_of_record": record,
+            "head": s.project.head(),
+            "changes_by_kind": changes,
+            "totals": totals,
+            "lifecycle": states,
+            "work_orders": _work_orders(s),
+        },
+    )
+
+
+def post_work_order(s: Session) -> ToolResult:
+    """Post the open work order to the network of record. The MCP layer requires the
+    engineer's approval; here the operator pack and the design rules must pass with no errors."""
+    wo = _open_work_order(s)
+    if wo is None:
+        return _rejected("post_work_order", "no work order is open")
+    record, base = _record_design(s)
+    if base.diff(s.design).is_empty():
+        return _rejected("post_work_order", f"{wo['id']} changes nothing in the network of record")
+    op = [v for v in check_operator(s.design, _pack(s)) if v.severity == "error"]
+    rule_violations, _stats = run_all_checks(s.design, s.rules)
+    rule_errors = [v for v in rule_violations if v.severity == "error"]
+    if op or rule_errors:
+        first = op[0].message if op else rule_errors[0].message
+        return _rejected(
+            "post_work_order",
+            f"{len(op)} operator and {len(rule_errors)} design rule error(s) must be fixed "
+            f"first; e.g. {first}",
+        )
+    changes = _kind_diff(base, s.design)
+    wo["state"] = "posted"
+    wo["posted_from"] = s.project.head()
+    result = _commit(
+        s,
+        ToolResult(
+            tool="post_work_order",
+            summary=f"{wo['id']} posted to the network of record ({wo['title']})",
+            decisions=[
+                Decision(
+                    stage="deliver",
+                    tool="post_work_order",
+                    reason=f"{wo['id']} ({wo['title']}) became the network of record after the engineer's approval; "
+                    f"operator pack {_pack(s).name} and the design rules passed with no errors.",
+                    values={"work_order": wo["id"], "changes": changes},
+                    source="user",
+                )
+            ],
+            data={"work_order": wo["id"], "changes_by_kind": changes, "previous_record": record},
+        ),
+        s.design.copy(),
+    )
+    if result.version:
+        s.project.set_record(result.version)
+    result.data["network_of_record"] = result.version
+    return result
+
+
+def trace_fibre(s: Session, element_uuid: str) -> ToolResult:
+    """Trace a home's fibre (or the home behind a drop) from the OLT port to the home."""
+    if element_uuid not in s.design:
+        return _rejected("trace_fibre", f"no element {element_uuid} in the design")
+    f = s.design.get(element_uuid)
+    home_id = element_uuid if f.kind == "home" else f.openftth.get("home")
+    if f.kind not in ("home", "drop") or not home_id:
+        return _rejected(
+            "trace_fibre", f"a {f.kind} carries many fibres; trace a home, or ask homes_behind"
+        )
+    out = trace_home(s.design, s.rules, home_id)
+    steps = out.get("steps", [])
+    names = " → ".join(str(x.get("name")) for x in steps)
+    home_name = out.get("home", {}).get("name", "home")
+    return ToolResult(
+        tool="trace_fibre",
+        summary=(
+            f"{home_name}: OLT port {out.get('olt_port')} → {names}"
+            if out.get("reaches_olt")
+            else f"no path from this home to an OLT port ({out.get('reason', 'path ends before the POP')})"
+        ),
+        warnings=[] if out.get("reaches_olt") else ["the home is not connected to the OLT"],
+        data=out,
+    )
+
+
+def homes_behind_tool(s: Session, element_uuid: str) -> ToolResult:
+    if element_uuid not in s.design:
+        return _rejected("homes_behind", f"no element {element_uuid} in the design")
+    homes = homes_behind(s.design, element_uuid)
+    units = sum(int(s.design.get(h).openftth.get("units", 1)) for h in homes)
+    name = _label(s.design.get(element_uuid))
+    return ToolResult(
+        tool="homes_behind",
+        summary=f"{len(homes)} home(s), {units} unit(s) depend on {name}",
+        data={
+            "element": element_uuid,
+            "homes": len(homes),
+            "units": units,
+            "home_ids": homes[:500],
+        },
+    )

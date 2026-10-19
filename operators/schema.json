@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "Lifecycle": {
+      "additionalProperties": false,
+      "properties": {
+        "initial": {
+          "default": "planned",
+          "title": "Initial",
+          "type": "string"
+        },
+        "transitions": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": "Allowed next states per state",
+          "title": "Transitions",
+          "type": "object"
+        }
+      },
+      "title": "Lifecycle",
+      "type": "object"
+    },
+    "NetworkRules": {
+      "additionalProperties": false,
+      "properties": {
+        "every_home_reaches_olt": {
+          "default": true,
+          "description": "Every home's fibre traces back to an OLT port at the POP",
+          "title": "Every Home Reaches Olt",
+          "type": "boolean"
+        },
+        "unique_ids": {
+          "default": true,
+          "description": "No two objects of one kind share an operator id",
+          "title": "Unique Ids",
+          "type": "boolean"
+        },
+        "max_splitter_fill_pct": {
+          "default": 100.0,
+          "description": "Share of a PON's splitter ports that may be used",
+          "title": "Max Splitter Fill Pct",
+          "type": "number"
+        }
+      },
+      "title": "NetworkRules",
+      "type": "object"
+    },
+    "ObjectRule": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "description": "What the operator calls this object",
+          "title": "Label",
+          "type": "string"
+        },
+        "id_field": {
+          "default": "name",
+          "description": "Attribute that holds the operator id",
+          "title": "Id Field",
+          "type": "string"
+        },
+        "id_pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Regular expression the id must match",
+          "title": "Id Pattern"
+        },
+        "required": {
+          "description": "Attributes (props or openftth keys) that must be set",
+          "items": {
+            "type": "string"
+          },
+          "title": "Required",
+          "type": "array"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "ObjectRule",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "default": "openftth.operator",
+      "pattern": "^openftth\\.operator$",
+      "title": "Format",
+      "type": "string"
+    },
+    "version": {
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "objects": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ObjectRule"
+      },
+      "description": "Rules per design kind (pop, fdh, fat, feeder, \u2026)",
+      "title": "Objects",
+      "type": "object"
+    },
+    "lifecycle": {
+      "$ref": "#/$defs/Lifecycle",
+      "default": {
+        "initial": "planned",
+        "transitions": {
+          "as_built": [
+            "in_service",
+            "in_construction"
+          ],
+          "in_construction": [
+            "as_built",
+            "planned"
+          ],
+          "in_service": [
+            "out_of_service"
+          ],
+          "out_of_service": [
+            "in_service",
+            "removed"
+          ],
+          "planned": [
+            "in_construction",
+            "removed"
+          ],
+          "removed": []
+        }
+      }
+    },
+    "rules": {
+      "$ref": "#/$defs/NetworkRules",
+      "default": {
+        "every_home_reaches_olt": true,
+        "unique_ids": true,
+        "max_splitter_fill_pct": 100.0
+      }
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "OperatorPack",
+  "type": "object"
+}

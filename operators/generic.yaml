@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=./schema.json
+# A neutral operator pack: the ids openFTTH's solvers write, the attributes a network of
+# record needs, the standard lifecycle, and the connectivity rule every operator has.
+# Copy it to describe a real operator's naming and acceptance rules.
+format: openftth.operator
+version: 1
+name: generic
+description: Neutral pack for openFTTH's own ids. Every home must reach an OLT port.
+
+objects:
+  pop:
+    label: POP
+    id_pattern: '^POP$'
+  fdh:
+    label: Cabinet
+    id_pattern: '^FDH-\d{2}$'
+    required: [port_capacity, total_connections, pons]
+  fat:
+    label: FAT
+    id_pattern: '^FAT-\d{3}$'
+    required: [port_capacity, pon_id, fdh_id]
+  feeder:
+    label: Feeder cable
+    id_pattern: '^FDR-\d{3}$'
+    required: [fiber_count, length_m]
+  distribution:
+    label: Distribution cable
+    id_pattern: '^FDH-\d{2}-DST-\d{3}$'
+    required: [fiber_count, length_m, fdh_id]
+  chamber:
+    label: Chamber
+    id_field: manhole_id
+    id_pattern: '^CH-\d+$'
+    required: [manhole_type]
+  home:
+    label: Home
+    required: [units, fat_id, pon_id]
+
+lifecycle:
+  initial: planned
+  transitions:
+    planned: [in_construction, removed]
+    in_construction: [as_built, planned]
+    as_built: [in_service, in_construction]
+    in_service: [out_of_service]
+    out_of_service: [in_service, removed]
+    removed: []
+
+rules:
+  every_home_reaches_olt: true
+  unique_ids: true
+  max_splitter_fill_pct: 100

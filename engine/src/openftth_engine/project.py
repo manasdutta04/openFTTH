@@ -150,6 +150,18 @@ class Project:
         except KeyError:
             return None
 
+    RECORD_REF = b"refs/network/record"
+
+    def record(self) -> str | None:
+        """The version posted as the network of record, if any work order was posted."""
+        try:
+            return self.repo.refs[self.RECORD_REF].decode("ascii")
+        except KeyError:
+            return None
+
+    def set_record(self, version: str) -> None:
+        self.repo.refs[self.RECORD_REF] = version.encode("ascii")
+
     def log(self, limit: int = 50) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         try:

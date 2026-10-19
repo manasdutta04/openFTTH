@@ -39,7 +39,7 @@ Three properties make it better than the tools it replaces:
 | Capability | Incumbent telecom GIS | openFTTH | Crew member |
 |---|---|---|---|
 | Network of record | Inventory of every duct, cable, closure, port, splice, fibre with operator ids | Network store: the design bundle extended to a full inventory model with lifecycle states | Surveyor, Recorder |
-| Work orders | Design changes drawn inside a work order, posted when approved | A work order is a branch of the network store; merge = post, with diff and approval | Planner |
+| Work orders | Design changes drawn inside a work order, posted when approved | A work order collects every change since the network of record; posting moves the record to the new version, with diff, checks and approval | Planner |
 | Guided drawing commands | Operator menus: place distribution point, façade cable, cable going underground, splice pullback cables | The same steps as engine tools that take ids and rule references; the crew calls them, the engineer can trigger them from the map | Planner |
 | Business rules and QA | Connectivity and data-quality checks while drawing | Rule engine from the operator pack, run on every commit, explained per object | Checker |
 | Connectivity and tracing | Port-to-port, fibre-to-fibre trace from exchange to home | Connectivity graph with trace, loss budget per path, impact analysis ("which homes lose service if this closure is cut") | Checker |
@@ -87,6 +87,9 @@ Today's greenfield chain, extended with façade and aerial options:
 The solver prices every option; the Checker explains each choice against the rules.
 
 ### C. Work orders
+N1 keeps one work order open at a time on the project's single line of versions; the network
+of record is a pointer (`refs/network/record`) to the last posted version. Parallel work orders
+as real branches arrive with the team server in N6.
 Every change happens in a work order. The Planner opens it, the solvers fill it, the Checker
 validates it, and posting it to the network of record needs the engineer's approval.
 
