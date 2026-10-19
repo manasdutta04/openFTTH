@@ -195,6 +195,12 @@ pub struct AppState {
     pub last_version_summary: Option<String>,
     pub engines: Vec<EngineInfo>,
     pub engine: Option<EngineCurrent>,
+    /// The version posted as the network of record, if any.
+    pub network_of_record: Option<String>,
+    /// The open work order (`{id, title, …}`), if any.
+    pub work_order: Option<Value>,
+    /// The last fibre trace: the home it is for and the engine's result.
+    pub trace: Option<(String, Value)>,
     pending_open: Option<Receiver<Result<(), String>>>,
 }
 
@@ -232,6 +238,9 @@ impl AppState {
             toasts: Toasts::default(),
             status: String::new(),
             last_version_summary: None,
+            network_of_record: None,
+            work_order: None,
+            trace: None,
             engines: Vec::new(),
             engine: None,
             pending_open: None,
@@ -350,6 +359,10 @@ impl AppState {
                 if let Some(stage) = v["summary"]["stage"].as_str() {
                     self.stage = Some(stage.to_string());
                 }
+                self.network_of_record = v["summary"]["network_of_record"]
+                    .as_str()
+                    .map(str::to_string);
+                self.work_order = Some(v["summary"]["work_order"].clone()).filter(|w| !w.is_null());
                 if let Some(folks) = v["folks"].as_object() {
                     for (k, st) in folks {
                         self.folk_states.insert(k.clone(), s(st));
@@ -416,6 +429,44 @@ impl AppState {
     pub fn refresh_backstage(&mut self) {
         if let Ok(Value::Array(v)) = self.client.backstage(400) {
             self.backstage = v;
+        }
+    }
+
+    /// Ask the engine for a home's fibre path; the map lights it up and Properties lists it.
+    pub fn trace(&mut self, uuid: &str) {
+        match self.client.trace(uuid) {
+            Ok(v) => {
+                if v["summary"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("rejected"))
+                {
+                    self.toasts.info(s(&v["summary"]));
+                } else {
+                    self.trace = Some((uuid.to_string(), v));
+                }
+            }
+            Err(e) => self.toasts.error(format!("trace: {e}")),
+        }
+    }
+
+    /// Element ids on the current trace, for highlighting.
+    pub fn trace_ids(&self) -> Vec<String> {
+        self.trace
+            .as_ref()
+            .and_then(|(_, v)| v["data"]["steps"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|st| st["element"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// The network of record and the open work order, from the engine's summary.
+    pub fn refresh_record(&mut self) {
+        if let Ok(v) = self.client.project() {
+            self.network_of_record = v["summary"]["network_of_record"]
+                .as_str()
+                .map(str::to_string);
+            self.work_order = Some(v["summary"]["work_order"].clone()).filter(|w| !w.is_null());
         }
     }
 
@@ -516,6 +567,8 @@ impl AppState {
                 self.last_version_summary = f.data["summary"].as_str().map(str::to_string);
                 self.reload_design();
                 self.refresh_versions();
+                self.refresh_record();
+                self.trace = None;
                 self.explanations.clear();
                 self.changed.clear();
                 if self.versions.len() >= 2 {

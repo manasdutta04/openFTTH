@@ -447,6 +447,7 @@ pub fn versions_tab(ui: &mut Ui, st: &mut AppState) {
         .map(|pr| pr.approved.clone())
         .unwrap_or_default();
     let versions = st.versions.clone();
+    let record = st.network_of_record.clone();
     let mut approve: Option<String> = None;
     let mut compare: Option<String> = None;
     egui::ScrollArea::vertical().id_salt("versions").auto_shrink([false, false]).show(ui, |ui| {
@@ -461,6 +462,10 @@ pub fn versions_tab(ui: &mut Ui, st: &mut AppState) {
                 }
                 if approved.contains(&ver) {
                     tag(ui, "approved", egui::Color32::WHITE, p.green);
+                }
+                if record.as_deref() == Some(ver.as_str()) {
+                    tag(ui, "network of record", egui::Color32::WHITE, p.green.gamma_multiply(0.8))
+                        .on_hover_text("The version posted by the last work order");
                 }
                 if !stage.is_empty() {
                     tag(ui, &stage, p.text2, p.bg3);

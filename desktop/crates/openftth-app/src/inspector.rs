@@ -32,6 +32,66 @@ pub fn is_excluded(e: &openftth_core::Element) -> bool {
         == Some(true)
 }
 
+/// The trace as a list from the OLT port to the home: what each hop is, and its loss.
+fn fibre_path(ui: &mut Ui, p: &crate::theme::Palette, t: &serde_json::Value) {
+    let d = &t["data"];
+    if d["reaches_olt"].as_bool() != Some(true) {
+        ui.label(text(s(&t["summary"]), 12.0, Weight::Regular, p.red));
+        return;
+    }
+    let steps = d["steps"].as_array().cloned().unwrap_or_default();
+    for (i, st) in steps.iter().enumerate() {
+        let name = s(&st["name"]);
+        let detail = if st["side"].as_str() == Some("OLT") {
+            format!("OLT port {}", s(&st["port"]))
+        } else if let Some(side) = st["side"].as_str() {
+            if side.ends_with("splitter in") {
+                "splitter input".to_string()
+            } else if side == "indoor" {
+                format!("indoor port {}", s(&st["port"]))
+            } else {
+                format!("{side} port {}", s(&st["port"]))
+            }
+        } else {
+            format!(
+                "tube {} fibre {} · {:.0} m",
+                s(&st["tube"]),
+                s(&st["fiber"]),
+                st["length_m"].as_f64().unwrap_or(0.0)
+            )
+        };
+        if let Some(via) = st.get("via").filter(|v| v.is_object()) {
+            let at = via["at"].as_str().map(|a| format!(" at {a}")).unwrap_or_default();
+            ui.label(text(
+                format!(
+                    "  ↓ {}{} · {:.1} dB",
+                    s(&via["connection"]),
+                    at,
+                    via["loss_db"].as_f64().unwrap_or(0.0)
+                ),
+                11.0,
+                Weight::Regular,
+                p.text3,
+            ));
+        }
+        ui.horizontal(|ui| {
+            ui.label(text(format!("{:>2}", i + 1), 11.0, Weight::Regular, p.text3));
+            ui.label(text(name, 12.0, Weight::Semibold, p.text));
+            ui.label(text(detail, 11.5, Weight::Regular, p.text2));
+        });
+    }
+    ui.add_space(4.0);
+    kv(
+        ui,
+        p,
+        "fibre + joints",
+        &format!("{:.2} dB", d["fibre_and_joint_loss_db"].as_f64().unwrap_or(0.0)),
+    );
+    if let Some(odn) = d["odn_loss_db"].as_f64() {
+        kv(ui, p, "ODN loss (budget check)", &format!("{odn:.2} dB"));
+    }
+}
+
 pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
     let p = st.palette;
     let uuid = st.selection.first().cloned()?;
@@ -81,6 +141,18 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                         if is_excluded(&e) {
                             tag(ui, "excluded", p.red, p.red.gamma_multiply(0.2));
                         }
+                        if let Some(state) = e.openftth.get("lifecycle").and_then(|v| v.as_str()) {
+                            tag(ui, &state.replace('_', " "), p.text2, p.bg3);
+                        }
+                        if let Some(src) = e
+                            .openftth
+                            .get("provenance")
+                            .and_then(|v| v.get("source"))
+                            .and_then(|v| v.as_str())
+                        {
+                            tag(ui, &format!("from {src}"), p.text3, p.bg2)
+                                .on_hover_text("Where this object's data comes from");
+                        }
                     });
                     ui.add_space(6.0);
                     let busy = st.busy();
@@ -107,6 +179,13 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                         {
                             action = Some(InspectorAction::Move(uuid.clone()));
                         }
+                        if matches!(e.kind(), "home" | "drop")
+                            && button_ex(ui, &p, None, "Trace fibre", Kind::Quiet, true)
+                                .on_hover_text("Follow this home's fibre from the OLT port, hop by hop")
+                                .clicked()
+                        {
+                            st.trace(&uuid);
+                        }
                         if e.kind() == "building"
                             && !is_excluded(&e)
                             && button_ex(ui, &p, None, "Exclude…", Kind::Quiet, !busy)
@@ -127,7 +206,7 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                     }
                     let skip = [
                         "kind", "edges", "surfaces", "node", "building", "fat_ids", "mdu",
-                        "fat_id", "fdh_id", "home",
+                        "fat_id", "fdh_id", "home", "lifecycle", "provenance",
                     ];
                     let shown: Vec<String> = e.props.values().map(s).collect();
                     for (k, v) in e
@@ -184,6 +263,19 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                                 }
                             }
                         });
+                    }
+
+                    let trace = st
+                        .trace
+                        .as_ref()
+                        .filter(|(id, _)| {
+                            *id == uuid
+                                || e.openftth.get("home").and_then(|v| v.as_str()) == Some(id)
+                        })
+                        .map(|(_, v)| v.clone());
+                    if let Some(t) = trace {
+                        section(ui, &p, "Fibre path");
+                        fibre_path(ui, &p, &t);
                     }
 
                     section(ui, &p, "Reasons");

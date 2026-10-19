@@ -232,6 +232,11 @@ impl Client {
         self.get(&format!("/api/project/element/{uuid}"))
     }
 
+    /// A home's fibre path from OLT port to drop (the engine's `trace_fibre` result).
+    pub fn trace(&self, uuid: &str) -> Result<Value, ClientError> {
+        self.get(&format!("/api/project/trace/{uuid}"))
+    }
+
     pub fn assumptions(&self) -> Result<Value, ClientError> {
         self.get("/api/project/assumptions")
     }

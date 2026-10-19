@@ -953,6 +953,16 @@ project {}",
                 ));
                 ui.add_space(10.0);
             }
+            if let Some(wo) = &self.st.work_order {
+                ui.label(text(
+                    format!("{} open · {}", s_str(&wo["id"]), s_str(&wo["title"])),
+                    11.0,
+                    Weight::Medium,
+                    p.amber,
+                ))
+                .on_hover_text("Changes belong to this work order until it is posted to the network of record");
+                ui.add_space(8.0);
+            }
             if let Some((lon, lat)) = self.st.cursor {
                 ui.label(mono_text(format!("{lon:.5}  {lat:.5}"), 11.0, p.text3));
             }
@@ -1075,6 +1085,9 @@ project {}",
         match self.st.tab {
             Tab::Twin => {
                 let placing = self.placing.clone();
+                // The selection plus every element on the current fibre trace is highlighted.
+                let mut lit = self.st.selection.clone();
+                lit.extend(self.st.trace_ids());
                 let st = &mut self.st;
                 let resp = self.twin.show(
                     ui,
@@ -1082,7 +1095,7 @@ project {}",
                     st.design.as_ref(),
                     st.streets.as_ref(),
                     &mut st.layers,
-                    &st.selection,
+                    &lit,
                     &st.changed,
                     placing.as_ref().map(|p| p.uuid.as_str()),
                 );
@@ -1406,6 +1419,10 @@ impl eframe::App for OpenFtthApp {
                 300
             }));
     }
+}
+
+fn s_str(v: &serde_json::Value) -> String {
+    v.as_str().map(str::to_string).unwrap_or_default()
 }
 
 /// Copy a directory tree; returns the number of files copied.
