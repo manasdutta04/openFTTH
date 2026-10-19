@@ -244,15 +244,23 @@ pub struct StreetLayer {
 pub struct StreetSegment {
     pub highway: String,
     pub surface: String,
+    /// The OSM way id (`w123…`), what `forbid_street` takes.
+    pub osm_id: String,
+    /// On the engineer's no-dig list: not in the route graph any more.
+    pub no_dig: bool,
     pub line: Vec<[f64; 2]>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct StreetProps {
     #[serde(default)]
     highway: String,
     #[serde(default)]
     surface: String,
+    #[serde(default)]
+    osm_id: Value,
+    #[serde(default)]
+    no_dig: bool,
 }
 
 impl StreetLayer {
@@ -270,14 +278,18 @@ impl StreetLayer {
                 .cloned()
                 .map(serde_json::from_value)
                 .transpose()?
-                .unwrap_or(StreetProps {
-                    highway: String::new(),
-                    surface: String::new(),
-                });
+                .unwrap_or_default();
             if let Some(Geometry::LineString(line)) = f.get("geometry").map(Geometry::from_json) {
+                let osm_id = match props.osm_id {
+                    Value::String(s) => s,
+                    Value::Null => String::new(),
+                    other => other.to_string(),
+                };
                 layer.segments.push(StreetSegment {
                     highway: props.highway,
                     surface: props.surface,
+                    osm_id,
+                    no_dig: props.no_dig,
                     line,
                 });
             }

@@ -582,6 +582,25 @@ impl AppState {
         }
     }
 
+    /// The engineer's own change: the harness runs the engine tool, records it in the room
+    /// and asks the Checker to look again. Returns true when the engine accepted it; the
+    /// design reloads through the `design.version` frame that follows.
+    pub fn steer(&mut self, tool: &str, args: Value, revalidate: bool) -> bool {
+        match self.client.steer(tool, &args, revalidate) {
+            Ok(v) => {
+                self.toasts.success(s(&v["summary"]));
+                for w in v["warnings"].as_array().into_iter().flatten() {
+                    self.toasts.info(s(w));
+                }
+                true
+            }
+            Err(e) => {
+                self.toasts.error(format!("Not applied: {e}"));
+                false
+            }
+        }
+    }
+
     pub fn interrupt(&mut self) {
         match self.client.interrupt() {
             Ok(_) => self.toasts.info("Stopped the current turn"),

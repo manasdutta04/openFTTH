@@ -15,6 +15,9 @@ plans and the bill of quantities.
 - **The human approves.** Every design change is a reviewable diff. Leaving a duct, digging
   a new trench or exporting for construction needs one click. A licensed engineer signs
   the final package.
+- **The human can still steer.** Move a cabinet, take a building out, forbid digging on a
+  street: each is an engine tool call with the reason on record, the routes are planned
+  again and the Checker looks again. Every deliverable saves out of File → Export.
 - **Local first.** Everything runs on your machine. Cloud models are optional.
 
 ## Status

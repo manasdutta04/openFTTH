@@ -15,6 +15,7 @@ pub const PROMPT_DESIGN: &str = "Design this area with the current rulebook: imp
 pub const PROMPT_VALIDATE: &str = "@Checker validate the current design and list any violations.";
 pub const PROMPT_SCENARIOS: &str = "Generate design scenarios and show me the cost table.";
 pub const PROMPT_BOQ: &str = "@Drafter give me the bill of quantities and the splice schedule.";
+pub const PROMPT_DELIVER: &str = "@Drafter produce every deliverable for the current design: bill of quantities, splice schedule, GeoPackage and the map.";
 
 #[derive(Default)]
 pub struct Composer {
@@ -273,6 +274,34 @@ fn message_row(ui: &mut Ui, st: &AppState, m: &ChatMessage) {
                 let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                 crate::icons::paint(ui.painter(), r, Icon::Warning, p.red);
                 ui.add(egui::Label::new(text(&m.text, 12.0, Weight::Regular, p.red)).wrap());
+            });
+        }
+        // The engineer's own change, made through the app rather than a crew member.
+        "steer" => {
+            ui.add_space(6.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.add_space(2.0);
+                ui.vertical(|ui| {
+                    ui.add_space(2.0);
+                    let (r, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                    crate::icons::paint(ui.painter(), r, Icon::Tool, p.accent);
+                });
+                ui.vertical(|ui| {
+                    ui.label(text("You changed the design", 12.0, Weight::Semibold, p.text));
+                    ui.add(egui::Label::new(text(&m.text, 12.0, Weight::Regular, p.text2)).wrap());
+                    for w in m.json["warnings"].as_array().into_iter().flatten() {
+                        ui.add(
+                            egui::Label::new(text(
+                                w.as_str().unwrap_or_default(),
+                                11.5,
+                                Weight::Regular,
+                                p.amber,
+                            ))
+                            .wrap(),
+                        );
+                    }
+                });
             });
         }
         _ => {

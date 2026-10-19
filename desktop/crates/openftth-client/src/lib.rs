@@ -17,6 +17,9 @@ pub use sse::{Frame, SseParser};
 pub enum ClientError {
     #[error("http: {0}")]
     Http(#[from] ureq::Error),
+    /// The harness answered with an error status; the message is its own `error` field.
+    #[error("{1}")]
+    Api(u16, String),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("io: {0}")]
@@ -46,10 +49,31 @@ pub struct DesignContext {
     pub active_version: Option<String>,
 }
 
+/// Read a JSON body, turning an error status into `ClientError::Api` with the harness's words.
+fn finish(mut res: ureq::http::Response<ureq::Body>) -> Result<Value, ClientError> {
+    let status = res.status().as_u16();
+    if status >= 400 {
+        let text = res.body_mut().read_to_string().unwrap_or_default();
+        let msg = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or_else(|| {
+                if text.is_empty() {
+                    format!("HTTP {status}")
+                } else {
+                    text.clone()
+                }
+            });
+        return Err(ClientError::Api(status, msg));
+    }
+    Ok(res.body_mut().read_json::<Value>()?)
+}
+
 impl Client {
     pub fn new(base: impl Into<String>, token: impl Into<String>) -> Client {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(120)))
+            .http_status_as_error(false)
             .build()
             .into();
         Client {
@@ -64,18 +88,18 @@ impl Client {
     }
 
     fn get(&self, path: &str) -> Result<Value, ClientError> {
-        let mut res = self
+        let res = self
             .agent
             .get(format!("{}{}", self.base, path))
             .header("authorization", &format!("Bearer {}", self.token))
             .call()?;
-        Ok(res.body_mut().read_json::<Value>()?)
+        finish(res)
     }
 
     fn send(&self, method: &str, path: &str, body: &Value) -> Result<Value, ClientError> {
         let url = format!("{}{}", self.base, path);
         let auth = format!("Bearer {}", self.token);
-        let mut res = match method {
+        let res = match method {
             "DELETE" => self
                 .agent
                 .delete(&url)
@@ -87,7 +111,7 @@ impl Client {
                 .header("authorization", &auth)
                 .send_json(body)?,
         };
-        Ok(res.body_mut().read_json::<Value>()?)
+        finish(res)
     }
 
     pub fn health(&self) -> Result<Value, ClientError> {
@@ -131,6 +155,17 @@ impl Client {
 
     pub fn diff(&self, from: &str, to: &str) -> Result<Value, ClientError> {
         self.get(&format!("/api/project/diff?from={from}&to={to}"))
+    }
+
+    /// The engineer's own change (`move_site`, `exclude_building`, `forbid_street`): the
+    /// harness runs the engine tool directly and, unless told not to, asks the Checker to
+    /// validate the design again. A rejection comes back as `ClientError::Api(422, words)`.
+    pub fn steer(&self, tool: &str, args: &Value, revalidate: bool) -> Result<Value, ClientError> {
+        self.send(
+            "POST",
+            "/api/project/steer",
+            &json!({ "tool": tool, "args": args, "revalidate": revalidate }),
+        )
     }
 
     pub fn approve_version(&self, version: &str) -> Result<Value, ClientError> {

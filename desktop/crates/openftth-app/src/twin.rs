@@ -21,6 +21,8 @@ pub struct TwinView {
     scale: f64,
     fitted: bool,
     cache: Option<GeomCache>,
+    /// What was under the pointer when the context menu last opened.
+    pub context: Option<MapContext>,
 }
 
 impl Default for TwinView {
@@ -30,6 +32,7 @@ impl Default for TwinView {
             scale: 1.0,
             fitted: false,
             cache: None,
+            context: None,
         }
     }
 }
@@ -39,6 +42,25 @@ pub struct TwinResponse {
     pub clicked_empty: bool,
     pub hovered: Option<String>,
     pub cursor: Option<(f64, f64)>,
+    /// Where a primary click landed, whatever was under it (placement mode uses this).
+    pub click: Option<(f64, f64)>,
+    /// The map's own response, for the context menu.
+    pub response: egui::Response,
+}
+
+/// What the right mouse button hit: a position, maybe an element, maybe a street.
+#[derive(Clone)]
+pub struct MapContext {
+    pub lonlat: (f64, f64),
+    pub element: Option<String>,
+    pub street: Option<StreetHit>,
+}
+
+#[derive(Clone)]
+pub struct StreetHit {
+    pub osm_id: String,
+    pub highway: String,
+    pub no_dig: bool,
 }
 
 // ---- cached geometry (Mercator metres) ----------------------------------------------------
@@ -77,7 +99,9 @@ struct CLine {
     bbox: Bbox,
     /// Street class (0 minor, 1 residential, 2 major) or cable kind (0 drop, 1 distribution, 2 feeder).
     class: u8,
-    /// Index into `Design::elements`; usize::MAX for streets.
+    /// A street on the engineer's no-dig list (always false for cables).
+    no_dig: bool,
+    /// Index into `Design::elements` for cables, into `StreetLayer::segments` for streets.
     idx: usize,
 }
 
@@ -133,7 +157,7 @@ impl GeomCache {
             uuid_index: HashMap::new(),
         };
         if let Some(s) = streets {
-            for seg in &s.segments {
+            for (i, seg) in s.segments.iter().enumerate() {
                 let class = match seg.highway.as_str() {
                     "primary" | "secondary" | "trunk" | "primary_link" | "secondary_link" => 2,
                     "tertiary" | "residential" | "living_street" | "unclassified" => 1,
@@ -148,7 +172,8 @@ impl GeomCache {
                     pts,
                     bbox,
                     class,
-                    idx: usize::MAX,
+                    no_dig: seg.no_dig,
+                    idx: i,
                 });
             }
         }
@@ -181,6 +206,7 @@ impl GeomCache {
                             pts,
                             bbox,
                             class: class as u8,
+                            no_dig: false,
                             idx: i,
                         });
                     }
@@ -266,6 +292,9 @@ impl TwinView {
         }
     }
 
+    /// Draw the map and answer what the pointer did. `placing` is the element the engineer is
+    /// choosing a new position for: the cursor stays a crosshair, nothing is hit-tested, and
+    /// a primary click anywhere is reported as a position.
     #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
@@ -276,6 +305,7 @@ impl TwinView {
         layers: &mut Layers,
         selection: &[String],
         changed: &[String],
+        placing: Option<&str>,
     ) -> TwinResponse {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
@@ -317,7 +347,17 @@ impl TwinView {
         } else {
             None
         };
-        let probe = click_pos.or(hover_pos);
+        // While placing, nothing under the pointer is a target: the click is a position.
+        let probe = if placing.is_some() {
+            None
+        } else {
+            click_pos.or(hover_pos)
+        };
+        let right_click = if response.secondary_clicked() {
+            response.interact_pointer_pos()
+        } else {
+            None
+        };
 
         // The view in Mercator metres, with a margin so strokes at the edge still draw.
         let margin = 40.0;
@@ -349,21 +389,36 @@ impl TwinView {
             }
         };
 
-        // Streets: minor streets fade out when zoomed far out.
+        // Streets: minor streets fade out when zoomed far out; no-dig streets are always
+        // drawn, dashed in red. A right click remembers the nearest street for the menu.
+        let mut street_hit: Option<(f32, usize)> = None;
         if layers.streets {
             for s in &cache.streets {
-                if !s.bbox.intersects(&view) || (s.class == 0 && scale < 0.2) {
+                if !s.bbox.intersects(&view) || (s.class == 0 && scale < 0.2 && !s.no_dig) {
                     continue;
                 }
-                let (w, c) = match s.class {
+                let (w, c): (f32, _) = match s.class {
                     2 => (2.4, p.map_street_major),
                     1 => (1.4, p.map_street),
                     _ => (0.8, p.map_street),
                 };
-                shapes.push(Shape::line(
-                    s.pts.iter().map(tf).collect(),
-                    Stroke::new(w, c),
-                ));
+                let pts: Vec<Pos2> = s.pts.iter().map(tf).collect();
+                if let Some(q) = right_click {
+                    let d = polyline_distance(&pts, q);
+                    if d <= 8.0 && street_hit.map(|(bd, _)| d < bd).unwrap_or(true) {
+                        street_hit = Some((d, s.idx));
+                    }
+                }
+                if s.no_dig {
+                    shapes.extend(Shape::dashed_line(
+                        &pts,
+                        Stroke::new(w.max(1.6), p.red),
+                        6.0,
+                        4.0,
+                    ));
+                } else {
+                    shapes.push(Shape::line(pts, Stroke::new(w, c)));
+                }
             }
         }
 
@@ -493,8 +548,31 @@ impl TwinView {
                 _ => shapes.push(Shape::circle_filled(pos, r, c)),
             }
             if let Some(q) = probe {
-                consider(pos.distance(q), r + 6.0, pt.idx);
+                // A site within its own radius wins over the cable passing under it, which
+                // would otherwise always be the nearer hit: it competes at a negative distance.
+                let d = pos.distance(q);
+                if d <= r + 6.0 {
+                    consider(d - (r + 6.5), f32::INFINITY, pt.idx);
+                }
             }
+        }
+        // Placement: a ring under the pointer and a dashed line from where the site stands.
+        if let (Some(uuid), Some(q)) = (placing, hover_pos) {
+            let from = cache
+                .uuid_index
+                .get(uuid)
+                .and_then(|&i| cache.points.iter().find(|pt| pt.idx == i))
+                .map(|pt| tf(&pt.xy));
+            if let Some(a) = from {
+                shapes.extend(Shape::dashed_line(
+                    &[a, q],
+                    Stroke::new(1.2, p.accent),
+                    5.0,
+                    4.0,
+                ));
+            }
+            shapes.push(Shape::circle_stroke(q, 9.0, Stroke::new(1.5, p.accent)));
+            shapes.push(Shape::circle_filled(q, 2.0, p.accent));
         }
         painter.extend(shapes);
         // The POP label needs the font layout, so it is drawn after the batch.
@@ -551,9 +629,27 @@ impl TwinView {
         } else {
             None
         };
-        let clicked = if click_pos.is_some() { hit_uuid } else { None };
-        let clicked_empty = click_pos.is_some() && clicked.is_none();
+        let clicked = if click_pos.is_some() {
+            hit_uuid.clone()
+        } else {
+            None
+        };
+        let clicked_empty = click_pos.is_some() && clicked.is_none() && placing.is_none();
         let cursor = hover_pos.map(|q| self.screen_to_lonlat(rect, q));
+        if let Some(q) = right_click {
+            let street = street_hit
+                .and_then(|(_, i)| streets.and_then(|s| s.segments.get(i)))
+                .map(|seg| StreetHit {
+                    osm_id: seg.osm_id.clone(),
+                    highway: seg.highway.clone(),
+                    no_dig: seg.no_dig,
+                });
+            self.context = Some(MapContext {
+                lonlat: self.screen_to_lonlat(rect, q),
+                element: hit_uuid,
+                street,
+            });
+        }
         if let (Some(d), Some(h)) = (design, hovered.as_deref()) {
             if let Some(e) = d.get(h) {
                 let lines = hover_summary(e);
@@ -567,7 +663,7 @@ impl TwinView {
         }
         if response.dragged() {
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-        } else if hovered.is_some() {
+        } else if hovered.is_some() && placing.is_none() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         } else if response.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
@@ -577,6 +673,8 @@ impl TwinView {
             clicked_empty,
             hovered,
             cursor,
+            click: click_pos.map(|q| self.screen_to_lonlat(rect, q)),
+            response,
         }
     }
 

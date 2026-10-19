@@ -12,6 +12,24 @@ use crate::widgets::{
 pub enum InspectorAction {
     Ask(String),
     ZoomTo(String),
+    /// Pick a new position on the map for this site.
+    Move(String),
+    /// Take this building out of the design.
+    Exclude(String),
+}
+
+/// What the engineer may move by hand: the POP, cabinets and outdoor FATs. An indoor FAT
+/// sits in its building.
+pub fn is_movable(e: &openftth_core::Element) -> bool {
+    matches!(e.kind(), "pop" | "fdh" | "fat")
+        && e.openftth.get("mdu").and_then(serde_json::Value::as_bool) != Some(true)
+}
+
+pub fn is_excluded(e: &openftth_core::Element) -> bool {
+    e.openftth
+        .get("excluded")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
@@ -55,9 +73,18 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                         if st.changed.iter().any(|c| c == &uuid) {
                             tag(ui, "changed", p.red, p.red.gamma_multiply(0.2));
                         }
+                        if e.openftth.get("placed_by").and_then(serde_json::Value::as_str)
+                            == Some("engineer")
+                        {
+                            tag(ui, "placed by you", p.accent, p.accent.gamma_multiply(0.2));
+                        }
+                        if is_excluded(&e) {
+                            tag(ui, "excluded", p.red, p.red.gamma_multiply(0.2));
+                        }
                     });
                     ui.add_space(6.0);
-                    ui.horizontal(|ui| {
+                    let busy = st.busy();
+                    ui.horizontal_wrapped(|ui| {
                         if button_ex(ui, &p, Some(Icon::Target), "Zoom to", Kind::Quiet, true)
                             .clicked()
                         {
@@ -68,6 +95,29 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                                 "Why is {} placed there? Quote the recorded decision.",
                                 e.name()
                             )));
+                        }
+                        if is_movable(&e)
+                            && button_ex(ui, &p, None, "Move…", Kind::Quiet, !busy)
+                                .on_hover_text(if busy {
+                                    "The crew is working; wait for the turn to finish"
+                                } else {
+                                    "Click the new position on the map. The engine snaps it to the street and plans the routes again."
+                                })
+                                .clicked()
+                        {
+                            action = Some(InspectorAction::Move(uuid.clone()));
+                        }
+                        if e.kind() == "building"
+                            && !is_excluded(&e)
+                            && button_ex(ui, &p, None, "Exclude…", Kind::Quiet, !busy)
+                                .on_hover_text(if busy {
+                                    "The crew is working; wait for the turn to finish"
+                                } else {
+                                    "Take this building out of the design: its homes and drops go, routes are planned again."
+                                })
+                                .clicked()
+                        {
+                            action = Some(InspectorAction::Exclude(uuid.clone()));
                         }
                     });
 
