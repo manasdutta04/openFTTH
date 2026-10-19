@@ -148,6 +148,10 @@ a design partner (cost per home within ±10 % of a real design); routines and we
 docs for community MCP tools; per-FDH solving for 50k+ homes; offline LLM only if it passes a
 fixed 20-task benchmark.
 
+**After Phase 4 — the operator's network workflow.** Network of record, work orders, façade
+and aerial design, as-built intake from PDF plans, plan sheets and operator exchange, all run by
+the crew with the engineer in the chat. Planned in [PLAN-NETWORK.md](PLAN-NETWORK.md).
+
 ## 5. Verification
 - Engine: `uv run pytest`; headless design on the fixture in CI with the artefacts uploaded.
 - Harness: Node test runner; SSE resume, approval round-trip and allow-list tests against a fake
