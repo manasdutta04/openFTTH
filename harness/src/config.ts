@@ -57,7 +57,7 @@ export function loadConfig(overrides: Partial<HarnessConfig> = {}): HarnessConfi
 
   const engineCwd = resolve(fileCfg.engine?.cwd ?? env.OPENFTTH_ENGINE_CWD ?? join(repoRoot, "engine"));
   const engine: EngineConfig = {
-    command: fileCfg.engine?.command ?? splitCommand(env.OPENFTTH_ENGINE_COMMAND) ?? ["uv", "run", "openftth-engine"],
+    command: fileCfg.engine?.command ?? splitCommand(env.OPENFTTH_ENGINE_COMMAND) ?? defaultEngineCommand(engineCwd),
     cwd: engineCwd,
     rulebook: fileCfg.engine?.rulebook ?? env.OPENFTTH_RULEBOOK ?? "generic-gpon",
   };
@@ -110,4 +110,18 @@ export function findRepoRoot(): string {
     dir = resolve(dir, "..");
   }
   return process.cwd();
+}
+
+/**
+ * How to start the design engine when nothing is configured. The engine's own environment
+ * (`engine/.venv`, made by `uv sync`) has a ready executable: using it needs no `uv` on the
+ * PATH, which an app started from the Start menu or a desktop shortcut usually lacks.
+ */
+function defaultEngineCommand(engineCwd: string): string[] {
+  const exe = process.platform === "win32"
+    ? join(engineCwd, ".venv", "Scripts", "openftth-engine.exe")
+    : join(engineCwd, ".venv", "bin", "openftth-engine");
+  if (existsSync(exe)) return [exe];
+  const uvHome = join(homedir(), ".local", "bin", process.platform === "win32" ? "uv.exe" : "uv");
+  return [existsSync(uvHome) ? uvHome : "uv", "run", "openftth-engine"];
 }

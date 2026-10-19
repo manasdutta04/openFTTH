@@ -112,6 +112,27 @@ export class Room {
     return this.stageCheck;
   }
 
+  /**
+   * Run `job` while no crew turn can start (an automatic design, for example). User turns
+   * sent meanwhile wait in the queue and run afterwards.
+   */
+  async exclusive<T>(job: () => Promise<T>): Promise<T> {
+    if (this.running) throw new Error("the crew is working; stop the turn or wait for it to finish");
+    this.running = true;
+    try {
+      return await job();
+    } finally {
+      this.running = false;
+      if (this.queue.length) void this.pump();
+    }
+  }
+
+  /** A line from the harness itself (not a crew member) in the conversation. */
+  note(text: string, kind: "tool" | "text" | "error", json: Record<string, unknown> | null = null): void {
+    const msg = this.d.store.addMessage({ room: this.id, role: "system", folk: null, kind, text, json });
+    this.d.bus.emit("message", msg);
+  }
+
   /** The engineer changed the design by hand, through the app rather than a crew member. */
   steerMessage(text: string, json: Record<string, unknown>): void {
     const msg = this.d.store.addMessage({ room: this.id, role: "user", folk: null, kind: "steer", text, json });

@@ -89,7 +89,8 @@ async function makeHandle(url: string, port: number, child: ChildProcess | null)
     async call<T>(tool: string, args: Record<string, unknown> = {}): Promise<T> {
       const client = await connect(url);
       try {
-        const res = await client.callTool({ name: tool, arguments: args });
+        // Solver steps on a large area can run for minutes; the SDK default is 60 s.
+        const res = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: 15 * 60_000, resetTimeoutOnProgress: true });
         const content = (res as { content?: Array<{ type: string; text?: string }> }).content ?? [];
         // A list result arrives as one text item per element; a dict as a single JSON text.
         const texts = content.filter((c) => c.type === "text").map((c) => c.text ?? "");

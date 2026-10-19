@@ -229,6 +229,65 @@ export class ProjectService {
     return this.requireEngine().call("explain_element", { element_uuid: uuid });
   }
 
+  private automating = false;
+
+  /**
+   * Design the open project from its inputs to deliverables with no AI: the engine's tools in
+   * stage order. Returns at once; progress arrives as conversation lines and design frames.
+   */
+  autodesign(): { steps: number } {
+    const meta = this.requireMeta();
+    const room = this.room;
+    const engine = this.requireEngine();
+    if (!room) throw new HttpError(409, "no project open");
+    if (!meta.osmPath) throw new HttpError(400, "choose a map extract (.osm) for this project first");
+    if (this.automating || room.busy) throw new HttpError(409, "the crew is working; wait for the turn to finish");
+    this.automating = true;
+    const started = Date.now();
+    const total = AUTODESIGN_STEPS.length;
+    void room
+      .exclusive(async () => {
+        room.note(`Automatic design started: ${total} engine steps, no AI involved.`, "text", { automatic: true });
+        let last: Record<string, unknown> | null = null;
+        for (const [i, step] of AUTODESIGN_STEPS.entries()) {
+          const args = step.tool === "import_osm" ? { area_path: meta.areaPath, osm_path: meta.osmPath } : {};
+          this.d.bus.emit("tool.activity", { folk: null, tool: step.tool, state: "started", id: `auto-${i}` });
+          let out: Record<string, unknown>;
+          try {
+            out = (await engine.call<Record<string, unknown>>(step.tool, args)) ?? {};
+          } catch (err) {
+            room.note(`${step.label} failed: ${(err as Error).message}`, "error");
+            this.d.bus.emit("tool.activity", { folk: null, tool: step.tool, state: "failed", id: `auto-${i}` });
+            return;
+          }
+          const summary = typeof out.summary === "string" ? out.summary : `${step.tool} done`;
+          const failed = summary.startsWith("rejected") || typeof out.error === "string";
+          this.d.bus.emit("tool.activity", { folk: null, tool: step.tool, state: failed ? "failed" : "done", id: `auto-${i}`, summary });
+          room.note(summary, "tool", { tool: step.tool, isError: failed, step: i + 1, steps: total, automatic: true });
+          if (typeof out.version === "string" && out.version) {
+            this.d.bus.emit("design.version", { version: out.version, tool: step.tool, summary, changes: out.changes ?? null });
+          }
+          await room.refreshStage();
+          if (failed) {
+            room.note(`Automatic design stopped at "${step.label}". Ask the crew what to do, or fix the input and run it again.`, "error");
+            return;
+          }
+          last = out;
+        }
+        const secs = Math.round((Date.now() - started) / 1000);
+        room.note(`Automatic design finished in ${secs} s. Every number came from the engine's solvers and checks; open the BOQ tab or File → Export for the deliverables.${last && typeof last.summary === "string" ? ` Last step: ${last.summary}.` : ""}`, "text", { automatic: true });
+      })
+      .catch((err: Error) => room.note(`Automatic design could not start: ${err.message}`, "error"))
+      .finally(() => {
+        this.automating = false;
+      });
+    return { steps: total };
+  }
+
+  get isAutomating(): boolean {
+    return this.automating;
+  }
+
   /** A home's fibre from OLT port to drop, straight from the engine (no crew member). */
   async trace(uuid: string): Promise<unknown> {
     return this.requireEngine().call("trace_fibre", { element_uuid: uuid });
@@ -319,6 +378,31 @@ export function projectId(areaPath: string, rulebook: string): string {
   const hash = createHash("sha1").update(`${areaPath}|${rulebook}`).digest("hex").slice(0, 6);
   return `${stem}-${hash}`;
 }
+
+/**
+ * The automatic design: every engine tool in stage order, with no LLM involved. The solvers
+ * make every decision, so this is the whole design at no cost; the crew is for questions,
+ * explanations and changes.
+ */
+export const AUTODESIGN_STEPS: Array<{ tool: string; label: string }> = [
+  { tool: "import_osm", label: "Import the area and map" },
+  { tool: "build_twin", label: "Build the street twin" },
+  { tool: "set_pop", label: "Place the POP" },
+  { tool: "cluster_homes", label: "Place FATs" },
+  { tool: "place_fdh", label: "Place cabinets" },
+  { tool: "assign_pon", label: "Group homes into PONs" },
+  { tool: "route_feeder", label: "Route feeder cables" },
+  { tool: "route_distribution", label: "Route distribution cables" },
+  { tool: "route_drops", label: "Route drops" },
+  { tool: "place_chambers", label: "Place chambers" },
+  { tool: "size_cables", label: "Size cables" },
+  { tool: "assign_fibers", label: "Assign fibres" },
+  { tool: "check_rules", label: "Check the design rules" },
+  { tool: "check_operator", label: "Check the operator rules" },
+  { tool: "boq", label: "Bill of quantities" },
+  { tool: "splice_schedule", label: "Splice schedule" },
+  { tool: "export_gpkg", label: "GeoPackage" },
+];
 
 /** What the engineer asks the Checker after a change of their own. */
 function checkerPrompt(tool: string, out: SteerResult, reason: string): string {

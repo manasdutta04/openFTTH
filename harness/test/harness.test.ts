@@ -281,6 +281,20 @@ test("posting a work order is a risky tool that opens a card", async () => {
   assert.ok(RISKY_ENGINE_TOOLS.has("post_work_order"));
 });
 
+test("engines say what they cost, and Ollama is free", async () => {
+  const listed = await body(api("/api/engines"));
+  const byKind = Object.fromEntries(listed.engines.map((e: any) => [e.kind, e]));
+  assert.equal(byKind.ollama.cost, "free");
+  assert.equal(byKind.claude.cost, "subscription");
+  assert.ok(listed.engines.every((e: any) => typeof e.costNote === "string" && e.costNote.length > 0));
+});
+
+test("automatic design needs a map extract", async () => {
+  const res = await api("/api/project/autodesign", { method: "POST" });
+  assert.equal(res.status, 400);
+  assert.match((await body(res)).error, /map extract/);
+});
+
 test("SSE stream replays missed frames on resume", async () => {
   const first = h.bus.emit("runtime", { marker: 1 });
   h.bus.emit("runtime", { marker: 2 });

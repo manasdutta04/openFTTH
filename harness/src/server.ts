@@ -114,6 +114,9 @@ export function buildServer(d: ServerDeps): Server {
     if (typeof body.version !== "string") throw new HttpError(400, "version is required");
     json(res, 200, d.projects.approve(body.version));
   });
+  add("POST", "/api/project/autodesign", (_req, res) => {
+    json(res, 202, { accepted: true, ...d.projects.autodesign() });
+  });
   add("POST", "/api/project/steer", async (req, res) => {
     const body = await readJson(req);
     if (typeof body.tool !== "string") throw new HttpError(400, "tool is required");

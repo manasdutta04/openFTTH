@@ -25,6 +25,9 @@ export interface EngineInfo {
   description: string;
   /** What the engine needs from the user before it can run. */
   needs: Array<"model" | "baseUrl" | "apiKey">;
+  /** What running the crew on it costs: free on this PC, free tier, a subscription, or pay per use. */
+  cost: "free" | "free-tier" | "subscription" | "paid";
+  costNote: string;
   available: boolean;
   detail: string;
   models: string[];
@@ -38,6 +41,8 @@ interface Catalog {
   label: string;
   description: string;
   needs: EngineInfo["needs"];
+  cost: EngineInfo["cost"];
+  costNote: string;
   defaultModel: string | null;
   defaultBaseUrl: string | null;
   keyEnv: string | null;
@@ -48,6 +53,8 @@ export const ENGINE_CATALOG: Record<EngineKind, Catalog> = {
     label: "Claude CLI",
     description: "Claude Code on this machine, with its own login. Tools and approvals run through its permission prompt.",
     needs: [],
+    cost: "subscription",
+    costNote: "Uses your Claude plan",
     defaultModel: null,
     defaultBaseUrl: null,
     keyEnv: null,
@@ -56,6 +63,8 @@ export const ENGINE_CATALOG: Record<EngineKind, Catalog> = {
     label: "Codex CLI",
     description: "OpenAI Codex on this machine, with its own login. Runs read-only; engine tools over MCP.",
     needs: [],
+    cost: "subscription",
+    costNote: "Uses your ChatGPT plan",
     defaultModel: null,
     defaultBaseUrl: null,
     keyEnv: null,
@@ -64,22 +73,28 @@ export const ENGINE_CATALOG: Record<EngineKind, Catalog> = {
     label: "Hermes Agent",
     description: "Hermes on this machine, speaking the Agent Client Protocol. It brings its own model and keys; the design engine is handed to it over MCP.",
     needs: [],
+    cost: "free",
+    costNote: "Free with a local model",
     defaultModel: null,
     defaultBaseUrl: null,
     keyEnv: null,
   },
   ollama: {
     label: "Ollama",
-    description: "A local model served by Ollama. Pick a model that supports tool calling.",
+    description: "A local model served by Ollama, on this PC. Free and private. Pick a model that supports tool calling; small models answer questions well but may not run the whole crew.",
     needs: ["model"],
+    cost: "free",
+    costNote: "Free · runs on this PC",
     defaultModel: null,
     defaultBaseUrl: "http://127.0.0.1:11434",
     keyEnv: null,
   },
   openrouter: {
     label: "OpenRouter",
-    description: "Hosted models through OpenRouter's API. Needs an API key.",
+    description: "Hosted models through OpenRouter's API. Needs a free API key; models whose name ends in \":free\" cost nothing (with rate limits).",
     needs: ["model", "apiKey"],
+    cost: "free-tier",
+    costNote: "Free models with a free key",
     defaultModel: "anthropic/claude-sonnet-4.5",
     defaultBaseUrl: "https://openrouter.ai/api/v1",
     keyEnv: "OPENROUTER_API_KEY",
@@ -88,6 +103,8 @@ export const ENGINE_CATALOG: Record<EngineKind, Catalog> = {
     label: "OpenAI-compatible endpoint",
     description: "Any server that speaks the OpenAI chat API with tools: LM Studio, vLLM, a hosted agent, or OpenAI itself.",
     needs: ["model", "baseUrl"],
+    cost: "paid",
+    costNote: "Free if the server runs on this PC",
     defaultModel: null,
     defaultBaseUrl: null,
     keyEnv: "OPENAI_API_KEY",
@@ -170,6 +187,8 @@ export class Engines {
       label: cat.label,
       description: cat.description,
       needs: cat.needs,
+      cost: cat.cost,
+      costNote: cat.costNote,
       available: probe.available,
       detail: probe.detail,
       models: probe.models,

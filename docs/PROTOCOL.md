@@ -26,7 +26,7 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `GET /api/rulebooks` | the shipped rulebook presets (name, description, country) |
 | `GET /api/projects` | projects opened before, newest first |
 | `DELETE /api/project?purge=1` | close the project and delete its design, versions, conversation and runtime log (a reset) |
-| `GET /api/engines` | the crew member engines (Claude CLI, Codex CLI, Ollama, OpenRouter, OpenAI-compatible): availability, models, which one is active |
+| `GET /api/engines` | the crew member engines (Claude CLI, Codex CLI, Hermes, Ollama, OpenRouter, OpenAI-compatible): availability, models, which one is active, and what each costs (`cost`: free, free-tier, subscription, paid; `costNote`) |
 | `POST /api/engine` | `{kind, model?, baseUrl?, apiKey?}` switch the crew's engine; crew member sessions restart on the next turn |
 | `POST /api/project {area_path, osm_path, rulebook}` | create or open a project: starts the engine, creates the room |
 | `GET /api/project` | project meta, stage, head version, engine status |
@@ -36,6 +36,7 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `GET /api/project/trace/:uuid` | a home's fibre path from OLT port to drop, hop by hop with loss (the engine's `trace_fibre`) |
 | `GET /api/project/assumptions` | every assumption the engine recorded |
 | `POST /api/project/approve {version}` | tag a version as approved |
+| `POST /api/project/autodesign` | design the open project from its inputs to deliverables with the engine alone, no LLM and no cost: every engine tool in stage order. Returns `202 {steps}` at once; each step arrives as a `tool` message, `design.version` and `design.stage` frames. `400` without a map extract, `409` while the crew is working |
 | `POST /api/project/steer {tool, args, revalidate?}` | the engineer's own change through the app: `move_site`, `exclude_building` or `forbid_street`, called on the engine directly (no crew member in the loop). The room gets a `steer` message, the app a `design.version` frame, and the Checker is asked to validate again unless `revalidate` is `false`. `409` while the crew is working, `422` with the engine's words when it rejects the change |
 | `POST /api/room/messages {text, designContext}` | a user turn in the project room |
 | `POST /api/room/interrupt` | stop the running turn |
