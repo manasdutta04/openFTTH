@@ -59,6 +59,8 @@ pub struct OpenFtthApp {
     placing: Option<Placing>,
     /// A change of the engineer's own awaiting its reason and confirmation.
     steer: Option<SteerDialog>,
+    /// The project generation the map view was fitted for.
+    seen_generation: u64,
 }
 
 struct EngineForm {
@@ -179,6 +181,7 @@ impl OpenFtthApp {
             frame_ms: 0.0,
             placing: None,
             steer: None,
+            seen_generation: 0,
         }
     }
 
@@ -618,7 +621,10 @@ project {}",
         ui.menu_button(Self::menu_title("Crew", &p), |ui| {
             widgets::menu_begin(ui, 260.0);
             let can = open && !busy;
-            if menu_item(ui, &p, "Design this area", None, can) {
+            if menu_item(ui, &p, "Design automatically (free, no AI)", None, can) {
+                self.st.autodesign();
+            }
+            if menu_item(ui, &p, "Ask the crew to design this area", None, can) {
                 self.st.send(PROMPT_DESIGN);
             }
             if menu_item(ui, &p, "Validate the design", None, can) {
@@ -716,7 +722,13 @@ project {}",
             }
         }
         menu_separator(ui, &p);
-        if menu_item(ui, &p, "Design bundle (GeoJSON folder)…", None, bundle.is_dir()) {
+        if menu_item(
+            ui,
+            &p,
+            "Design bundle (GeoJSON folder)…",
+            None,
+            bundle.is_dir(),
+        ) {
             self.export_folder(&stem, &[("design", bundle.clone())]);
         }
         if menu_item(
@@ -726,7 +738,10 @@ project {}",
             None,
             bundle.is_dir() || deliver.is_dir(),
         ) {
-            let mut parts = vec![("deliverables", deliver.clone()), ("design", bundle.clone())];
+            let mut parts = vec![
+                ("deliverables", deliver.clone()),
+                ("design", bundle.clone()),
+            ];
             for extra in ["decisions.jsonl", "rulebook.yaml"] {
                 let path = dir.join(extra);
                 if path.is_file() {
@@ -766,10 +781,7 @@ project {}",
             return;
         };
         match std::fs::copy(src, &dst) {
-            Ok(_) => self
-                .st
-                .toasts
-                .success(format!("Saved {}", dst.display())),
+            Ok(_) => self.st.toasts.success(format!("Saved {}", dst.display())),
             Err(e) => self.st.toasts.error(format!("Could not save: {e}")),
         }
     }
@@ -791,8 +803,7 @@ project {}",
             let res = if src.is_dir() {
                 copy_dir(src, &dst)
             } else {
-                std::fs::create_dir_all(&target)
-                    .and_then(|_| std::fs::copy(src, &dst).map(|_| 1))
+                std::fs::create_dir_all(&target).and_then(|_| std::fs::copy(src, &dst).map(|_| 1))
             };
             match res {
                 Ok(n) => copied += n,
@@ -960,7 +971,9 @@ project {}",
                     Weight::Medium,
                     p.amber,
                 ))
-                .on_hover_text("Changes belong to this work order until it is posted to the network of record");
+                .on_hover_text(
+                    "Changes belong to this work order until it is posted to the network of record",
+                );
                 ui.add_space(8.0);
             }
             if let Some((lon, lat)) = self.st.cursor {
@@ -1081,6 +1094,10 @@ project {}",
     }
 
     fn workspace(&mut self, ui: &mut Ui) {
+        if self.seen_generation != self.st.project_generation {
+            self.seen_generation = self.st.project_generation;
+            self.twin = TwinView::default();
+        }
         self.tab_strip(ui);
         match self.st.tab {
             Tab::Twin => {
@@ -1169,7 +1186,13 @@ project {}",
                 }
             }
             if let Some((uuid, name)) = &building {
-                if menu_item(ui, &p, &format!("Exclude {name} from the design…"), None, !busy) {
+                if menu_item(
+                    ui,
+                    &p,
+                    &format!("Exclude {name} from the design…"),
+                    None,
+                    !busy,
+                ) {
                     dialog = Some(SteerDialog::exclude(uuid, name));
                 }
             }

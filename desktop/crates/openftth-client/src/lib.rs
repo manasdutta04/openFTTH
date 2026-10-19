@@ -145,6 +145,11 @@ impl Client {
     }
 
     /// Close the project and delete everything it produced.
+    /// Design the open project end to end with the engine alone (no AI, no cost).
+    pub fn autodesign(&self) -> Result<Value, ClientError> {
+        self.send("POST", "/api/project/autodesign", &json!({}))
+    }
+
     pub fn reset_project(&self) -> Result<Value, ClientError> {
         self.send("DELETE", "/api/project?purge=1", &Value::Null)
     }

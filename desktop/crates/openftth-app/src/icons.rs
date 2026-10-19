@@ -343,3 +343,53 @@ pub fn paint_engine_mark(painter: &Painter, rect: Rect, kind: &str, p: &crate::t
         }
     }
 }
+
+#[cfg(test)]
+mod ico {
+    /// Writes `assets/openftth.ico` (16–256 px, 32-bit) from the same rasteriser as the
+    /// window icon, for the .exe resource. Run with `cargo test -p openftth-app -- --ignored`.
+    #[test]
+    #[ignore]
+    fn write_app_ico() {
+        let sizes = [16u32, 24, 32, 48, 64, 128, 256];
+        let images: Vec<Vec<u8>> = sizes.iter().map(|&s| dib(s)).collect();
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0, 0, 1, 0]);
+        out.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
+        let mut offset = 6 + 16 * sizes.len() as u32;
+        for (s, img) in sizes.iter().zip(&images) {
+            let b = if *s >= 256 { 0 } else { *s as u8 };
+            out.extend_from_slice(&[b, b, 0, 0, 1, 0, 32, 0]);
+            out.extend_from_slice(&(img.len() as u32).to_le_bytes());
+            out.extend_from_slice(&offset.to_le_bytes());
+            offset += img.len() as u32;
+        }
+        for img in &images {
+            out.extend_from_slice(img);
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/openftth.ico");
+        std::fs::write(path, out).unwrap();
+    }
+
+    /// One icon entry: BITMAPINFOHEADER, bottom-up BGRA rows, and an all-zero AND mask.
+    fn dib(size: u32) -> Vec<u8> {
+        let icon = super::app_icon(size);
+        let mut v = Vec::new();
+        v.extend_from_slice(&40u32.to_le_bytes());
+        v.extend_from_slice(&(size as i32).to_le_bytes());
+        v.extend_from_slice(&((size * 2) as i32).to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&32u16.to_le_bytes());
+        v.extend_from_slice(&[0u8; 24]);
+        for y in (0..size).rev() {
+            for x in 0..size {
+                let i = ((y * size + x) * 4) as usize;
+                let px = &icon.rgba[i..i + 4];
+                v.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+            }
+        }
+        let mask_row = size.div_ceil(32) * 4;
+        v.extend(std::iter::repeat_n(0u8, (mask_row * size) as usize));
+        v
+    }
+}

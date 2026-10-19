@@ -26,6 +26,49 @@ pub struct Composer {
     pub mention: Option<(usize, String)>,
     pub mention_pick: usize,
     pub caret_to_end: bool,
+    /// Measured height of each conversation row (by row key), so rows far from the visible
+    /// part are skipped and only their space is reserved.
+    pub row_heights: std::collections::HashMap<String, f32>,
+    /// Folded groups of tool steps the user opened (by the group's first message id).
+    pub open_groups: std::collections::HashSet<String>,
+}
+
+/// Tool calls that are the crew engine's own plumbing, not steps worth showing.
+const HIDDEN_TOOLS: [&str; 6] = [
+    "ToolSearch",
+    "Read",
+    "Glob",
+    "Grep",
+    "approve",
+    "ListMcpResourcesTool",
+];
+
+/// One row of the conversation: a message, or a run of consecutive tool steps.
+enum Row {
+    Msg(usize),
+    Tools(Vec<usize>),
+}
+
+fn conversation_rows(st: &AppState) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let mut run: Vec<usize> = Vec::new();
+    for (i, m) in st.messages.iter().enumerate() {
+        if m.kind == "tool" {
+            let tool = m.json["tool"].as_str().unwrap_or("");
+            if !HIDDEN_TOOLS.contains(&tool) {
+                run.push(i);
+            }
+            continue;
+        }
+        if !run.is_empty() {
+            rows.push(Row::Tools(std::mem::take(&mut run)));
+        }
+        rows.push(Row::Msg(i));
+    }
+    if !run.is_empty() {
+        rows.push(Row::Tools(run));
+    }
+    rows
 }
 
 /// Something the composer asks the shell to do.
@@ -70,8 +113,50 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Op
             action = composer_ui(ui, st, composer);
         });
 
-    egui::ScrollArea::vertical().id_salt("thread").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("thread").auto_shrink([false, false]).stick_to_bottom(true).show_viewport(ui, |ui, viewport| {
         Frame::new().inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
+            if st.messages.is_empty() {
+                ui.add_space(18.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(text("No messages yet", 12.5, Weight::Medium, p.text2));
+                    ui.label(text("Press Design automatically for a free design by the engine alone, or ask the crew. Planner answers by default; address others with @Surveyor, @Checker or @Drafter.", 11.5, Weight::Regular, p.text3));
+                });
+            }
+            // Only rows near the visible part are drawn; the rest keep their measured height.
+            let origin = ui.min_rect().top();
+            let width = ui.available_width().round() as i32;
+            let visible = viewport.expand2(vec2(0.0, 600.0));
+            for row in conversation_rows(st) {
+                let key = match &row {
+                    Row::Msg(i) => {
+                        let m = &st.messages[*i];
+                        format!("{}:{}:{}:{width}", m.id, m.text.len(), m.streaming())
+                    }
+                    Row::Tools(ix) => {
+                        let first = &st.messages[ix[0]].id;
+                        let open = composer.open_groups.contains(first);
+                        format!("tools:{first}:{}:{open}:{width}", ix.len())
+                    }
+                };
+                let y = ui.cursor().top() - origin;
+                if let Some(h) = composer.row_heights.get(&key).copied() {
+                    if y + h < visible.min.y || y > visible.max.y {
+                        ui.add_space(h + ui.spacing().item_spacing.y);
+                        continue;
+                    }
+                }
+                let top = ui.cursor().top();
+                match row {
+                    Row::Msg(i) => message_row(ui, st, &st.messages[i]),
+                    Row::Tools(ix) => tool_group(ui, st, composer, &ix),
+                }
+                let h = ui.cursor().top() - top - ui.spacing().item_spacing.y;
+                composer.row_heights.insert(key, h.max(0.0));
+            }
+            if composer.row_heights.len() > 4000 {
+                composer.row_heights.clear();
+            }
+            // Approvals and live tool chips sit at the end, where the conversation is read.
             let pending: Vec<_> = st.pending_approvals().cloned().collect();
             let mut decision: Option<(String, bool)> = None;
             for a in &pending {
@@ -82,17 +167,6 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Op
             }
             if !st.chips.is_empty() {
                 chips(ui, st);
-            }
-            if st.messages.is_empty() {
-                ui.add_space(18.0);
-                ui.vertical_centered(|ui| {
-                    ui.label(text("No messages yet", 12.5, Weight::Medium, p.text2));
-                    ui.label(text("Planner answers by default. Address a crew member with @Surveyor, @Checker or @Drafter.", 11.5, Weight::Regular, p.text3));
-                });
-            }
-            let messages = st.messages.clone();
-            for m in &messages {
-                message_row(ui, st, m);
             }
             if st.busy() && !st.messages.iter().any(|m| m.streaming()) {
                 ui.horizontal(|ui| {
@@ -105,6 +179,79 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Op
         });
     });
     action
+}
+
+/// Consecutive tool steps: one line with the latest step, opening to the full list.
+fn tool_group(ui: &mut Ui, st: &AppState, composer: &mut Composer, ix: &[usize]) {
+    let p = st.palette;
+    if ix.len() < 3 {
+        for &i in ix {
+            message_row(ui, st, &st.messages[i]);
+        }
+        return;
+    }
+    let first = st.messages[ix[0]].id.clone();
+    let open = composer.open_groups.contains(&first);
+    let failed = ix
+        .iter()
+        .filter(|&&i| st.messages[i].json["isError"].as_bool() == Some(true))
+        .count();
+    let last = &st.messages[*ix.last().unwrap_or(&ix[0])];
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_space(14.0);
+            let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+            icons::paint(
+                ui.painter(),
+                r,
+                if open {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                },
+                p.text3,
+            );
+            ui.label(text(
+                format!(
+                    "{} engine steps{}",
+                    ix.len(),
+                    if failed > 0 {
+                        format!(", {failed} failed")
+                    } else {
+                        String::new()
+                    }
+                ),
+                11.5,
+                Weight::Medium,
+                if failed > 0 { p.red } else { p.text2 },
+            ));
+            if !open {
+                ui.add(
+                    egui::Label::new(text(
+                        format!("· {}", last.text),
+                        11.5,
+                        Weight::Regular,
+                        p.text3,
+                    ))
+                    .truncate(),
+                );
+            }
+        })
+        .response
+        .interact(Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand);
+    if resp.clicked() {
+        if open {
+            composer.open_groups.remove(&first);
+        } else {
+            composer.open_groups.insert(first);
+        }
+    }
+    if open {
+        for &i in ix {
+            message_row(ui, st, &st.messages[i]);
+        }
+    }
 }
 
 fn presence(ui: &mut Ui, st: &AppState) {
@@ -288,7 +435,12 @@ fn message_row(ui: &mut Ui, st: &AppState, m: &ChatMessage) {
                     crate::icons::paint(ui.painter(), r, Icon::Tool, p.accent);
                 });
                 ui.vertical(|ui| {
-                    ui.label(text("You changed the design", 12.0, Weight::Semibold, p.text));
+                    ui.label(text(
+                        "You changed the design",
+                        12.0,
+                        Weight::Semibold,
+                        p.text,
+                    ));
                     ui.add(egui::Label::new(text(&m.text, 12.0, Weight::Regular, p.text2)).wrap());
                     for w in m.json["warnings"].as_array().into_iter().flatten() {
                         ui.add(
@@ -312,7 +464,7 @@ fn message_row(ui: &mut Ui, st: &AppState, m: &ChatMessage) {
                 m.folk
                     .as_deref()
                     .map(|k| st.folk_name(k))
-                    .unwrap_or_else(|| "System".into())
+                    .unwrap_or_else(|| "openFTTH engine".into())
             };
             let accent = if is_user {
                 p.text2
@@ -320,43 +472,56 @@ fn message_row(ui: &mut Ui, st: &AppState, m: &ChatMessage) {
                 m.folk.as_deref().map(|k| p.folk(k)).unwrap_or(p.text3)
             };
             ui.add_space(6.0);
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                ui.add_space(2.0);
-                ui.vertical(|ui| {
-                    ui.add_space(5.0);
-                    dot(ui, accent, 3.5);
-                });
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        ui.label(text(
-                            name,
-                            12.0,
-                            Weight::Semibold,
-                            if is_user { p.text } else { accent },
-                        ));
-                        if m.at > 0 {
-                            ui.label(text(clock_time(m.at), 11.0, Weight::Regular, p.text3));
-                        }
-                        if m.streaming() {
-                            pulse_dot(ui, accent, 2.5);
-                        }
-                        if let Some(cost) = m.json["costUsd"].as_f64() {
-                            ui.label(mono_text(format!("${cost:.3}"), 10.5, p.text3));
-                        }
+            let fill = if is_user { p.accent_soft } else { p.bg2 };
+            Frame::new()
+                .fill(fill)
+                .corner_radius(8.0)
+                .inner_margin(Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.vertical(|ui| {
+                            ui.add_space(5.0);
+                            dot(ui, accent, 3.5);
+                        });
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                ui.label(text(
+                                    name,
+                                    12.0,
+                                    Weight::Semibold,
+                                    if is_user { p.text } else { accent },
+                                ));
+                                if m.at > 0 {
+                                    ui.label(text(
+                                        clock_time(m.at),
+                                        11.0,
+                                        Weight::Regular,
+                                        p.text3,
+                                    ));
+                                }
+                                if m.streaming() {
+                                    pulse_dot(ui, accent, 2.5);
+                                }
+                                if let Some(cost) = m.json["costUsd"].as_f64() {
+                                    ui.label(mono_text(format!("${cost:.3}"), 10.5, p.text3));
+                                }
+                            });
+                            if m.text.is_empty() && m.streaming() {
+                                ui.label(text("…", 13.0, Weight::Regular, p.text3));
+                            } else if is_user {
+                                ui.add(
+                                    egui::Label::new(text(&m.text, 13.0, Weight::Regular, p.text))
+                                        .wrap(),
+                                );
+                            } else {
+                                markdown::render(ui, &p, &m.text);
+                            }
+                        });
                     });
-                    if m.text.is_empty() && m.streaming() {
-                        ui.label(text("…", 13.0, Weight::Regular, p.text3));
-                    } else if is_user {
-                        ui.add(
-                            egui::Label::new(text(&m.text, 13.0, Weight::Regular, p.text)).wrap(),
-                        );
-                    } else {
-                        markdown::render(ui, &p, &m.text);
-                    }
                 });
-            });
         }
     }
 }
@@ -374,7 +539,16 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
                 .map(|d| d.by_kind("fat").next().is_some())
                 .unwrap_or(false);
             if !designed {
-                if button(ui, &p, "Design this area", Kind::Quiet).clicked() {
+                if button(ui, &p, "Design automatically", Kind::Prominent)
+                    .on_hover_text("The engine designs the whole area by itself: free, no AI, about a minute or two")
+                    .clicked()
+                {
+                    st.autodesign();
+                }
+                if button(ui, &p, "Ask the crew", Kind::Quiet)
+                    .on_hover_text("The crew runs the same steps and explains each one (uses the crew engine)")
+                    .clicked()
+                {
                     quick = Some(PROMPT_DESIGN.into());
                 }
             } else {
@@ -566,20 +740,27 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
     }
     let past = st.approvals.iter().filter(|a| a.state != "pending").count();
     if past > 0 {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if button_ex(
-                ui,
-                &p,
-                None,
-                &format!("{past} past approval{}", if past == 1 { "" } else { "s" }),
-                Kind::Ghost,
-                true,
-            )
-            .clicked()
-            {
-                composer.show_history = !composer.show_history;
-            }
-        });
+        // A fixed-height row: a right-to-left layout in this vertical panel would otherwise
+        // claim all the height left in the sidebar and push the conversation out of view.
+        let row = vec2(ui.available_width(), 24.0);
+        ui.allocate_ui_with_layout(
+            row,
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if button_ex(
+                    ui,
+                    &p,
+                    None,
+                    &format!("{past} past approval{}", if past == 1 { "" } else { "s" }),
+                    Kind::Ghost,
+                    true,
+                )
+                .clicked()
+                {
+                    composer.show_history = !composer.show_history;
+                }
+            },
+        );
     }
     if composer.show_history && past > 0 {
         egui::ScrollArea::vertical()
@@ -664,7 +845,15 @@ fn engine_chip(ui: &mut Ui, st: &mut AppState) -> Option<ChatAction> {
     let resp = resp
         .on_hover_cursor(CursorIcon::PointingHand)
         .on_hover_text(match &info {
-            Some(i) => format!("{}\n{}", i.description, i.detail),
+            Some(i) => {
+                let cost = match i.cost.as_str() {
+                    "free" => "Free: nothing to pay",
+                    "free-tier" => "Free models available",
+                    "subscription" => "Needs a paid plan",
+                    _ => "May cost per use",
+                };
+                format!("{}\n{cost} ({})\n{}", i.description, i.cost_note, i.detail)
+            }
             None => "The AI runtime the crew runs on.".to_string(),
         });
     egui::Popup::menu(&resp)
@@ -678,13 +867,18 @@ fn engine_chip(ui: &mut Ui, st: &mut AppState) -> Option<ChatAction> {
             let mut pick: Option<(String, Option<String>)> = None;
             let mut configure: Option<String> = None;
             for e in &engines {
-                let detail = if e.available {
+                let state = if e.available {
                     match &e.model {
                         Some(m) if !m.is_empty() => m.clone(),
                         _ => "ready".to_string(),
                     }
                 } else {
-                    e.detail.clone()
+                    "not set up".to_string()
+                };
+                let detail = if e.cost_note.is_empty() {
+                    state
+                } else {
+                    format!("{} · {state}", e.cost_note)
                 };
                 let needs_form = e.needs.iter().any(|n| n == "apiKey" || n == "baseUrl");
                 let row = widgets::menu_row_mark(ui, &p, &e.kind, &e.label, &detail, e.current);

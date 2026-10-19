@@ -61,7 +61,10 @@ fn fibre_path(ui: &mut Ui, p: &crate::theme::Palette, t: &serde_json::Value) {
             )
         };
         if let Some(via) = st.get("via").filter(|v| v.is_object()) {
-            let at = via["at"].as_str().map(|a| format!(" at {a}")).unwrap_or_default();
+            let at = via["at"]
+                .as_str()
+                .map(|a| format!(" at {a}"))
+                .unwrap_or_default();
             ui.label(text(
                 format!(
                     "  ↓ {}{} · {:.1} dB",
@@ -75,7 +78,12 @@ fn fibre_path(ui: &mut Ui, p: &crate::theme::Palette, t: &serde_json::Value) {
             ));
         }
         ui.horizontal(|ui| {
-            ui.label(text(format!("{:>2}", i + 1), 11.0, Weight::Regular, p.text3));
+            ui.label(text(
+                format!("{:>2}", i + 1),
+                11.0,
+                Weight::Regular,
+                p.text3,
+            ));
             ui.label(text(name, 12.0, Weight::Semibold, p.text));
             ui.label(text(detail, 11.5, Weight::Regular, p.text2));
         });
@@ -85,7 +93,10 @@ fn fibre_path(ui: &mut Ui, p: &crate::theme::Palette, t: &serde_json::Value) {
         ui,
         p,
         "fibre + joints",
-        &format!("{:.2} dB", d["fibre_and_joint_loss_db"].as_f64().unwrap_or(0.0)),
+        &format!(
+            "{:.2} dB",
+            d["fibre_and_joint_loss_db"].as_f64().unwrap_or(0.0)
+        ),
     );
     if let Some(odn) = d["odn_loss_db"].as_f64() {
         kv(ui, p, "ODN loss (budget check)", &format!("{odn:.2} dB"));

@@ -54,6 +54,7 @@ impl ChatMessage {
 #[derive(Clone, Debug)]
 pub struct ApprovalCard {
     pub id: String,
+    pub project: String,
     pub folk: String,
     pub tool: String,
     pub summary: String,
@@ -166,6 +167,10 @@ impl Tab {
 pub struct AppState {
     pub client: Client,
     rx: Receiver<Frame>,
+    /// Background loads of the design after a version: one in flight at a time; a version
+    /// that arrives meanwhile marks the next load as due.
+    refresh_rx: Option<Receiver<Refresh>>,
+    refresh_due: bool,
     pub connected: bool,
     pub palette: Palette,
     pub crew: Vec<CrewMember>,
@@ -201,6 +206,8 @@ pub struct AppState {
     pub work_order: Option<Value>,
     /// The last fibre trace: the home it is for and the engine's result.
     pub trace: Option<(String, Value)>,
+    /// Bumped whenever another project opens; the map view refits when it changes.
+    pub project_generation: u64,
     pending_open: Option<Receiver<Result<(), String>>>,
 }
 
@@ -241,6 +248,9 @@ impl AppState {
             network_of_record: None,
             work_order: None,
             trace: None,
+            project_generation: 0,
+            refresh_rx: None,
+            refresh_due: false,
             engines: Vec::new(),
             engine: None,
             pending_open: None,
@@ -341,6 +351,10 @@ impl AppState {
     pub fn refresh_project(&mut self) {
         match self.client.project() {
             Ok(v) if v["open"].as_bool() == Some(true) => {
+                let id = s(&v["id"]);
+                if self.project.as_ref().map(|p| p.id != id).unwrap_or(true) {
+                    self.forget_project_data();
+                }
                 self.project = Some(ProjectInfo {
                     id: s(&v["id"]),
                     dir: PathBuf::from(s(&v["dir"])),
@@ -408,13 +422,101 @@ impl AppState {
             .and_then(|t| serde_json::from_str(&t).ok());
     }
 
+    /// Everything that belongs to one project: dropped when another project opens, so its
+    /// map, figures and approvals never show under the new one.
+    fn forget_project_data(&mut self) {
+        self.design = None;
+        self.streets = None;
+        self.boq = None;
+        self.validation = None;
+        self.versions.clear();
+        self.backstage.clear();
+        self.messages.clear();
+        self.approvals.clear();
+        self.chips.clear();
+        self.selection.clear();
+        self.changed.clear();
+        self.explanations.clear();
+        self.trace = None;
+        self.network_of_record = None;
+        self.work_order = None;
+        self.stage = None;
+        self.last_version_summary = None;
+        self.project_generation += 1;
+    }
+
     pub fn reload_messages(&mut self) {
         if let Ok(Value::Array(ms)) = self.client.messages(0) {
             self.messages = ms.iter().map(ChatMessage::from_value).collect();
         }
         if let Ok(Value::Array(ap)) = self.client.approvals() {
-            self.approvals = ap.iter().map(approval_from_value).collect();
+            let current = self.project.as_ref().map(|p| p.id.clone()).unwrap_or_default();
+            self.approvals = ap
+                .iter()
+                .map(approval_from_value)
+                .filter(|a| a.project.is_empty() || a.project == current)
+                .collect();
             self.approvals.sort_by_key(|a| a.created_at);
+        }
+    }
+
+    /// Load the new design version off the UI thread. Bursts of versions (the automatic design
+    /// commits seventeen in a minute) collapse into as few loads as the disk allows.
+    fn request_refresh(&mut self) {
+        if self.refresh_rx.is_some() {
+            self.refresh_due = true;
+            return;
+        }
+        let Some(dir) = self.project.as_ref().map(|p| p.dir.clone()) else {
+            return;
+        };
+        let client = self.client.clone();
+        let generation = self.project_generation;
+        let (tx, rx) = mpsc::channel();
+        self.refresh_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(Refresh::load(&client, &dir, generation));
+        });
+    }
+
+    fn poll_refresh(&mut self) {
+        let Some(rx) = &self.refresh_rx else {
+            return;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.refresh_rx = None;
+                return;
+            }
+        };
+        self.refresh_rx = None;
+        if r.generation == self.project_generation {
+            match r.design {
+                Ok(Some(d)) => self.design = Some(d),
+                Ok(None) => {}
+                Err(e) => self.toasts.error(format!("design bundle: {e}")),
+            }
+            if r.streets.is_some() {
+                self.streets = r.streets;
+            }
+            self.boq = r.boq;
+            self.validation = r.validation;
+            if let Some(v) = r.versions {
+                self.versions = v;
+            }
+            if let Some(v) = r.project {
+                self.network_of_record = v["summary"]["network_of_record"]
+                    .as_str()
+                    .map(str::to_string);
+                self.work_order =
+                    Some(v["summary"]["work_order"].clone()).filter(|w| !w.is_null());
+            }
+            self.changed = r.changed;
+        }
+        if std::mem::take(&mut self.refresh_due) {
+            self.request_refresh();
         }
     }
 
@@ -460,16 +562,6 @@ impl AppState {
             .collect()
     }
 
-    /// The network of record and the open work order, from the engine's summary.
-    pub fn refresh_record(&mut self) {
-        if let Ok(v) = self.client.project() {
-            self.network_of_record = v["summary"]["network_of_record"]
-                .as_str()
-                .map(str::to_string);
-            self.work_order = Some(v["summary"]["work_order"].clone()).filter(|w| !w.is_null());
-        }
-    }
-
     pub fn explain(&mut self, uuid: &str) {
         if self.explanations.contains_key(uuid) {
             return;
@@ -486,6 +578,7 @@ impl AppState {
 
     pub fn drain_frames(&mut self) {
         self.poll_open();
+        self.poll_refresh();
         while let Ok(f) = self.rx.try_recv() {
             self.apply(f);
         }
@@ -565,28 +658,9 @@ impl AppState {
             }
             "design.version" => {
                 self.last_version_summary = f.data["summary"].as_str().map(str::to_string);
-                self.reload_design();
-                self.refresh_versions();
-                self.refresh_record();
                 self.trace = None;
                 self.explanations.clear();
-                self.changed.clear();
-                if self.versions.len() >= 2 {
-                    let head = s(&self.versions[0]["version"]);
-                    let prev = s(&self.versions[1]["version"]);
-                    if let Ok(d) = self.client.diff(&prev, &head) {
-                        for k in ["added", "modified"] {
-                            if let Some(arr) = d[k].as_array() {
-                                self.changed.extend(
-                                    arr.iter()
-                                        .filter_map(|v| v.as_str())
-                                        .filter(|u| !u.starts_with("table:"))
-                                        .map(str::to_string),
-                                );
-                            }
-                        }
-                    }
-                }
+                self.request_refresh();
             }
             "design.stage" => self.stage = f.data["stage"].as_str().map(str::to_string),
             "folk" => {
@@ -651,6 +725,18 @@ impl AppState {
                 self.toasts.error(format!("Not applied: {e}"));
                 false
             }
+        }
+    }
+
+    /// Run the whole design with the engine alone: free, offline apart from the map you chose,
+    /// and the same solvers the crew uses. Progress arrives in the conversation.
+    pub fn autodesign(&mut self) {
+        match self.client.autodesign() {
+            Ok(v) => self.toasts.info(format!(
+                "Designing automatically: {} engine steps, no AI",
+                v["steps"].as_u64().unwrap_or(0)
+            )),
+            Err(e) => self.toasts.error(format!("Automatic design: {e}")),
         }
     }
 
@@ -828,6 +914,7 @@ impl AppState {
 fn approval_from_value(v: &Value) -> ApprovalCard {
     ApprovalCard {
         id: s(&v["id"]),
+        project: s(&v["project"]),
         folk: s(&v["folk"]),
         tool: if v["tool"].is_null() {
             s(&v["shortTool"])
@@ -868,6 +955,9 @@ pub struct EngineInfo {
     pub base_url: Option<String>,
     pub has_key: bool,
     pub current: bool,
+    /// free | free-tier | subscription | paid
+    pub cost: String,
+    pub cost_note: String,
 }
 
 #[derive(Clone, Debug)]
@@ -899,6 +989,8 @@ impl AppState {
                                 .unwrap_or_default(),
                             available: e["available"].as_bool().unwrap_or(false),
                             detail: s(&e["detail"]),
+                            cost: s(&e["cost"]),
+                            cost_note: s(&e["costNote"]),
                             models: e["models"]
                                 .as_array()
                                 .map(|a| a.iter().map(s).collect())
@@ -939,6 +1031,66 @@ impl AppState {
                 self.load_engines();
             }
             Err(e) => self.toasts.error(format!("Could not switch engine: {e}")),
+        }
+    }
+}
+
+
+/// Everything the app shows about a design version, read on a worker thread.
+struct Refresh {
+    generation: u64,
+    design: Result<Option<Design>, String>,
+    streets: Option<StreetLayer>,
+    boq: Option<Value>,
+    validation: Option<Value>,
+    versions: Option<Vec<Value>>,
+    project: Option<Value>,
+    changed: Vec<String>,
+}
+
+impl Refresh {
+    fn load(client: &Client, dir: &std::path::Path, generation: u64) -> Refresh {
+        let bundle = dir.join("design");
+        let design = if bundle.exists() {
+            Design::read_dir(&bundle).map(Some).map_err(|e| e.to_string())
+        } else {
+            Ok(None)
+        };
+        let streets_path = dir.join("twin").join("streets.geojson");
+        let streets = streets_path
+            .exists()
+            .then(|| StreetLayer::read(&streets_path).ok())
+            .flatten();
+        let read_json = |name: &str| {
+            std::fs::read_to_string(dir.join("deliverables").join(name))
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        };
+        let versions = match client.versions(60) {
+            Ok(Value::Array(v)) => Some(v),
+            _ => None,
+        };
+        let mut changed = Vec::new();
+        if let Some(v) = versions.as_ref().filter(|v| v.len() >= 2) {
+            if let Ok(d) = client.diff(&s(&v[1]["version"]), &s(&v[0]["version"])) {
+                for k in ["added", "modified"] {
+                    for u in d[k].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                        if !u.starts_with("table:") {
+                            changed.push(u.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        Refresh {
+            generation,
+            design,
+            streets,
+            boq: read_json("boq.json"),
+            validation: read_json("validation.json"),
+            versions,
+            project: client.project().ok(),
+            changed,
         }
     }
 }
