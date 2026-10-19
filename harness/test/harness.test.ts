@@ -112,6 +112,8 @@ test("a user turn runs the default responder and streams frames", async () => {
   assert.ok(kinds.includes("message.patch"), "text deltas streamed");
   assert.ok(kinds.includes("tool.activity"), "tool chips emitted");
   assert.ok(kinds.includes("design.version"), "engine tool result with a version emits design.version");
+  const stages = frames.filter((f) => f.event === "design.stage").map((f) => f.data.stage);
+  assert.deepEqual(stages, ["solve"], "the engine's stage follows the version, once per change");
   const folkStates = frames.filter((f) => f.event === "folk").map((f) => f.data.state);
   assert.ok(folkStates.includes("thinking") && folkStates.includes("idle"));
   const messages = await body(api("/api/room/messages"));

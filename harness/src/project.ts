@@ -139,7 +139,10 @@ export class ProjectService {
 
     this.createDrivers(meta, engine);
 
-    this.room = new Room({ crew: this.d.crew, bus: this.d.bus, store: this.d.store, memory: this.memory, drivers: this.drivers, projectId: id, maxHops: this.d.cfg.maxHops, log: this.d.log });
+    this.room = new Room({ crew: this.d.crew, bus: this.d.bus, store: this.d.store, memory: this.memory, drivers: this.drivers, projectId: id, maxHops: this.d.cfg.maxHops, log: this.d.log, stageOf: async () => {
+      const summary = await engine.call<{ stage?: unknown }>("design_summary");
+      return typeof summary?.stage === "string" ? summary.stage : null;
+    } });
     this.meta = meta;
     this.d.bus.emit("project", { id, engine: "ready", url: engine.url, rulebook });
     return meta;
@@ -248,6 +251,7 @@ export class ProjectService {
     const reran = Array.isArray(out.data?.reran) ? (out.data.reran as string[]) : [];
     room.steerMessage(`${out.summary}${reason ? ` — ${reason}` : ""}`, { tool, args, version: out.version, reran, warnings: out.warnings ?? [] });
     if (out.version) this.d.bus.emit("design.version", { version: out.version, tool, summary: out.summary, changes: out.changes ?? null });
+    await room.refreshStage();
     if (revalidate) void room.userTurn(`@Checker ${checkerPrompt(tool, out, reason)}`);
     return out;
   }

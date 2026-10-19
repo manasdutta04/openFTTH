@@ -90,6 +90,16 @@ Ranked by what they would cost an operator. Fixed items carry a regression test.
     demand per terminal node with a dict comprehension, so two FATs on one node, an apartment
     building's dedicated indoor FATs, kept only the last one's units. *Fixed:* demands are
     summed per node in both route trees; the Manchester warning is gone.
+12. **A re-solve threw away the engineer's own moves** (found 2026-10-19 in the app
+    walkthrough). After a hand-placed cabinet and a later no-dig street, the Checker reported
+    long drops, the Planner re-ran `cluster_homes` and `place_fdh`, and the moved cabinet was
+    gone. *Fixed:* sites marked "placed by the engineer" are fixed, always-open sites in the
+    clustering, keep their ids, and are named in a `source="user"` decision; `set_pop` keeps a
+    hand-placed POP. Tests: `test_a_hand_placed_*`, `test_re_solving_around_a_pin_is_deterministic`.
+13. **The stage stepper never moved during a crew run.** The protocol promised a
+    `design.stage` frame that nothing emitted, so the app showed Ingest while the engine was in
+    Deliver. *Fixed:* the harness reads the stage after every versioned tool result and every
+    engineer change and emits the frame when it changes.
 
 ## The crew on real areas
 

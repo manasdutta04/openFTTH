@@ -27,6 +27,8 @@ export interface RoomDeps {
   projectId: string;
   maxHops: number;
   log: (line: string) => void;
+  /** The engine's current design stage (ingest, twin, rules, solve, validate, deliver). */
+  stageOf?: () => Promise<string | null>;
 }
 
 interface QueuedTurn {
@@ -43,6 +45,8 @@ export class Room {
   private readonly queue: QueuedTurn[] = [];
   private readonly unsubscribe: Array<() => void> = [];
   private readonly d: RoomDeps;
+  private stage: string | null = null;
+  private stageCheck: Promise<void> = Promise.resolve();
 
   constructor(d: RoomDeps) {
     this.d = d;
@@ -87,6 +91,27 @@ export class Room {
     if (this.current) await this.current.driver.interrupt();
   }
 
+  /**
+   * Ask the engine for its stage and emit `design.stage` when it changed. Checks run one
+   * after another so frames come out in order; a failed check is logged and skipped.
+   */
+  refreshStage(): Promise<void> {
+    const stageOf = this.d.stageOf;
+    if (!stageOf) return Promise.resolve();
+    this.stageCheck = this.stageCheck.then(async () => {
+      try {
+        const stage = await stageOf();
+        if (stage && stage !== this.stage) {
+          this.stage = stage;
+          this.d.bus.emit("design.stage", { stage });
+        }
+      } catch (err) {
+        this.d.log(`stage check failed: ${(err as Error).message}`);
+      }
+    });
+    return this.stageCheck;
+  }
+
   /** The engineer changed the design by hand, through the app rather than a crew member. */
   steerMessage(text: string, json: Record<string, unknown>): void {
     const msg = this.d.store.addMessage({ room: this.id, role: "user", folk: null, kind: "steer", text, json });
@@ -109,6 +134,8 @@ export class Room {
         const turn = this.queue.shift()!;
         try {
           await this.runChain(turn.text, turn.context);
+          // A turn is finished only once its stage frame (if any) is out.
+          await this.stageCheck;
         } catch (err) {
           this.systemMessage(`turn failed: ${(err as Error).message}`, "error");
         } finally {
@@ -201,6 +228,7 @@ export class Room {
         this.d.store.addMessage({ room: this.id, role: "folk", folk: folk.key, kind: "tool", text: summary ?? `${shortTool(e.tool)} ${e.isError ? "failed" : "done"}`, json: { tool: shortTool(e.tool), isError: e.isError, output: trimOutput(out) } });
         if (out && typeof out === "object" && typeof out.version === "string" && out.version) {
           bus.emit("design.version", { version: out.version, tool: out.tool ?? shortTool(e.tool), summary: out.summary ?? "", changes: out.changes ?? null });
+          void this.refreshStage();
         }
         if (out && typeof out === "object" && out.error === "approval_required") {
           this.setState(folk.key, "waiting");
