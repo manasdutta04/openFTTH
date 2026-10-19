@@ -175,21 +175,23 @@ pub fn at(x: f32, y: f32) -> Pos2 {
 }
 
 /// The glyph inside the app mark: a fibre loop with a drop into it.
-/// The openFTTH mark: two fibre strands flowing in from opposite corners and meeting in a
-/// bright four-point spark, the fusion splice at the heart of every fibre network (and a nod to
-/// the crew of agents). Cyan-to-violet strands on a deep navy tile with a soft glow. Geometry
-/// lives on a 16-unit grid and is rasterised once; the window icon, the .exe icon and every mark
-/// drawn inside the app use that same raster.
-const MARK_STRANDS: [[(f32, f32); 3]; 2] = [
-    [(2.55, 12.0), (4.4, 8.1), (6.55, 8.0)],
-    [(9.45, 8.0), (11.6, 7.9), (13.45, 4.0)],
-];
-const MARK_STRAND_HALF: f32 = 0.92;
-const MARK_SPARK: (f32, f32, f32) = (8.0, 8.0, 3.35);
-const MARK_TILE_TOP: [f32; 3] = [30.0, 34.0, 68.0];
-const MARK_TILE_BOTTOM: [f32; 3] = [12.0, 14.0, 32.0];
-const MARK_CYAN: [f32; 3] = [34.0, 211.0, 238.0];
-const MARK_VIOLET: [f32; 3] = [150.0, 104.0, 255.0];
+/// The openFTTH mark: a bold F drawn as a fibre. The stem bends round into the top bar the way a
+/// cable bends in a duct, a shorter bar branches off like a split, and one orange dot is the light
+/// leaving the fibre. Flat ink on a warm cream tile: no gradient, no glow, one accent. Geometry
+/// lives on a 16-unit grid and is rasterised once; the window icon, the .exe icon, the shortcuts
+/// and every mark drawn inside the app use that same raster.
+const MARK_STEM_X: f32 = 5.15;
+const MARK_STEM_BOTTOM: f32 = 12.45;
+const MARK_TOP_Y: f32 = 3.65;
+const MARK_BEND_R: f32 = 2.55;
+const MARK_TOP_END: f32 = 10.45;
+const MARK_MID_Y: f32 = 8.25;
+const MARK_MID_END: f32 = 9.05;
+const MARK_HALF: f32 = 1.2;
+const MARK_DOT: (f32, f32, f32) = (13.4, 3.65, 1.28);
+const MARK_TILE: [f32; 3] = [244.0, 239.0, 229.0];
+const MARK_INK: [f32; 3] = [27.0, 27.0, 32.0];
+const MARK_LIGHT: [f32; 3] = [255.0, 91.0, 46.0];
 
 /// The app mark in the title bar, the About box and the start page.
 pub fn paint_mark(painter: &Painter, rect: Rect) {
@@ -260,78 +262,59 @@ fn mark_sample(x: f32, y: f32) -> Option<[f32; 3]> {
     if !in_rounded_square(x, y) {
         return None;
     }
-    let mix = |a: [f32; 3], b: [f32; 3], t: f32| {
-        let t = t.clamp(0.0, 1.0);
-        [
-            a[0] + (b[0] - a[0]) * t,
-            a[1] + (b[1] - a[1]) * t,
-            a[2] + (b[2] - a[2]) * t,
-        ]
+    let (dx, dy, dr) = MARK_DOT;
+    if (x - dx).powi(2) + (y - dy).powi(2) <= dr * dr {
+        return Some(MARK_LIGHT);
+    }
+    // Stem, the bend into the top bar, the top bar, and the branch.
+    let cx = MARK_STEM_X + MARK_BEND_R;
+    let cy = MARK_TOP_Y + MARK_BEND_R;
+    let stem = segment_distance((MARK_STEM_X, MARK_STEM_BOTTOM), (MARK_STEM_X, cy), x, y);
+    let top = segment_distance((cx, MARK_TOP_Y), (MARK_TOP_END, MARK_TOP_Y), x, y);
+    let mid = segment_distance((MARK_STEM_X, MARK_MID_Y), (MARK_MID_END, MARK_MID_Y), x, y);
+    // The bend: the quarter circle from the stem's top to the top bar's start.
+    let bend = if x <= cx && y <= cy {
+        (((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - MARK_BEND_R).abs()
+    } else {
+        f32::INFINITY
     };
-    let (sx, sy, sa) = MARK_SPARK;
-    let (dx, dy) = ((x - sx).abs(), (y - sy).abs());
-    // The spark: an astroid, four slender points.
-    if (dx / sa).powf(2.0 / 3.0) + (dy / sa).powf(2.0 / 3.0) <= 1.0 {
-        return Some([255.0, 255.0, 255.0]);
+    if stem.min(top).min(mid).min(bend) <= MARK_HALF {
+        return Some(MARK_INK);
     }
-    for [a, c, b] in MARK_STRANDS {
-        if bezier_distance(a, c, b, x, y) <= MARK_STRAND_HALF {
-            // Light runs cyan on the lower left to violet on the upper right.
-            let t = ((x - 2.5) + (12.0 - y)) / 19.0;
-            return Some(mix(MARK_CYAN, MARK_VIOLET, t));
+    // A hairline edge, so the cream tile still reads on a light desktop.
+    if !in_rounded_square_inset(x, y, 0.2) {
+        let mut c = MARK_TILE;
+        for k in 0..3 {
+            c[k] += (MARK_INK[k] - c[k]) * 0.13;
         }
+        return Some(c);
     }
-    let mut c = mix(MARK_TILE_TOP, MARK_TILE_BOTTOM, y / 16.0);
-    // The splice glows: a soft halo around the spark, tinted by both strands.
-    let d = ((x - sx).powi(2) + (y - sy).powi(2)).sqrt();
-    let halo = (1.0 - d / 5.6).clamp(0.0, 1.0).powi(2) * 0.55;
-    let tint = mix(MARK_CYAN, MARK_VIOLET, 0.5);
-    for k in 0..3 {
-        c[k] += (tint[k] - c[k]) * halo;
-    }
-    // A hairline of light along the top edge, so the tile reads as a surface.
-    let rim = (1.0 - (y - 0.55) / 1.2).clamp(0.0, 1.0) * 0.22;
-    for v in &mut c {
-        *v += (255.0 - *v) * rim;
-    }
-    Some(c)
+    Some(MARK_TILE)
+}
+
+fn segment_distance(a: (f32, f32), b: (f32, f32), x: f32, y: f32) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 {
+        (((x - a.0) * dx + (y - a.1) * dy) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ((x - a.0 - t * dx).powi(2) + (y - a.1 - t * dy).powi(2)).sqrt()
 }
 
 fn in_rounded_square(x: f32, y: f32) -> bool {
-    let (lo, hi, r) = (0.55, 15.45, 3.7);
+    in_rounded_square_inset(x, y, 0.0)
+}
+
+fn in_rounded_square_inset(x: f32, y: f32, inset: f32) -> bool {
+    let (lo, hi, r) = (0.55 + inset, 15.45 - inset, 3.7 - inset);
     if x < lo || x > hi || y < lo || y > hi {
         return false;
     }
     let cx = x.clamp(lo + r, hi - r);
     let cy = y.clamp(lo + r, hi - r);
     (x - cx).powi(2) + (y - cy).powi(2) <= r * r
-}
-
-/// Distance from a point to a quadratic Bézier, by its polyline of 24 segments.
-fn bezier_distance(a: (f32, f32), c: (f32, f32), b: (f32, f32), x: f32, y: f32) -> f32 {
-    let at = |t: f32| {
-        let u = 1.0 - t;
-        (
-            u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0,
-            u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1,
-        )
-    };
-    let mut best = f32::INFINITY;
-    let mut prev = at(0.0);
-    for i in 1..=24 {
-        let cur = at(i as f32 / 24.0);
-        let (dx, dy) = (cur.0 - prev.0, cur.1 - prev.1);
-        let len2 = dx * dx + dy * dy;
-        let t = if len2 > 0.0 {
-            (((x - prev.0) * dx + (y - prev.1) * dy) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let (px, py) = (prev.0 + t * dx, prev.1 + t * dy);
-        best = best.min(((x - px).powi(2) + (y - py).powi(2)).sqrt());
-        prev = cur;
-    }
-    best
 }
 
 /// Window-control glyphs drawn on whole pixels with 1 px lines, like the OS's own caption buttons.

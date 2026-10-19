@@ -1,3 +1,5 @@
+<img src="docs/assets/openftth-icon.png" alt="openFTTH" width="96" height="96">
+
 # openFTTH
 
 **open** says it is open source and free to run. **FTTH** says exactly what it designs.
