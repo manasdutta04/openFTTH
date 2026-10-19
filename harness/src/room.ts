@@ -87,6 +87,13 @@ export class Room {
     if (this.current) await this.current.driver.interrupt();
   }
 
+  /** The engineer changed the design by hand, through the app rather than a crew member. */
+  steerMessage(text: string, json: Record<string, unknown>): void {
+    const msg = this.d.store.addMessage({ room: this.id, role: "user", folk: null, kind: "steer", text, json });
+    this.d.bus.emit("message", msg);
+    this.d.log(`engineer: ${text}`);
+  }
+
   async dispose(): Promise<void> {
     await this.interrupt();
     this.unsubscribe.forEach((u) => u());

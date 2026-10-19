@@ -59,6 +59,24 @@ export const DISALLOWED_FOR_FOLKS = [
   "SendMessage", "ListAgents", "RemoteTrigger", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "ReportFindings",
 ];
 
+/**
+ * The engine tools behind the app's own controls: move a site, exclude a building, forbid
+ * digging on a street. The app calls them through `steer()`; no crew member has them.
+ */
+export const STEER_TOOLS = ["move_site", "exclude_building", "forbid_street"] as const;
+export type SteerTool = (typeof STEER_TOOLS)[number];
+
+/** The engine's tool result, as every tool returns it. */
+export interface SteerResult {
+  tool: string;
+  summary: string;
+  version: string | null;
+  changes: Record<string, number> | null;
+  warnings: string[];
+  decisions: unknown[];
+  data: Record<string, unknown>;
+}
+
 export class ProjectService {
   private meta: ProjectMeta | null = null;
   private engine: EngineHandle | null = null;
@@ -212,6 +230,28 @@ export class ProjectService {
     return this.requireEngine().call("list_assumptions");
   }
 
+  /**
+   * The engineer's own change, straight to the engine: no crew member in the loop. The room
+   * is told what happened, the app gets a `design.version` frame, and, unless told not to,
+   * the Checker is asked to validate the design again. An engine rejection is a 422 with
+   * the engine's own words and leaves no trace in the room.
+   */
+  async steer(tool: string, args: Record<string, unknown>, revalidate: boolean): Promise<SteerResult> {
+    if (!(STEER_TOOLS as readonly string[]).includes(tool)) throw new HttpError(400, `${tool} is not one of the steering tools (${STEER_TOOLS.join(", ")})`);
+    const room = this.room;
+    if (!room) throw new HttpError(409, "no project open");
+    if (room.busy) throw new HttpError(409, "the crew is working; stop the turn or wait for it to finish");
+    const out = await this.requireEngine().call<SteerResult>(tool, args);
+    if (!out || typeof out !== "object" || typeof out.summary !== "string") throw new HttpError(502, `the engine returned no result for ${tool}`);
+    if (out.summary.startsWith("rejected")) throw new HttpError(422, out.summary.replace(/^rejected:\s*/, ""));
+    const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+    const reran = Array.isArray(out.data?.reran) ? (out.data.reran as string[]) : [];
+    room.steerMessage(`${out.summary}${reason ? ` — ${reason}` : ""}`, { tool, args, version: out.version, reran, warnings: out.warnings ?? [] });
+    if (out.version) this.d.bus.emit("design.version", { version: out.version, tool, summary: out.summary, changes: out.changes ?? null });
+    if (revalidate) void room.userTurn(`@Checker ${checkerPrompt(tool, out, reason)}`);
+    return out;
+  }
+
   /** Every project folder under the data dir, newest first. */
   listProjects(): ProjectMeta[] {
     const root = join(this.d.cfg.dataDir, "projects");
@@ -269,6 +309,13 @@ export function projectId(areaPath: string, rulebook: string): string {
   const stem = basename(areaPath).replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project";
   const hash = createHash("sha1").update(`${areaPath}|${rulebook}`).digest("hex").slice(0, 6);
   return `${stem}-${hash}`;
+}
+
+/** What the engineer asks the Checker after a change of their own. */
+function checkerPrompt(tool: string, out: SteerResult, reason: string): string {
+  const what = tool === "move_site" ? "moved a site by hand" : tool === "exclude_building" ? "excluded a building by hand" : "marked a street as no-dig";
+  const reran = Array.isArray(out.data?.reran) && out.data.reran.length ? ` The engine re-ran ${(out.data.reran as string[]).join(", ")}.` : "";
+  return `I ${what} (${out.summary}${reason ? `; reason: ${reason}` : ""}).${reran} Validate the design again and tell me what changed and whether anything now breaks a rule. Quote the recorded decisions.`;
 }
 
 export class HttpError extends Error {

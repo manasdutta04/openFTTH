@@ -230,6 +230,43 @@ test("engines are listed with availability and can be switched", async () => {
   assert.equal(back.kind, "claude");
 });
 
+test("the engineer's own change goes straight to the engine, tells the room and queues the Checker", async () => {
+  const frames: Array<{ event?: string; data: any }> = [];
+  const off = h.bus.on((f) => frames.push({ event: f.kind, data: f.data }));
+  const res = await api("/api/project/steer", { method: "POST", body: JSON.stringify({ tool: "move_site", args: { element_uuid: "fdh-1", lon: 3.7, lat: 51.0, reason: "public side of the fence" } }) });
+  const out = await body(res);
+  assert.equal(res.status, 200, JSON.stringify(out));
+  assert.equal(out.tool, "move_site");
+  assert.match(out.version, /^2+$/);
+  // The Checker's turn is queued; a turn sent behind it with wait=true returns once both ran.
+  await api("/api/room/messages", { method: "POST", body: JSON.stringify({ text: "ping", wait: true }) });
+  off();
+  assert.ok(frames.some((f) => f.event === "design.version" && f.data.tool === "move_site"), "the app is told to reload the design");
+  const messages = await body(api("/api/room/messages"));
+  const note = messages.find((m: any) => m.kind === "steer");
+  assert.ok(note, "the room records the engineer's move");
+  assert.equal(note.role, "user");
+  assert.match(note.text, /^move_site done — public side of the fence$/);
+  assert.deepEqual(note.json.reran, ["route_feeder", "route_drops"]);
+  const ask = messages.find((m: any) => m.role === "user" && m.kind === "text" && m.text.startsWith("@Checker"));
+  assert.ok(ask, "the Checker is asked to validate again");
+  assert.match(ask.text, /moved a site by hand .*reason: public side of the fence.*re-ran route_feeder, route_drops/);
+  const reply = messages.filter((m: any) => m.folk === "checker" && m.kind === "text").pop();
+  assert.ok(reply && /moved a site by hand/.test(reply.text), "the Checker got the turn");
+
+  // A rejection by the engine, an unknown tool and a missing reason never reach the room.
+  const rejected = await api("/api/project/steer", { method: "POST", body: JSON.stringify({ tool: "move_site", args: { element_uuid: "fdh-1", lon: 3.7, lat: 51.0, reason: "  " }, revalidate: false }) });
+  assert.equal(rejected.status, 422);
+  assert.match((await body(rejected)).error, /^a reason is required/);
+  const unknown = await api("/api/project/steer", { method: "POST", body: JSON.stringify({ tool: "import_osm", args: {} }) });
+  assert.equal(unknown.status, 400);
+  const quiet = await api("/api/project/steer", { method: "POST", body: JSON.stringify({ tool: "forbid_street", args: { osm_id: "w12", reason: "fresh asphalt" }, revalidate: false }) });
+  assert.equal(quiet.status, 200);
+  const later = await body(api("/api/room/messages"));
+  assert.equal(later.filter((m: any) => m.kind === "steer").length, 2);
+  assert.equal(later.filter((m: any) => m.role === "user" && m.text.startsWith("@Checker")).length, 1, "revalidate=false asks nobody");
+});
+
 test("SSE stream replays missed frames on resume", async () => {
   const first = h.bus.emit("runtime", { marker: 1 });
   h.bus.emit("runtime", { marker: 2 });

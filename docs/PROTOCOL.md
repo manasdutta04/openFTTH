@@ -35,6 +35,7 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `GET /api/project/element/:uuid` | the engine's explanation of one element (attributes + recorded decisions) |
 | `GET /api/project/assumptions` | every assumption the engine recorded |
 | `POST /api/project/approve {version}` | tag a version as approved |
+| `POST /api/project/steer {tool, args, revalidate?}` | the engineer's own change through the app: `move_site`, `exclude_building` or `forbid_street`, called on the engine directly (no crew member in the loop). The room gets a `steer` message, the app a `design.version` frame, and the Checker is asked to validate again unless `revalidate` is `false`. `409` while the crew is working, `422` with the engine's words when it rejects the change |
 | `POST /api/room/messages {text, designContext}` | a user turn in the project room |
 | `POST /api/room/interrupt` | stop the running turn |
 | `GET /api/room/messages?since` | transcript page |
@@ -54,7 +55,7 @@ replay buffer of 500 frames; a 15 s `ping` keeps the connection alive.
 | kind | payload | app use |
 |---|---|---|
 | `hello` | `{cursor, resumed}` | first frame |
-| `message` | `{id, folk, role, text, at, kind}` | chat column |
+| `message` | `{id, folk, role, text, at, kind}`; `kind` is `text`, `tool`, `approval`, `handoff`, `error` or `steer` (the engineer's own change, `json.reran` lists the solvers the engine ran again) | chat column |
 | `message.patch` | `{id, textDelta}` | streaming text |
 | `tool.activity` | `{folk, tool, state: started|done|failed, summary?}` | "routing 14 feeders…" chips |
 | `approval` | `{id, folk, tool, summary, cost?, state}` | inline approval card |

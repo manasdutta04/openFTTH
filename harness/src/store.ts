@@ -9,7 +9,8 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export type Role = "user" | "folk" | "system";
-export type MessageKind = "text" | "tool" | "approval" | "handoff" | "error";
+/** `steer` is the engineer's own change made through the app (a moved site, an excluded building, a no-dig street). */
+export type MessageKind = "text" | "tool" | "approval" | "handoff" | "error" | "steer";
 
 export interface Message {
   id: string;
