@@ -16,7 +16,8 @@
           "design_summary",
           "list_assumptions",
           "get_rulebook",
-          "versions"
+          "versions",
+          "work_order_status"
         ],
         "color": "green"
       },
@@ -45,7 +46,14 @@
           "design_summary",
           "explain_element",
           "versions",
-          "diff_versions"
+          "diff_versions",
+          "get_operator_pack",
+          "set_operator_pack",
+          "open_work_order",
+          "work_order_status",
+          "set_lifecycle",
+          "trace_fibre",
+          "homes_behind"
         ],
         "color": "blue"
       },
@@ -60,7 +68,12 @@
           "explain_element",
           "get_rulebook",
           "versions",
-          "diff_versions"
+          "diff_versions",
+          "check_operator",
+          "get_operator_pack",
+          "work_order_status",
+          "trace_fibre",
+          "homes_behind"
         ],
         "color": "orange"
       },
@@ -78,7 +91,10 @@
           "design_summary",
           "versions",
           "diff_versions",
-          "get_rulebook"
+          "get_rulebook",
+          "work_order_status",
+          "trace_fibre",
+          "homes_behind"
         ],
         "color": "purple"
       }

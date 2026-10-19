@@ -33,6 +33,7 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `GET /api/project/versions` | version log (from the engine) |
 | `GET /api/project/diff?from&to` | semantic diff by element id (from the engine) |
 | `GET /api/project/element/:uuid` | the engine's explanation of one element (attributes + recorded decisions) |
+| `GET /api/project/trace/:uuid` | a home's fibre path from OLT port to drop, hop by hop with loss (the engine's `trace_fibre`) |
 | `GET /api/project/assumptions` | every assumption the engine recorded |
 | `POST /api/project/approve {version}` | tag a version as approved |
 | `POST /api/project/steer {tool, args, revalidate?}` | the engineer's own change through the app: `move_site`, `exclude_building` or `forbid_street`, called on the engine directly (no crew member in the loop). The room gets a `steer` message, the app a `design.version` frame, and the Checker is asked to validate again unless `revalidate` is `false`. `409` while the crew is working, `422` with the engine's words when it rejects the change |
@@ -73,7 +74,8 @@ replay buffer of 500 frames; a 15 s `ping` keeps the connection alive.
  "warnings": [], "version": "<commit>", "data": {}}
 ```
 
-Risky tools return `{"error": "approval_required" | "approval_unverifiable" | "approval_denied", ...}`
+Risky tools are `add_trench`, `route_outside_ducts`, `export_for_construction`, `rewind_design`
+and `post_work_order`. They return `{"error": "approval_required" | "approval_unverifiable" | "approval_denied", ...}`
 instead of acting.
 
 ## Per-crew member tool allow-lists

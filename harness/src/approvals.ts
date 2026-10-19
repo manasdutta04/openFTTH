@@ -33,7 +33,7 @@ export interface Decision {
   message?: string;
 }
 
-export const RISKY_ENGINE_TOOLS = new Set(["add_trench", "route_outside_ducts", "export_for_construction", "rewind_design"]);
+export const RISKY_ENGINE_TOOLS = new Set(["add_trench", "route_outside_ducts", "export_for_construction", "rewind_design", "post_work_order"]);
 
 export class Approvals {
   private readonly pending = new Map<string, { approval: Approval; resolve: (d: Decision) => void; timer: NodeJS.Timeout }>();
@@ -140,6 +140,8 @@ function describe(tool: string, input: Record<string, unknown>): string {
       return "Mark the current version as approved for construction and export it";
     case "rewind_design":
       return `Rewind the design to version ${String(input.version ?? "?").slice(0, 8)}`;
+    case "post_work_order":
+      return "Post the open work order to the network of record";
     default:
       return `Allow ${tool}`;
   }

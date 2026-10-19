@@ -101,6 +101,7 @@ export function buildServer(d: ServerDeps): Server {
   add("GET", "/api/projects", (_req, res) => json(res, 200, d.projects.listProjects()));
   add("GET", "/api/project/assumptions", async (_req, res) => json(res, 200, await d.projects.assumptions()));
   add("GET", "/api/project/element/:uuid", async (_req, res, p) => json(res, 200, await d.projects.explainElement(p.uuid!)));
+  add("GET", "/api/project/trace/:uuid", async (_req, res, p) => json(res, 200, await d.projects.trace(p.uuid!)));
   add("GET", "/api/project/versions", async (_req, res, _p, url) => json(res, 200, await d.projects.versions(Number(url.searchParams.get("limit") ?? 30))));
   add("GET", "/api/project/diff", async (_req, res, _p, url) => {
     const from = url.searchParams.get("from");

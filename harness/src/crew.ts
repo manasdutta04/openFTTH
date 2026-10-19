@@ -166,7 +166,7 @@ export function systemPrompt(crew: Crew, member: CrewMember, memory: string, eng
     "- If a tool returns error=approval_required, explain the step and its cost and ask the user to approve; do not retry it.",
     "- When you are waiting on the user, say what you need once and stop. Do not mention a teammate then: a hand-off is only for work they can do right now.",
     engineKind === "codex"
-      ? "- Risky engine tools (add_trench, route_outside_ducts, export_for_construction, rewind_design) need the user's approval: first call the openftth tool `approve` with tool_name \"mcp__engine__<tool>\" and the input; if it answers allow, call the tool with the returned updatedInput (it carries approval_id). If it answers deny, stop and say so."
+      ? "- Risky engine tools (add_trench, route_outside_ducts, export_for_construction, rewind_design, post_work_order) need the user's approval: first call the openftth tool `approve` with tool_name \"mcp__engine__<tool>\" and the input; if it answers allow, call the tool with the returned updatedInput (it carries approval_id). If it answers deny, stop and say so."
       : "",
     memory.trim() ? `\n## Your memory\n${memory.trim()}` : "",
   ].join("\n");

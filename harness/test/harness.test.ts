@@ -269,6 +269,18 @@ test("the engineer's own change goes straight to the engine, tells the room and 
   assert.equal(later.filter((m: any) => m.role === "user" && m.text.startsWith("@Checker")).length, 1, "revalidate=false asks nobody");
 });
 
+test("a home's fibre trace is served straight from the engine", async () => {
+  const out = await body(api("/api/project/trace/home-1"));
+  assert.equal(out.data.reaches_olt, true);
+  assert.equal(out.data.olt_port, 3);
+  assert.equal(out.data.steps[0].side, "OLT");
+});
+
+test("posting a work order is a risky tool that opens a card", async () => {
+  const { RISKY_ENGINE_TOOLS } = await import("../src/approvals.ts");
+  assert.ok(RISKY_ENGINE_TOOLS.has("post_work_order"));
+});
+
 test("SSE stream replays missed frames on resume", async () => {
   const first = h.bus.emit("runtime", { marker: 1 });
   h.bus.emit("runtime", { marker: 2 });

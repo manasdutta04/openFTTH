@@ -229,6 +229,11 @@ export class ProjectService {
     return this.requireEngine().call("explain_element", { element_uuid: uuid });
   }
 
+  /** A home's fibre from OLT port to drop, straight from the engine (no crew member). */
+  async trace(uuid: string): Promise<unknown> {
+    return this.requireEngine().call("trace_fibre", { element_uuid: uuid });
+  }
+
   async assumptions(): Promise<unknown> {
     return this.requireEngine().call("list_assumptions");
   }
