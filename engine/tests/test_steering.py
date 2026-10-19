@@ -194,3 +194,75 @@ def test_a_fresh_session_rebuilds_the_twin_without_the_forbidden_way(session, ru
     assert not any(str(d.get("osm_id")) == way for _, _, d in twin2.graph.edges(data=True))
     assert twin2.graph.number_of_edges() == twin.graph.number_of_edges()
     assert bool(twin2.streets["no_dig"].any())
+
+
+def test_a_hand_placed_cabinet_survives_place_fdh(session):
+    from openftth_engine.pipeline import place_fdh
+
+    s = session
+    fdh = s.design.by_kind("fdh")[0]
+    move_site(s, fdh.element_uuid, fdh.geometry.x + 0.002, fdh.geometry.y, "public side")
+    node = int(s.design.get(fdh.element_uuid).openftth["node"])
+
+    r = place_fdh(s, time_limit_s=8.0)
+
+    assert fdh.element_uuid in s.design, "the pinned cabinet keeps its id"
+    kept = s.design.get(fdh.element_uuid)
+    assert int(kept.openftth["node"]) == node
+    assert kept.openftth["placed_by"] == "engineer"
+    assert kept.openftth["placed_reason"] == "public side"
+    pins = [d for d in r.decisions if d.source == "user"]
+    assert pins and fdh.element_uuid in pins[0].values["pinned"]
+    assert sum(int(f.openftth["units"]) for f in s.design.by_kind("fdh")) == sum(
+        int(f.openftth["units"]) for f in s.design.by_kind("fat")
+    ), "every FAT is still served"
+
+
+def test_a_hand_placed_fat_survives_cluster_homes(session):
+    from openftth_engine.pipeline import cluster_homes
+
+    s = session
+    fat = next(f for f in s.design.by_kind("fat") if not f.openftth.get("mdu"))
+    r0 = move_site(s, fat.element_uuid, fat.geometry.x + 0.0006, fat.geometry.y, "on the wall")
+    assert not r0.summary.startswith("rejected"), r0.summary
+    node = int(s.design.get(fat.element_uuid).openftth["node"])
+
+    r = cluster_homes(s, time_limit_s=8.0)
+
+    assert fat.element_uuid in s.design
+    kept = s.design.get(fat.element_uuid)
+    assert int(kept.openftth["node"]) == node and kept.openftth["placed_by"] == "engineer"
+    assert any(d.source == "user" and d.tool == "cluster_homes" for d in r.decisions)
+    assert all("fat_id" in h.openftth for h in s.design.by_kind("home"))
+
+
+def test_set_pop_keeps_a_hand_placed_pop(session):
+    from openftth_engine.pipeline import set_pop
+
+    s = session
+    pop = s.design.by_kind("pop")[0]
+    move_site(s, pop.element_uuid, pop.geometry.x + 0.001, pop.geometry.y, "building lease")
+    node = int(s.design.get(pop.element_uuid).openftth["node"])
+
+    r = set_pop(s)
+
+    assert int(s.design.get(pop.element_uuid).openftth["node"]) == node
+    assert r.data["pinned"] is True and "placed by the engineer" in r.summary
+
+
+def test_re_solving_around_a_pin_is_deterministic(gent_run, rules, tmp_path):
+    from openftth_engine.pipeline import place_fdh
+
+    out, _ = gent_run
+    bundles = []
+    for i in range(2):
+        dst = tmp_path / f"p{i}"
+        shutil.copytree(out, dst)
+        s = open_session(dst, rules)
+        fdh = s.design.by_kind("fdh")[0]
+        move_site(s, fdh.element_uuid, fdh.geometry.x + 0.002, fdh.geometry.y, "pin")
+        place_fdh(s, time_limit_s=8.0)
+        bundles.append(
+            {p.name: p.read_bytes() for p in sorted(s.project.bundle_dir.glob("*.geojson"))}
+        )
+    assert bundles[0] == bundles[1]

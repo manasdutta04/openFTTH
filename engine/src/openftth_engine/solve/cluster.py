@@ -63,12 +63,18 @@ def capacitated_sites(
     k_nearest: int = K_NEAREST,
     min_units: int = 0,
     short_unit_cost: float = 0.0,
+    fixed_nodes: set[int] | None = None,
 ) -> tuple[list[Site], ClusterStats]:
     """Place sites on graph nodes so every demand is served within `max_dist_m` street
     distance by exactly one site, no site exceeds `capacity` units, and the sum of
-    site opening cost and distance × per_m_cost is minimal (per cell)."""
+    site opening cost and distance × per_m_cost is minimal (per cell).
+
+    `fixed_nodes` are sites the engineer placed by hand: they are always open, cost nothing
+    to open, are offered to every demand within reach regardless of `k_nearest`, and come
+    back even when no demand ends up on them (with no members)."""
+    fixed = set(fixed_nodes or ())
     if not demands:
-        return [], ClusterStats(0, [], 0.0, 0, 0)
+        return [Site(node=n) for n in sorted(fixed)], ClusterStats(0, [], 0.0, 0, 0)
 
     cells = _partition(demands, xy, seed)
     sites: list[Site] = []
@@ -77,7 +83,7 @@ def capacitated_sites(
     n_cand = 0
     fallbacks = 0
     for cell in cells:
-        reach = _reach(G, cell, max_dist_m, candidate_nodes, k_nearest)
+        reach = _reach(G, cell, max_dist_m, candidate_nodes, k_nearest, fixed)
         n_cand += len({c for r in reach.values() for c in r})
         cell_sites, status, obj = _solve_cell(
             cell,
@@ -89,6 +95,7 @@ def capacitated_sites(
             seed,
             min_units,
             short_unit_cost,
+            fixed,
         )
         if status == "FALLBACK":
             fallbacks += 1
@@ -96,6 +103,8 @@ def capacitated_sites(
         objective += obj
         sites.extend(cell_sites)
     sites = _merge_same_node(sites, capacity)
+    present = {s.node for s in sites}
+    sites.extend(Site(node=n) for n in sorted(fixed - present))
     sites.sort(key=lambda s: (s.node, s.slot, s.units))
     return sites, ClusterStats(len(cells), statuses, objective, n_cand, fallbacks)
 
@@ -118,6 +127,7 @@ def _reach(
     max_dist_m: float,
     candidate_nodes: set[int] | None,
     k_nearest: int,
+    fixed: set[int] | frozenset[int] = frozenset(),
 ) -> dict[str, dict[int, float]]:
     """Street distance from each demand to its K nearest candidate nodes within reach."""
     reach: dict[str, dict[int, float]] = {}
@@ -133,7 +143,10 @@ def _reach(
             # Nothing within reach: use the own node (will violate the distance rule, reported later).
             items = [(d.node, d.offset_m)]
         items.sort(key=lambda t: (t[1], t[0]))
-        reach[d.key] = dict(items[:k_nearest])
+        kept = dict(items[:k_nearest])
+        # A hand-placed site within reach is always an option, however many are nearer.
+        kept.update({n: dist for n, dist in items[k_nearest:] if n in fixed})
+        reach[d.key] = kept
     return reach
 
 
@@ -147,10 +160,14 @@ def _solve_cell(
     seed: int,
     min_units: int = 0,
     short_unit_cost: float = 0.0,
+    fixed: set[int] | frozenset[int] = frozenset(),
 ) -> tuple[list[Site], str, float]:
     candidates = sorted({c for r in reach.values() for c in r})
     model = cp_model.CpModel()
     open_v = {c: model.NewBoolVar(f"open_{c}") for c in candidates}
+    for c in candidates:
+        if c in fixed:
+            model.Add(open_v[c] == 1)
     x: dict[tuple[str, int], cp_model.IntVar] = {}
     for d in cell:
         for c in reach[d.key]:
@@ -179,7 +196,7 @@ def _solve_cell(
             model.Add(short[c] >= min_units * open_v[c] - assigned)
     scale = 100  # cents
     model.Minimize(
-        sum(int(round(open_cost * scale)) * open_v[c] for c in candidates)
+        sum(int(round(open_cost * scale)) * open_v[c] for c in candidates if c not in fixed)
         + sum(int(round(short_unit_cost * scale)) * v for v in short.values())
         + sum(
             int(round(dist * per_m_cost * scale)) * x[(d.key, c)]
@@ -269,7 +286,11 @@ def _merge_same_node(sites: list[Site], capacity: int) -> list[Site]:
 
 
 def repair_reach(
-    G: nx.Graph, sites: list[Site], max_dist_m: float, capacity: int
+    G: nx.Graph,
+    sites: list[Site],
+    max_dist_m: float,
+    capacity: int,
+    keep_nodes: set[int] | None = None,
 ) -> tuple[list[Site], int, int]:
     """Move members whose street distance to their site exceeds `max_dist_m` to the nearest
     site that has room and is within reach. Returns (sites, moved, stranded)."""
@@ -304,5 +325,6 @@ def repair_reach(
             target.members.append(m)
             target.distances_m[m.key] = d
             moved += 1
-    sites = [s for s in sites if s.members]
+    keep = keep_nodes or set()
+    sites = [s for s in sites if s.members or s.node in keep]
     return sites, moved, stranded

@@ -70,6 +70,31 @@ def open_session(
 # ---- helpers ------------------------------------------------------------------------------
 
 
+def _pinned(s: Session, kind: str) -> list[Feature]:
+    """Sites of `kind` the engineer placed by hand (move_site). Solvers keep them where they
+    stand, with their ids; only an outdoor site can be pinned."""
+    return [
+        f
+        for f in s.design.by_kind(kind)
+        if f.openftth.get("placed_by") == "engineer" and not f.openftth.get("mdu")
+    ]
+
+
+def _pin_decision(tool: str, pinned: list[Feature], what: str) -> Decision:
+    names = ", ".join(str(f.props.get("name") or f.element_uuid[:8]) for f in pinned)
+    return Decision(
+        stage="solve",
+        tool=tool,
+        reason=f"Kept {names} where the engineer placed {'it' if len(pinned) == 1 else 'them'}; "
+        f"the {what} around {'it' if len(pinned) == 1 else 'them'} were placed by the solver. "
+        "Reasons on record: "
+        + "; ".join(str(f.openftth.get("placed_reason", "")) for f in pinned)
+        + ".",
+        values={"pinned": [f.element_uuid for f in pinned]},
+        source="user",
+    )
+
+
 def _wgs(twin: Twin, geom) -> Any:
     return gpd.GeoSeries([geom], crs=twin.crs).to_crs(4326).iloc[0]
 
@@ -236,6 +261,22 @@ def build_twin_tool(s: Session) -> ToolResult:
 def set_pop(s: Session, lon: float | None = None, lat: float | None = None) -> ToolResult:
     s.project.set_stage("solve")
     twin = _twin(s)
+    pinned = _pinned(s, "pop")
+    if pinned:
+        # The engineer placed the POP; only their own move_site moves it again.
+        pop = pinned[0]
+        node = int(pop.openftth["node"])
+        s.cache["pop_node"] = node
+        return _commit(
+            s,
+            ToolResult(
+                tool="set_pop",
+                summary=f"POP kept at street node {node} (placed by the engineer)",
+                decisions=[_pin_decision("set_pop", pinned, "routes")],
+                data={"node": node, "pinned": True},
+            ),
+            s.design.copy(),
+        )
     before = s.design.copy()
     decisions: list[Decision] = []
     if lon is None or lat is None:
@@ -294,13 +335,22 @@ def cluster_homes(s: Session, time_limit_s: float = 20.0) -> ToolResult:
     before = s.design.copy()
     homes = s.design.by_kind("home")
     cap = r.fat.max_homes
+    pinned = _pinned(s, "fat")
+    pinned_at = {int(f.openftth["node"]): f for f in pinned}
+    pinned_ids = {f.element_uuid for f in pinned}
     s.design.remove_where(kind="fat")
     fat_no = 0
 
-    def new_fat(node: int, units: int, key: str, placement: str, geometry) -> str:
+    def new_fat(
+        node: int, units: int, key: str, placement: str, geometry, fid: str | None = None
+    ) -> str:
         nonlocal fat_no
         fat_no += 1
-        fid = s.uid("tb", key)
+        if fid is None:
+            fid = s.uid("tb", key)
+            # A pinned FAT keeps the id it got at its old node; a new FAT there needs another.
+            if fid in pinned_ids:
+                fid = s.uid("tb", f"{key}:after-pin")
         s.design.add(
             Feature(
                 element_uuid=fid,
@@ -351,9 +401,11 @@ def cluster_homes(s: Session, time_limit_s: float = 20.0) -> ToolResult:
 
     regular = [h for h in homes if int(h.openftth["units"]) <= cap]
     # FATs stand at intersections or in front of a home (wall/pole), not at arbitrary vertices.
-    fat_candidates = {n for n, deg in twin.graph.degree if deg >= 3} | {
-        int(h.openftth["node"]) for h in regular
-    }
+    fat_candidates = (
+        {n for n, deg in twin.graph.degree if deg >= 3}
+        | {int(h.openftth["node"]) for h in regular}
+        | set(pinned_at)
+    )
     demands = [
         Demand(
             key=h.element_uuid,
@@ -378,16 +430,23 @@ def cluster_homes(s: Session, time_limit_s: float = 20.0) -> ToolResult:
         open_cost=r.units.fat + r.labour.fat_install,
         per_m_cost=per_m,
         time_limit_s=time_limit_s,
+        fixed_nodes=set(pinned_at),
     )
     home_by_id = {h.element_uuid: h for h in regular}
     for site in sites:
+        keep = pinned_at.get(site.node) if site.slot == 0 else None
         fid = new_fat(
             site.node,
             site.units,
             f"fat:{site.node}:{site.slot}",
             "outdoor",
             _wgs(twin, twin.node_point(site.node)),
+            keep.element_uuid if keep else None,
         )
+        if keep is not None:
+            s.design.get(fid).openftth.update(
+                placed_by="engineer", placed_reason=keep.openftth.get("placed_reason", "")
+            )
         s.design.get(fid).openftth["homes"] = len(site.members)
         for m in site.members:
             h = home_by_id[m.key]
@@ -424,11 +483,18 @@ def cluster_homes(s: Session, time_limit_s: float = 20.0) -> ToolResult:
                 source="assumption",
             )
         )
+    if pinned:
+        decisions.append(_pin_decision("cluster_homes", pinned, "other FATs"))
     warnings = (
         [f"{stats.fallback_cells} cell(s) hit the time limit; greedy fallback used"]
         if stats.fallback_cells
         else []
     )
+    warnings += [
+        f"{fat.props['name']} was placed by the engineer and now serves no home"
+        for fat in s.design.by_kind("fat")
+        if fat.openftth.get("placed_by") == "engineer" and not fat.openftth.get("homes")
+    ]
     total_fats = len(sites) + n_mdu_fats
     return _commit(
         s,
@@ -450,6 +516,8 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
     r = s.rules
     before = s.design.copy()
     fats = s.design.by_kind("fat")
+    pinned = _pinned(s, "fdh")
+    pinned_at = {int(f.openftth["node"]): f for f in pinned}
     demands = [
         Demand(key=f.element_uuid, node=int(f.openftth["node"]), units=int(f.openftth["units"]))
         for f in fats
@@ -457,7 +525,9 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
     cap_max = max(r.fdh.capacities)
     capacity = int(cap_max * r.fdh.max_fill_pct / 100.0)
     # Cabinets sit at intersections: candidate nodes with degree ≥ 3 (fallback: all nodes).
-    candidates = {n for n, d in twin.graph.degree if d >= 3} or set(twin.graph.nodes)
+    candidates = ({n for n, d in twin.graph.degree if d >= 3} or set(twin.graph.nodes)) | set(
+        pinned_at
+    )
     # Distance is priced as distribution cable only: the trench along the street is needed for
     # the drops anyway, so it must not push the solver towards many small cabinets.
     per_m = r.units.cable_base_per_m + 24 * r.units.cable_per_fiber_m
@@ -472,10 +542,13 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
         candidate_nodes=candidates,
         time_limit_s=time_limit_s,
         k_nearest=1000,
+        fixed_nodes=set(pinned_at),
     )
     # The clustering prices distance to the nearest candidate, so a FAT can end up on a cabinet
     # that is within reach as the crow flies but not along the street: check and move those.
-    sites, moved, stranded = repair_reach(twin.graph, sites, r.distances.max_dist_m, capacity)
+    sites, moved, stranded = repair_reach(
+        twin.graph, sites, r.distances.max_dist_m, capacity, keep_nodes=set(pinned_at)
+    )
     s.design.remove_where(kind="fdh")
     fat_by_id = {f.element_uuid: f for f in fats}
     for i, site in enumerate(sites):
@@ -483,7 +556,14 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
             (c for c in sorted(r.fdh.capacities) if site.units <= c * r.fdh.max_fill_pct / 100.0),
             cap_max,
         )
-        fid = s.uid("otb", f"fdh:{site.node}")
+        keep = pinned_at.get(site.node) if site.slot == 0 else None
+        if keep is not None:
+            fid = keep.element_uuid
+        else:
+            fid = s.uid("otb", f"fdh:{site.node}")
+            # A pinned cabinet keeps the id it got at its old node; a new one there needs another.
+            if fid in {f.element_uuid for f in pinned}:
+                fid = s.uid("otb", f"fdh:{site.node}:after-pin")
         s.design.add(
             Feature(
                 element_uuid=fid,
@@ -502,6 +582,14 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
                     "units": site.units,
                     "capacity": chosen,
                     "fats": len(site.members),
+                    **(
+                        {
+                            "placed_by": "engineer",
+                            "placed_reason": keep.openftth.get("placed_reason", ""),
+                        }
+                        if keep is not None
+                        else {}
+                    ),
                 },
             )
         )
@@ -539,12 +627,20 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
             source="assumption",
         ),
     ]
+    if pinned:
+        decisions.append(_pin_decision("place_fdh", pinned, "other cabinets"))
+    idle = [
+        str(f.props["name"])
+        for f in s.design.by_kind("fdh")
+        if f.openftth.get("placed_by") == "engineer" and not f.openftth.get("units")
+    ]
     return _commit(
         s,
         ToolResult(
             tool="place_fdh",
             summary=f"{len(sites)} FDH(s): " + ", ".join(f"{x.units} units" for x in sites),
             decisions=decisions,
+            warnings=[f"{n} was placed by the engineer and now serves no FAT" for n in idle],
             data={"fdhs": len(sites)},
         ),
         before,
