@@ -3,6 +3,7 @@
 
 mod app;
 mod chat;
+mod dictate;
 mod icons;
 mod inspector;
 mod markdown;

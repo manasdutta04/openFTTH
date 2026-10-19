@@ -16,7 +16,6 @@ pub enum Icon {
     Minus,
     Fit,
     Close,
-    Send,
     Stop,
     Search,
     Check,
@@ -29,6 +28,8 @@ pub enum Icon {
     Target,
     Maximize,
     Restore,
+    ArrowUp,
+    Mic,
 }
 
 pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
@@ -43,7 +44,37 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
     let closed = |pts: Vec<Pos2>| {
         painter.add(PathShape::closed_line(pts, PathStroke::new(w, color)));
     };
+    // Round caps and joins: a dot at every vertex, for a drawn-with-a-pen finish.
+    let pen = |pts: Vec<Pos2>, width: f32| {
+        for q in &pts {
+            painter.circle_filled(*q, width / 2.0, color);
+        }
+        painter.add(PathShape::line(pts, PathStroke::new(width, color)));
+    };
     match icon {
+        Icon::ArrowUp => {
+            let w2 = (1.9 * s).max(1.2);
+            pen(vec![p(8.0, 13.2), p(8.0, 3.3)], w2);
+            pen(vec![p(3.6, 7.7), p(8.0, 3.3), p(12.4, 7.7)], w2);
+        }
+        Icon::Mic => {
+            let w2 = (1.6 * s).max(1.1);
+            let body = Rect::from_min_max(p(5.9, 1.6), p(10.1, 9.8));
+            painter.rect_stroke(
+                body,
+                2.1 * s,
+                Stroke::new(w2, color),
+                egui::StrokeKind::Middle,
+            );
+            let arc: Vec<Pos2> = (0..=16)
+                .map(|i| {
+                    let a = std::f32::consts::PI * i as f32 / 16.0;
+                    p(8.0 + 4.7 * a.cos(), 7.4 + 4.7 * a.sin())
+                })
+                .collect();
+            pen(arc, w2);
+            pen(vec![p(8.0, 12.2), p(8.0, 14.6)], w2);
+        }
         Icon::Plus => {
             line(vec![p(8.0, 3.0), p(8.0, 13.0)]);
             line(vec![p(3.0, 8.0), p(13.0, 8.0)]);
@@ -58,10 +89,6 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Close => {
             line(vec![p(4.0, 4.0), p(12.0, 12.0)]);
             line(vec![p(12.0, 4.0), p(4.0, 12.0)]);
-        }
-        Icon::Send => {
-            closed(vec![p(2.5, 8.0), p(13.5, 2.5), p(10.0, 13.5), p(8.0, 9.0)]);
-            line(vec![p(8.0, 9.0), p(13.5, 2.5)]);
         }
         Icon::Stop => {
             painter.rect_filled(
@@ -148,58 +175,77 @@ pub fn at(x: f32, y: f32) -> Pos2 {
 }
 
 /// The glyph inside the app mark: a fibre loop with a drop into it.
-fn mark_glyph(painter: &Painter, rect: Rect, color: Color32) {
-    let s = rect.width().min(rect.height()) / 16.0;
-    let p = |x: f32, y: f32| rect.center() - vec2(8.0, 8.0) * s + vec2(x, y) * s;
-    let w = (1.9 * s).max(1.0);
-    painter.circle_stroke(p(8.0, 8.5), 4.6 * s, Stroke::new(w, color));
-    painter.circle_filled(p(8.0, 8.5), 1.6 * s, color);
-    painter.add(PathShape::line(
-        vec![p(8.0, 1.5), p(8.0, 5.0)],
-        PathStroke::new(w, color),
-    ));
-}
+/// The openFTTH mark: two fibre strands flowing in from opposite corners and meeting in a
+/// bright four-point spark, the fusion splice at the heart of every fibre network (and a nod to
+/// the crew of agents). Cyan-to-violet strands on a deep navy tile with a soft glow. Geometry
+/// lives on a 16-unit grid and is rasterised once; the window icon, the .exe icon and every mark
+/// drawn inside the app use that same raster.
+const MARK_STRANDS: [[(f32, f32); 3]; 2] = [
+    [(2.55, 12.0), (4.4, 8.1), (6.55, 8.0)],
+    [(9.45, 8.0), (11.6, 7.9), (13.45, 4.0)],
+];
+const MARK_STRAND_HALF: f32 = 0.92;
+const MARK_SPARK: (f32, f32, f32) = (8.0, 8.0, 3.35);
+const MARK_TILE_TOP: [f32; 3] = [30.0, 34.0, 68.0];
+const MARK_TILE_BOTTOM: [f32; 3] = [12.0, 14.0, 32.0];
+const MARK_CYAN: [f32; 3] = [34.0, 211.0, 238.0];
+const MARK_VIOLET: [f32; 3] = [150.0, 104.0, 255.0];
 
-/// The app mark as it appears in the title bar and About box: a rounded tile with the glyph.
-pub fn paint_mark(painter: &Painter, rect: Rect, tile: Color32, glyph: Color32) {
+/// The app mark in the title bar, the About box and the start page.
+pub fn paint_mark(painter: &Painter, rect: Rect) {
     let r = rect.width().min(rect.height());
     let sq = Rect::from_center_size(rect.center(), Vec2::splat(r));
-    painter.rect_filled(sq, r * 0.22, tile);
-    mark_glyph(painter, sq.shrink(r * 0.12), glyph);
+    let tex = APP_MARK.with(|cell| {
+        cell.borrow_mut()
+            .get_or_insert_with(|| {
+                let icon = app_icon(128);
+                let image = ColorImage::from_rgba_unmultiplied([128, 128], &icon.rgba);
+                painter.ctx().load_texture("app-mark", image, TextureOptions::LINEAR)
+            })
+            .clone()
+    });
+    painter.image(
+        tex.id(),
+        sq,
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
 }
 
-/// The same mark rasterised for the OS window icon and taskbar.
+thread_local! {
+    static APP_MARK: RefCell<Option<TextureHandle>> = const { RefCell::new(None) };
+}
+
+/// The mark rasterised at `size` px (RGBA, straight alpha), 6 × 6 supersampled.
 pub fn app_icon(size: u32) -> egui::IconData {
-    let ss = 4u32;
+    let ss = 6u32;
     let n = size as f32;
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    let tile = [0x3f_u8, 0x8c, 0xff];
     for y in 0..size {
         for x in 0..size {
+            let mut acc = [0.0f32; 3];
             let mut cover = 0.0f32;
-            let mut glyph = 0.0f32;
             for sy in 0..ss {
                 for sx in 0..ss {
                     let gx = (x as f32 + (sx as f32 + 0.5) / ss as f32) / n * 16.0;
                     let gy = (y as f32 + (sy as f32 + 0.5) / ss as f32) / n * 16.0;
-                    if in_rounded_square(gx, gy) {
+                    if let Some(c) = mark_sample(gx, gy) {
                         cover += 1.0;
-                        if in_glyph(gx, gy) {
-                            glyph += 1.0;
+                        for k in 0..3 {
+                            acc[k] += c[k];
                         }
                     }
                 }
             }
             let total = (ss * ss) as f32;
-            let a = cover / total;
-            let g = if cover > 0.0 { glyph / cover } else { 0.0 };
-            let ch = |c: u8| (c as f32 * (1.0 - g) + 255.0 * g).round() as u8;
-            rgba.extend_from_slice(&[
-                ch(tile[0]),
-                ch(tile[1]),
-                ch(tile[2]),
-                (a * 255.0).round() as u8,
-            ]);
+            let px = |k: usize| {
+                if cover > 0.0 {
+                    (acc[k] / cover).round().clamp(0.0, 255.0) as u8
+                } else {
+                    0
+                }
+            };
+            rgba.extend_from_slice(&[px(0), px(1), px(2), (cover / total * 255.0).round() as u8]);
         }
     }
     egui::IconData {
@@ -209,8 +255,50 @@ pub fn app_icon(size: u32) -> egui::IconData {
     }
 }
 
+/// Colour of the mark at a point of the 16-grid, or None outside the tile.
+fn mark_sample(x: f32, y: f32) -> Option<[f32; 3]> {
+    if !in_rounded_square(x, y) {
+        return None;
+    }
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| {
+        let t = t.clamp(0.0, 1.0);
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
+    };
+    let (sx, sy, sa) = MARK_SPARK;
+    let (dx, dy) = ((x - sx).abs(), (y - sy).abs());
+    // The spark: an astroid, four slender points.
+    if (dx / sa).powf(2.0 / 3.0) + (dy / sa).powf(2.0 / 3.0) <= 1.0 {
+        return Some([255.0, 255.0, 255.0]);
+    }
+    for [a, c, b] in MARK_STRANDS {
+        if bezier_distance(a, c, b, x, y) <= MARK_STRAND_HALF {
+            // Light runs cyan on the lower left to violet on the upper right.
+            let t = ((x - 2.5) + (12.0 - y)) / 19.0;
+            return Some(mix(MARK_CYAN, MARK_VIOLET, t));
+        }
+    }
+    let mut c = mix(MARK_TILE_TOP, MARK_TILE_BOTTOM, y / 16.0);
+    // The splice glows: a soft halo around the spark, tinted by both strands.
+    let d = ((x - sx).powi(2) + (y - sy).powi(2)).sqrt();
+    let halo = (1.0 - d / 5.6).clamp(0.0, 1.0).powi(2) * 0.55;
+    let tint = mix(MARK_CYAN, MARK_VIOLET, 0.5);
+    for k in 0..3 {
+        c[k] += (tint[k] - c[k]) * halo;
+    }
+    // A hairline of light along the top edge, so the tile reads as a surface.
+    let rim = (1.0 - (y - 0.55) / 1.2).clamp(0.0, 1.0) * 0.22;
+    for v in &mut c {
+        *v += (255.0 - *v) * rim;
+    }
+    Some(c)
+}
+
 fn in_rounded_square(x: f32, y: f32) -> bool {
-    let (lo, hi, r) = (0.5, 15.5, 3.5);
+    let (lo, hi, r) = (0.55, 15.45, 3.7);
     if x < lo || x > hi || y < lo || y > hi {
         return false;
     }
@@ -219,15 +307,31 @@ fn in_rounded_square(x: f32, y: f32) -> bool {
     (x - cx).powi(2) + (y - cy).powi(2) <= r * r
 }
 
-fn in_glyph(x: f32, y: f32) -> bool {
-    // Mirrors `mark_glyph` on the 16-grid, inset by 12% like `paint_mark`.
-    let scale = 0.76;
-    let (cx, cy) = (8.0, 8.0 + 0.5 * scale);
-    let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-    let ring = (d - 4.6 * scale).abs() <= 0.95 * scale;
-    let dot = d <= 1.6 * scale;
-    let stem = (x - 8.0).abs() <= 0.95 * scale && y >= 8.0 - 6.5 * scale && y <= 8.0 - 3.0 * scale;
-    ring || dot || stem
+/// Distance from a point to a quadratic Bézier, by its polyline of 24 segments.
+fn bezier_distance(a: (f32, f32), c: (f32, f32), b: (f32, f32), x: f32, y: f32) -> f32 {
+    let at = |t: f32| {
+        let u = 1.0 - t;
+        (
+            u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0,
+            u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1,
+        )
+    };
+    let mut best = f32::INFINITY;
+    let mut prev = at(0.0);
+    for i in 1..=24 {
+        let cur = at(i as f32 / 24.0);
+        let (dx, dy) = (cur.0 - prev.0, cur.1 - prev.1);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((x - prev.0) * dx + (y - prev.1) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (px, py) = (prev.0 + t * dx, prev.1 + t * dy);
+        best = best.min(((x - px).powi(2) + (y - py).powi(2)).sqrt());
+        prev = cur;
+    }
+    best
 }
 
 /// Window-control glyphs drawn on whole pixels with 1 px lines, like the OS's own caption buttons.

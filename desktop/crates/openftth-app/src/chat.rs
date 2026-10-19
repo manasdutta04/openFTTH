@@ -7,7 +7,7 @@ use crate::markdown;
 use crate::state::{stage_index, AppState, ChatMessage, STAGES};
 use crate::theme::{Weight, R};
 use crate::widgets::{
-    self, button, button_ex, caps, clock_time, dot, hairline, icon_button_sized, mono_text,
+    self, button, button_ex, caps, clock_time, dot, hairline, mono_text,
     panel_header, pulse_dot, tag, text, Kind,
 };
 
@@ -31,6 +31,10 @@ pub struct Composer {
     pub row_heights: std::collections::HashMap<String, f32>,
     /// Folded groups of tool steps the user opened (by the group's first message id).
     pub open_groups: std::collections::HashSet<String>,
+    /// Windows voice typing was opened from the mic button and not closed since.
+    pub dictating: bool,
+    /// Open voice typing once the field has focus (it types into the focused field).
+    pub dictate_pending: bool,
 }
 
 /// Tool calls that are the crew engine's own plumbing, not steps worth showing.
@@ -609,20 +613,34 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
     if let Some(name) = accept_mention.take() {
         apply_mention(composer, &name);
     }
+    // Enter sends, Shift+Enter is a new line. The field never loses focus on Enter (Shift+Enter
+    // is its newline key), so the key is taken here while the field has focus.
+    let field_id = egui::Id::unique("composer-field");
+    let field_focused = ui.memory(|m| m.has_focus(field_id));
+    if field_focused
+        && composer.mention.is_none()
+        && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+        && open
+        && !composer.text.trim().is_empty()
+    {
+        send_now = true;
+    }
+    let border = if field_focused { p.accent.gamma_multiply(0.7) } else { p.line };
     Frame::new()
         .fill(p.bg2)
-        .stroke(Stroke::new(1.0, p.line))
-        .corner_radius(R as f32)
+        .stroke(Stroke::new(1.0, border))
+        .corner_radius(12.0)
         .inner_margin(Margin {
-            left: 10,
+            left: 12,
             right: 8,
-            top: 8,
-            bottom: 6,
+            top: 10,
+            bottom: 8,
         })
         .show(ui, |ui| {
             let response = ui.add_sized(
                 [ui.available_width(), 0.0],
                 egui::TextEdit::multiline(&mut composer.text)
+                    .id(field_id)
                     .frame(Frame::NONE)
                     .desired_rows(2)
                     .hint_text(if open {
@@ -654,12 +672,13 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
                 apply_mention(composer, &name);
                 composer.want_focus = true;
             }
-            let enter = response.lost_focus()
-                && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
             let can_send = open && !composer.text.trim().is_empty();
-            if enter {
+            if send_now {
                 composer.want_focus = true;
-                send_now = can_send;
+            }
+            if composer.dictate_pending && response.has_focus() {
+                composer.dictate_pending = false;
+                composer.dictating = crate::dictate::toggle();
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -677,58 +696,79 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
                     .on_hover_text("The selection travels with your next message. Esc clears it.");
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if st.busy() {
-                        if icon_button_sized(
-                            ui,
-                            &p,
-                            Icon::Stop,
-                            "Stop the current turn",
-                            26.0,
-                            true,
-                        )
-                        .clicked()
-                        {
-                            st.interrupt();
-                        }
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    // Send, or stop while the crew works: a round button with a drawn arrow.
+                    let busy = st.busy();
+                    let live = busy || can_send;
+                    let (r, resp) = ui.allocate_exact_size(
+                        vec2(30.0, 30.0),
+                        if live { Sense::click() } else { Sense::hover() },
+                    );
+                    let fill = match (busy, can_send, resp.hovered()) {
+                        (true, _, h) => if h { p.red.gamma_multiply(0.9) } else { p.bg3 },
+                        (false, true, true) => p.accent.gamma_multiply(1.12),
+                        (false, true, false) => p.accent,
+                        _ => p.bg3,
+                    };
+                    ui.painter().circle_filled(r.center(), 15.0, fill);
+                    let glyph = if live { egui::Color32::WHITE } else { p.text3 };
+                    icons::paint(
+                        ui.painter(),
+                        icons::square(r.center(), if busy { 13.0 } else { 15.0 }),
+                        if busy { Icon::Stop } else { Icon::ArrowUp },
+                        glyph,
+                    );
+                    let resp = resp.on_hover_text(if busy {
+                        "Stop the current turn"
+                    } else if can_send {
+                        "Send  (Enter) · Shift+Enter for a new line"
                     } else {
-                        let (r, resp) = ui.allocate_exact_size(
-                            vec2(26.0, 26.0),
-                            if can_send {
-                                Sense::click()
-                            } else {
-                                Sense::hover()
-                            },
-                        );
-                        let fill = if can_send {
-                            if resp.hovered() {
-                                p.accent.gamma_multiply(1.15)
-                            } else {
-                                p.accent
-                            }
+                        "Type a message, or press the mic to speak"
+                    });
+                    if live && resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                        if busy {
+                            st.interrupt();
                         } else {
-                            p.bg3
-                        };
-                        ui.painter().rect_filled(r, R as f32, fill);
-                        icons::paint(
-                            ui.painter(),
-                            icons::square(r.center(), 14.0),
-                            Icon::Send,
-                            if can_send {
-                                egui::Color32::WHITE
-                            } else {
-                                p.text3
-                            },
-                        );
-                        if can_send && resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                             send_now = true;
                         }
                     }
-                    ui.label(text(
-                        if can_send { "Enter to send" } else { "" },
-                        10.5,
-                        Weight::Regular,
-                        p.text3,
-                    ));
+                    // Dictation through Windows voice typing.
+                    let (m, mresp) = ui.allocate_exact_size(
+                        vec2(30.0, 30.0),
+                        if open { Sense::click() } else { Sense::hover() },
+                    );
+                    let on = composer.dictating;
+                    if on {
+                        let t = ui.input(|i| i.time) as f32;
+                        let pulse = 0.5 + 0.5 * (t * 4.0).sin();
+                        ui.painter().circle_filled(
+                            m.center(),
+                            15.0,
+                            p.accent.gamma_multiply(0.25 + 0.2 * pulse),
+                        );
+                    } else if mresp.hovered() && open {
+                        ui.painter().circle_filled(m.center(), 15.0, p.bg3);
+                    }
+                    icons::paint(
+                        ui.painter(),
+                        icons::square(m.center(), 15.0),
+                        Icon::Mic,
+                        if on { p.accent } else if open { p.text2 } else { p.text3 },
+                    );
+                    let mresp = mresp.on_hover_text(if on {
+                        "Stop dictating"
+                    } else {
+                        "Dictate: speak and the words appear here (Windows voice typing, free)"
+                    });
+                    if open && mresp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                        if on {
+                            crate::dictate::toggle();
+                            composer.dictating = false;
+                        } else {
+                            composer.want_focus = true;
+                            composer.dictate_pending = true;
+                        }
+                    }
                 });
             });
         });

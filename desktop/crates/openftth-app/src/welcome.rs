@@ -44,7 +44,7 @@ pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.horizontal(|ui| {
                         let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
-                        icons::paint_mark(ui.painter(), r, p.accent, egui::Color32::WHITE);
+                        icons::paint_mark(ui.painter(), r);
                         ui.add_space(4.0);
                         ui.vertical(|ui| {
                             ui.label(text("openFTTH", 24.0, Weight::Semibold, p.text));

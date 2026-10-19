@@ -188,7 +188,6 @@ impl OpenFtthApp {
     // ---- title bar --------------------------------------------------------------------------
 
     fn title_bar(&mut self, ui: &mut Ui) {
-        let p = self.st.palette;
         let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
         let (bar, bar_resp) =
             ui.allocate_exact_size(vec2(ui.available_width(), TITLE_H), Sense::click_and_drag());
@@ -214,7 +213,7 @@ impl OpenFtthApp {
         flat_buttons(&mut left);
         left.add_space(10.0);
         let (mark, _) = left.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
-        icons::paint_mark(left.painter(), mark, p.accent, egui::Color32::WHITE);
+        icons::paint_mark(left.painter(), mark);
         left.add_space(8.0);
         self.menus(&mut left);
 
@@ -674,7 +673,7 @@ project {}",
                 ui.set_width(320.0);
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
-                    icons::paint_mark(ui.painter(), r, p.accent, egui::Color32::WHITE);
+                    icons::paint_mark(ui.painter(), r);
                     ui.vertical(|ui| {
                         ui.label(text("openFTTH", 15.0, Weight::Semibold, p.text));
                         ui.label(text(
