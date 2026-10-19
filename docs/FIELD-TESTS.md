@@ -79,6 +79,17 @@ Ranked by what they would cost an operator. Fixed items carry a regression test.
    decides the whole cable plan and rests on `building:levels` and 90 m² per flat.
 9. **Field-test tooling**: the batch runner could not print the engine's box-drawing output on a
    Windows console and lost a crash report. Fixed in `tools/field_run.py`.
+10. **Rebuilding the twin undid the design** (found 2026-10-19 while moving a cabinet by hand
+    on the Manchester project). The Surveyor had run `import_osm` and `build_twin` once more
+    after the solve; the rebuilt homes came back without their FAT, PON, drop and path
+    lengths, so the next `route_drops` would have produced nothing. *Fixed:* a rebuilt home
+    keeps what the solvers put on it, and `route_drops` recovers lost links from the drops on
+    record. Test: `test_exclude_building_removes_its_homes_and_survives_a_twin_rebuild`.
+11. **One distribution section always "undersized"** (every area; the Planner re-ran
+    `size_cables` and `assign_fibers` after the warning, to no effect). The route tree summed
+    demand per terminal node with a dict comprehension, so two FATs on one node, an apartment
+    building's dedicated indoor FATs, kept only the last one's units. *Fixed:* demands are
+    summed per node in both route trees; the Manchester warning is gone.
 
 ## The crew on real areas
 

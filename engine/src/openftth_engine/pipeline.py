@@ -141,7 +141,10 @@ def build_twin_tool(s: Session) -> ToolResult:
     osm = s.cache["osm"]
     twin = build_twin(osm.streets, s.cache["homes_wgs"], s.rules)
     s.twin = twin
-    # Homes become `to` features (one per building, with a unit count).
+    # Homes become `to` features (one per building, with a unit count). A home that is
+    # already in the design keeps what the solvers put on it (its FAT, PON, drop and path
+    # lengths): rebuilding the twin refreshes the street snap, it does not undo the design.
+    previous = {h.element_uuid: h.openftth for h in s.design.by_kind("home")}
     s.design.remove_where(kind="home")
     for h in twin.homes.itertuples(index=False):
         hid = s.uid("to", f"home:{h.osm_id}")
@@ -153,6 +156,7 @@ def build_twin_tool(s: Session) -> ToolResult:
                 geometry=_wgs(twin, h.geometry),
                 props={"name": f"home {h.osm_id}", "port_capacity": int(h.units)},
                 openftth={
+                    **previous.get(hid, {}),
                     "kind": "home",
                     "units": int(h.units),
                     "home_kind": h.kind,
@@ -562,7 +566,10 @@ def route_feeder(s: Session) -> ToolResult:
     if pop is None:
         pop = int(s.design.by_kind("pop")[0].openftth["node"])
     fdhs = s.design.by_kind("fdh")
-    terminals = {int(f.openftth["node"]): int(f.openftth.get("pons", 1)) for f in fdhs}
+    terminals: dict[int, int] = {}
+    for f in fdhs:
+        node = int(f.openftth["node"])
+        terminals[node] = terminals.get(node, 0) + int(f.openftth.get("pons", 1))
     tree = route_tree(twin.graph, pop, terminals)
     s.trees["feeder"] = tree
     s.design.remove_where(kind="feeder")
@@ -609,7 +616,12 @@ def route_distribution(s: Session) -> ToolResult:
         homes_by_fat.setdefault(h.openftth.get("fat_id", ""), []).append(h)
     for fdh in s.design.by_kind("fdh"):
         fats = [f for f in s.design.by_kind("fat") if f.openftth.get("fdh_id") == fdh.element_uuid]
-        terminals = {int(f.openftth["node"]): int(f.openftth["units"]) for f in fats}
+        # Several FATs can share a node (an apartment building's dedicated FATs all sit at
+        # its street node): the section upstream must carry all of them.
+        terminals: dict[int, int] = {}
+        for f in fats:
+            node = int(f.openftth["node"])
+            terminals[node] = terminals.get(node, 0) + int(f.openftth["units"])
         tree = route_tree(twin.graph, int(fdh.openftth["node"]), terminals)
         s.trees[fdh.element_uuid] = tree
         n += _emit_cable_sections(
@@ -646,11 +658,40 @@ def route_distribution(s: Session) -> ToolResult:
     )
 
 
+def _recover_home_links(s: Session) -> int:
+    """Give homes their FAT links back when an earlier twin rebuild dropped them: a regular
+    home from the drop that still names it, an apartment building from the dedicated indoor
+    FATs standing at its street node. Returns how many homes were repaired."""
+    homes = [h for h in s.design.by_kind("home") if "fat_id" not in h.openftth]
+    fats = s.design.by_kind("fat")
+    if not homes or not fats:
+        return 0
+    fixed = 0
+    for d in s.design.by_kind("drop"):
+        hid = d.openftth.get("home")
+        if hid in s.design and d.openftth.get("fat_id") in s.design:
+            h = s.design.get(hid)
+            if "fat_id" not in h.openftth:
+                h.openftth["fat_id"] = d.openftth["fat_id"]
+                fixed += 1
+    mdu_at: dict[int, list[str]] = {}
+    for f in fats:
+        if f.openftth.get("mdu"):
+            mdu_at.setdefault(int(f.openftth["node"]), []).append(f.element_uuid)
+    for h in homes:
+        ids = mdu_at.get(int(h.openftth["node"]))
+        if "fat_id" not in h.openftth and ids:
+            h.openftth.update({"fat_id": ids[0], "fat_ids": ids, "mdu": True, "drop_m": 0.0})
+            fixed += 1
+    return fixed
+
+
 def route_drops(s: Session) -> ToolResult:
     s.project.set_stage("solve")
     twin = _twin(s)
     r = s.rules
     before = s.design.copy()
+    repaired = _recover_home_links(s)
     s.design.remove_where(kind="drop")
     fats = {f.element_uuid: f for f in s.design.by_kind("fat")}
     total = 0.0
@@ -749,7 +790,14 @@ def route_drops(s: Session) -> ToolResult:
             tool="route_drops",
             summary=f"{n} drops, {total:.0f} m total, avg {total / max(1, n):.0f} m",
             decisions=decisions,
-            warnings=[f"{too_long} drops exceed max_drop_m"] if too_long else [],
+            warnings=([f"{too_long} drops exceed max_drop_m"] if too_long else [])
+            + (
+                [
+                    f"{repaired} home(s) had lost their FAT link and got it back from the drops on record"
+                ]
+                if repaired
+                else []
+            ),
             data={"drops": n},
         ),
         before,
