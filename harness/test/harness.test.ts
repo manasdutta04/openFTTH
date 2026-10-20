@@ -295,6 +295,14 @@ test("automatic design needs a map extract", async () => {
   assert.match((await body(res)).error, /map extract/);
 });
 
+test("tool activity says where a tool acts, and only that", async () => {
+  const { toolTarget } = await import("../src/room.ts");
+  assert.deepEqual(toolTarget({ element_uuid: "e1", reason: "x", api: "secret" }), { target: { element_uuid: "e1" } });
+  assert.deepEqual(toolTarget({ lon: 3.7, lat: 51.0, osm_id: "w1" }), { target: { lon: 3.7, lat: 51.0, osm_id: "w1" } });
+  assert.deepEqual(toolTarget({ time_limit_s: 20 }), {});
+  assert.deepEqual(toolTarget(null), {});
+});
+
 test("SSE stream replays missed frames on resume", async () => {
   const first = h.bus.emit("runtime", { marker: 1 });
   h.bus.emit("runtime", { marker: 2 });

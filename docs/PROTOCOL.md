@@ -59,7 +59,7 @@ replay buffer of 500 frames; a 15 s `ping` keeps the connection alive.
 | `hello` | `{cursor, resumed}` | first frame |
 | `message` | `{id, folk, role, text, at, kind}`; `kind` is `text`, `tool`, `approval`, `handoff`, `error` or `steer` (the engineer's own change, `json.reran` lists the solvers the engine ran again) | chat column |
 | `message.patch` | `{id, textDelta}` | streaming text |
-| `tool.activity` | `{folk, tool, state: started|done|failed, summary?}` | "routing 14 feeders…" chips |
+| `tool.activity` | `{folk, tool, state: started|done|failed, summary?, target?}`; `folk` is null for the automatic design and `"you"` for the engineer's own change; `target` locates a started tool on the map (`element_uuid`, `lon`/`lat`, `osm_id`, `element_uuids`) | status line, crew cursors |
 | `approval` | `{id, folk, tool, summary, cost?, state}` | inline approval card |
 | `design.version` | `{version, tool, summary, changes}` | reload bundle, Diff tab |
 | `design.stage` | `{stage}` | stage checklist |

@@ -10,7 +10,7 @@ import type { HarnessConfig } from "./config.ts";
 import { FolkMemory, systemPrompt, type Crew } from "./crew.ts";
 import { startEngine, type EngineHandle } from "./engine-process.ts";
 import type { EventBus } from "./events.ts";
-import { Room } from "./room.ts";
+import { Room, toolTarget } from "./room.ts";
 import { readJsonOr, writeJsonAtomic, type Store } from "./store.ts";
 import type { Driver, DriverFactory } from "./drivers/types.ts";
 import type { Approvals } from "./approvals.ts";
@@ -308,7 +308,14 @@ export class ProjectService {
     const room = this.room;
     if (!room) throw new HttpError(409, "no project open");
     if (room.busy) throw new HttpError(409, "the crew is working; stop the turn or wait for it to finish");
-    const out = await this.requireEngine().call<SteerResult>(tool, args);
+    const activity = `steer-${Date.now()}`;
+    this.d.bus.emit("tool.activity", { folk: "you", tool, state: "started", id: activity, ...toolTarget(args) });
+    let out: SteerResult;
+    try {
+      out = await this.requireEngine().call<SteerResult>(tool, args);
+    } finally {
+      this.d.bus.emit("tool.activity", { folk: "you", tool, state: "done", id: activity });
+    }
     if (!out || typeof out !== "object" || typeof out.summary !== "string") throw new HttpError(502, `the engine returned no result for ${tool}`);
     if (out.summary.startsWith("rejected")) throw new HttpError(422, out.summary.replace(/^rejected:\s*/, ""));
     const reason = typeof args.reason === "string" ? args.reason.trim() : "";

@@ -236,7 +236,7 @@ export class Room {
     switch (e.type) {
       case "tool.started": {
         this.setState(folk.key, "tooling");
-        bus.emit("tool.activity", { folk: folk.key, tool: shortTool(e.tool), state: "started", id: e.id });
+        bus.emit("tool.activity", { folk: folk.key, tool: shortTool(e.tool), state: "started", id: e.id, ...toolTarget(e.input) });
         this.runtime(folk.key, "tool.started", { tool: e.tool, input: e.input });
         break;
       }
@@ -313,4 +313,22 @@ function trimOutput(out: Record<string, unknown> | null): unknown {
   if (!out) return null;
   const s = JSON.stringify(out);
   return s.length > 8000 ? { truncated: true, head: s.slice(0, 8000) } : out;
+}
+
+/**
+ * Where a tool acts on the map, for the app's crew cursors: only the keys that locate it, never
+ * the whole input. Empty when the tool works on the whole design.
+ */
+export function toolTarget(input: unknown): { target?: Record<string, unknown> } {
+  if (!input || typeof input !== "object") return {};
+  const i = input as Record<string, unknown>;
+  const t: Record<string, unknown> = {};
+  if (typeof i.element_uuid === "string") t.element_uuid = i.element_uuid;
+  if (typeof i.lon === "number" && typeof i.lat === "number") {
+    t.lon = i.lon;
+    t.lat = i.lat;
+  }
+  if (typeof i.osm_id === "string") t.osm_id = i.osm_id;
+  if (Array.isArray(i.element_uuids)) t.element_uuids = i.element_uuids.filter((u) => typeof u === "string").slice(0, 20);
+  return Object.keys(t).length ? { target: t } : {};
 }
