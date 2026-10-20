@@ -8,7 +8,10 @@ fn main() {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/openftth.ico")
             .set("ProductName", "openFTTH")
-            .set("FileDescription", "openFTTH: fibre access design with a crew")
+            .set(
+                "FileDescription",
+                "openFTTH: fibre access design with a crew",
+            )
             .set("LegalCopyright", "MIT licence");
         if let Err(e) = res.compile() {
             println!("cargo:warning=app icon not embedded: {e}");

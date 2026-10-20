@@ -260,7 +260,21 @@ impl TwinView {
         }
     }
 
-    fn to_screen(&self, rect: Rect, p: [f64; 2]) -> Pos2 {
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    /// Glide the view toward a point (Mercator metres); `k` is the share of the way per call.
+    pub fn ease_towards(&mut self, m: [f64; 2], k: f64) {
+        self.center[0] += (m[0] - self.center[0]) * k;
+        self.center[1] += (m[1] - self.center[1]) * k;
+    }
+
+    pub fn centre_on(&mut self, m: [f64; 2]) {
+        self.center = m;
+    }
+
+    pub(crate) fn to_screen(&self, rect: Rect, p: [f64; 2]) -> Pos2 {
         let c = rect.center();
         Pos2::new(
             c.x + ((p[0] - self.center[0]) * self.scale) as f32,

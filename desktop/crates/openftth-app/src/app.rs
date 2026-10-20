@@ -51,6 +51,8 @@ pub struct OpenFtthApp {
     mode: Mode,
     applied_mode: Option<Mode>,
     show_crew: bool,
+    show_cursors: bool,
+    follow_crew: bool,
     about: bool,
     engine_form: Option<EngineForm>,
     confirm_reset: bool,
@@ -175,6 +177,8 @@ impl OpenFtthApp {
             mode: Mode::Dark,
             applied_mode: None,
             show_crew: true,
+            show_cursors: true,
+            follow_crew: false,
             about: false,
             engine_form: None,
             confirm_reset: false,
@@ -598,6 +602,14 @@ project {}",
             let mut crew = self.show_crew;
             if menu_check(ui, &p, "Crew panel", &mut crew) {
                 self.show_crew = crew;
+            }
+            let mut cursors = self.show_cursors;
+            if menu_check(ui, &p, "Show crew cursors", &mut cursors) {
+                self.show_cursors = cursors;
+            }
+            let mut follow = self.follow_crew;
+            if menu_check(ui, &p, "Follow the crew", &mut follow) {
+                self.follow_crew = follow;
             }
             menu_separator(ui, &p);
             ui.menu_button(Self::menu_title("Theme", &p), |ui| {
@@ -1128,6 +1140,27 @@ project {}",
                     st.selection.clear();
                 }
                 let map = resp.response;
+                if self.show_cursors {
+                    let rect = map.rect;
+                    let p = self.st.palette;
+                    let view = &self.twin;
+                    let scale = view.scale();
+                    let look = self
+                        .st
+                        .cursors
+                        .show(ui, rect, scale, &p, |m| view.to_screen(rect, m));
+                    if let Some(m) = look {
+                        self.twin.centre_on(m);
+                    }
+                    if self.follow_crew {
+                        if let Some(m) = self.st.cursors.latest_position() {
+                            let at = self.twin.to_screen(rect, m);
+                            if !rect.shrink2(rect.size() * 0.22).contains(at) {
+                                self.twin.ease_towards(m, 0.06);
+                            }
+                        }
+                    }
+                }
                 self.map_context_menu(&map);
             }
             other => {

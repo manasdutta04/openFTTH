@@ -613,119 +613,165 @@ pub fn menu_row_mark(
 
 // ---- crew header --------------------------------------------------------------------------
 
-/// A crew member's badge: a filled disc with the initial, a pulsing ring while they work.
-pub fn folk_badge(
-    ui: &mut Ui,
-    p: &Palette,
-    key: &str,
-    name: &str,
-    active: bool,
-    size: f32,
-) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let c = p.folk(key);
-    let centre = rect.center();
-    let painter = ui.painter();
-    if active {
-        let t = ui.input(|i| i.time) as f32;
-        let pulse = 0.5 + 0.5 * (t * 4.0).sin();
-        painter.circle_stroke(
-            centre,
-            size / 2.0 + 2.0 + pulse * 2.0,
-            egui::Stroke::new(1.5, c.gamma_multiply(0.35 + 0.35 * pulse)),
-        );
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(40));
-    }
-    painter.circle_filled(
-        centre,
-        size / 2.0,
-        if active { c } else { c.gamma_multiply(0.55) },
-    );
-    let initial: String = name
-        .chars()
-        .next()
-        .map(|ch| ch.to_uppercase().to_string())
-        .unwrap_or_default();
-    painter.text(
-        centre + egui::vec2(0.0, 0.5),
-        egui::Align2::CENTER_CENTER,
-        initial,
-        font(size * 0.5, Weight::Semibold),
-        Color32::WHITE,
-    );
-    resp
+/// A crew member as the header shows it.
+pub struct Member {
+    pub key: String,
+    pub name: String,
+    pub title: String,
+    pub state: String,
 }
 
-/// Stage stepper: discs joined by a line, done ones ticked, the current one highlighted,
-/// labels underneath. `current` is the index of the stage in progress (None = not started).
-pub fn stepper(ui: &mut Ui, p: &Palette, steps: &[&str], current: Option<usize>) {
-    let n = steps.len().max(1);
-    let width = ui.available_width();
-    let show_labels = width / n as f32 >= 44.0;
-    let height = if show_labels { 34.0 } else { 18.0 };
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let painter = ui.painter();
-    let step_w = width / n as f32;
-    let cy = rect.top() + 8.0;
-    let r = 5.0;
-    let centre_x = |i: usize| rect.left() + step_w * (i as f32 + 0.5);
-    for i in 0..n.saturating_sub(1) {
-        let done = current.map(|c| i < c).unwrap_or(false);
-        painter.line_segment(
-            [
-                egui::pos2(centre_x(i) + r + 2.0, cy),
-                egui::pos2(centre_x(i + 1) - r - 2.0, cy),
-            ],
-            egui::Stroke::new(
-                1.0,
-                if done {
-                    p.accent.gamma_multiply(0.7)
-                } else {
-                    p.line_strong
-                },
-            ),
+/// Overlapping discs, one per crew member, laid out right to left from the cursor. Idle ones are
+/// muted; a working one is drawn on top in full colour with a pulsing ring. Returns the name of
+/// a clicked member (to address them in the composer).
+pub fn avatar_stack(ui: &mut Ui, p: &Palette, members: &[Member]) -> Option<String> {
+    let size = 22.0;
+    let step = 18.5;
+    let n = members.len();
+    if n == 0 {
+        return None;
+    }
+    let width = size + step * (n as f32 - 1.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, size + 4.0), egui::Sense::hover());
+    let painter = ui.painter().clone();
+    let t = ui.input(|i| i.time) as f32;
+    let mut clicked = None;
+    // Idle members first, working ones last so they sit on top.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| members[i].state != "idle");
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    let mut hovered: Option<usize> = None;
+    // The topmost disc under the pointer wins (later in the draw order is on top).
+    for &i in &order {
+        let c = egui::pos2(rect.left() + size / 2.0 + step * i as f32, rect.center().y);
+        if pointer
+            .map(|q| q.distance(c) <= size / 2.0)
+            .unwrap_or(false)
+        {
+            hovered = Some(i);
+        }
+    }
+    for &i in &order {
+        let m = &members[i];
+        let c = egui::pos2(rect.left() + size / 2.0 + step * i as f32, rect.center().y);
+        let active = m.state != "idle";
+        let colour = p.folk(&m.key);
+        let lift = if hovered == Some(i) { 1.0 } else { 0.0 };
+        let c = c - egui::vec2(0.0, lift);
+        painter.circle_filled(c, size / 2.0 + 2.0, p.bg1);
+        if active {
+            let pulse = 0.5 + 0.5 * (t * 4.0).sin();
+            painter.circle_stroke(
+                c,
+                size / 2.0 + 2.5 + pulse * 1.5,
+                egui::Stroke::new(1.5, colour.gamma_multiply(0.4 + 0.4 * pulse)),
+            );
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(40));
+        }
+        let fill = if active || hovered == Some(i) {
+            colour
+        } else {
+            colour.gamma_multiply(0.42)
+        };
+        painter.circle_filled(c, size / 2.0, fill);
+        let initial: String = m
+            .name
+            .chars()
+            .next()
+            .map(|ch| ch.to_uppercase().to_string())
+            .unwrap_or_default();
+        painter.text(
+            c + egui::vec2(0.0, 0.5),
+            egui::Align2::CENTER_CENTER,
+            initial,
+            font(10.5, Weight::Semibold),
+            if active || hovered == Some(i) {
+                Color32::WHITE
+            } else {
+                Color32::WHITE.gamma_multiply(0.7)
+            },
         );
     }
-    for (i, name) in steps.iter().enumerate() {
-        let c = egui::pos2(centre_x(i), cy);
-        match current {
-            Some(cur) if i < cur => {
-                painter.circle_filled(c, r, p.accent.gamma_multiply(0.85));
-                icons::paint(painter, icons::square(c, 7.0), Icon::Check, Color32::WHITE);
-            }
-            Some(cur) if i == cur => {
-                painter.circle_stroke(c, r + 1.0, egui::Stroke::new(1.5, p.accent));
-                painter.circle_filled(c, 2.5, p.accent);
-            }
-            _ => {
-                painter.circle_stroke(c, r, egui::Stroke::new(1.0, p.line_strong));
-            }
+    if let Some(i) = hovered {
+        let m = &members[i];
+        let c = egui::pos2(rect.left() + size / 2.0 + step * i as f32, rect.center().y);
+        let hit = egui::Rect::from_center_size(c, egui::vec2(size, size));
+        let resp = ui
+            .interact(hit, ui.scope_id().with(("avatar", i)), egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!(
+                "{} · {} · {}\nClick to address them",
+                m.name, m.title, m.state
+            ));
+        if resp.clicked() {
+            clicked = Some(m.name.clone());
         }
-        if show_labels {
+    }
+    clicked
+}
+
+/// Stage progress: one slim segment per stage, done ones filled, the current one accented (with
+/// a moving sheen while work is under way), the rest quiet. A caption names the current stage.
+pub fn stage_bar(ui: &mut Ui, p: &Palette, steps: &[&str], current: Option<usize>, working: bool) {
+    let n = steps.len().max(1);
+    let caption = match current {
+        Some(c) => {
+            let mut name = steps[c.min(n - 1)].to_string();
+            if let Some(first) = name.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            format!("{name}  ·  {} of {n}", c.min(n - 1) + 1)
+        }
+        None => "Not started".to_string(),
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(caption, font(11.0, Weight::Medium), p.text2);
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 14.0), egui::Sense::hover());
+    let bar_w = (width - galley.size().x - 12.0).max(60.0);
+    let gap = 3.0;
+    let seg_w = (bar_w - gap * (n as f32 - 1.0)) / n as f32;
+    let y = rect.center().y;
+    let painter = ui.painter();
+    let t = ui.input(|i| i.time) as f32;
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    for (i, name) in steps.iter().enumerate() {
+        let x0 = rect.left() + i as f32 * (seg_w + gap);
+        let seg = egui::Rect::from_min_size(egui::pos2(x0, y - 1.5), egui::vec2(seg_w, 3.0));
+        let fill = match current {
+            Some(c) if i < c => p.accent.gamma_multiply(0.75),
+            Some(c) if i == c => p.accent,
+            _ => p.bg3,
+        };
+        painter.rect_filled(seg, 1.5, fill);
+        if working && current == Some(i) {
+            // A soft highlight sweeping along the current segment.
+            let phase = (t * 0.9).fract();
+            let sx = seg.left() + seg.width() * phase;
+            let sheen = egui::Rect::from_center_size(
+                egui::pos2(sx, y),
+                egui::vec2((seg.width() * 0.35).min(18.0), 3.0),
+            )
+            .intersect(seg);
+            painter.rect_filled(sheen, 1.5, Color32::WHITE.gamma_multiply(0.55));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        let hit = seg.expand2(egui::vec2(gap / 2.0, 6.0));
+        if pointer.map(|q| hit.contains(q)).unwrap_or(false) {
             let mut label = name.to_string();
             if let Some(first) = label.get_mut(0..1) {
                 first.make_ascii_uppercase();
             }
-            let color = match current {
-                Some(cur) if i == cur => p.text,
-                Some(cur) if i < cur => p.text2,
-                _ => p.text3,
-            };
-            painter.text(
-                egui::pos2(c.x, rect.top() + 24.0),
-                egui::Align2::CENTER_CENTER,
-                label,
-                font(
-                    10.0,
-                    if current == Some(i) {
-                        Weight::Medium
-                    } else {
-                        Weight::Regular
-                    },
-                ),
-                color,
-            );
+            ui.interact(hit, ui.scope_id().with(("stage", i)), egui::Sense::hover())
+                .on_hover_text(label);
         }
     }
+    painter.galley(
+        egui::pos2(rect.right() - galley.size().x, y - galley.size().y / 2.0),
+        galley,
+        p.text2,
+    );
 }

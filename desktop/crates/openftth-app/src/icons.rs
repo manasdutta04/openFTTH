@@ -202,7 +202,9 @@ pub fn paint_mark(painter: &Painter, rect: Rect) {
             .get_or_insert_with(|| {
                 let icon = app_icon(128);
                 let image = ColorImage::from_rgba_unmultiplied([128, 128], &icon.rgba);
-                painter.ctx().load_texture("app-mark", image, TextureOptions::LINEAR)
+                painter
+                    .ctx()
+                    .load_texture("app-mark", image, TextureOptions::LINEAR)
             })
             .clone()
     });

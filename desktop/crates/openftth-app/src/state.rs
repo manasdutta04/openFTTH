@@ -178,6 +178,8 @@ pub struct AppState {
     pub messages: Vec<ChatMessage>,
     pub approvals: Vec<ApprovalCard>,
     pub chips: Vec<ToolChip>,
+    /// The crew's cursors on the map.
+    pub cursors: crate::cursors::AgentCursors,
     pub stage: Option<String>,
     pub project: Option<ProjectInfo>,
     pub design: Option<Design>,
@@ -249,6 +251,7 @@ impl AppState {
             work_order: None,
             trace: None,
             project_generation: 0,
+            cursors: Default::default(),
             refresh_rx: None,
             refresh_due: false,
             engines: Vec::new(),
@@ -425,6 +428,7 @@ impl AppState {
     /// Everything that belongs to one project: dropped when another project opens, so its
     /// map, figures and approvals never show under the new one.
     fn forget_project_data(&mut self) {
+        self.cursors.clear();
         self.design = None;
         self.streets = None;
         self.boq = None;
@@ -450,7 +454,11 @@ impl AppState {
             self.messages = ms.iter().map(ChatMessage::from_value).collect();
         }
         if let Ok(Value::Array(ap)) = self.client.approvals() {
-            let current = self.project.as_ref().map(|p| p.id.clone()).unwrap_or_default();
+            let current = self
+                .project
+                .as_ref()
+                .map(|p| p.id.clone())
+                .unwrap_or_default();
             self.approvals = ap
                 .iter()
                 .map(approval_from_value)
@@ -494,7 +502,12 @@ impl AppState {
         self.refresh_rx = None;
         if r.generation == self.project_generation {
             match r.design {
-                Ok(Some(d)) => self.design = Some(d),
+                Ok(Some(d)) => {
+                    // What this version changed, by comparing with the design on screen: no
+                    // round trip to the engine, which may be busy with the next step.
+                    self.changed = changed_between(self.design.as_ref(), &d);
+                    self.design = Some(d);
+                }
                 Ok(None) => {}
                 Err(e) => self.toasts.error(format!("design bundle: {e}")),
             }
@@ -510,10 +523,12 @@ impl AppState {
                 self.network_of_record = v["summary"]["network_of_record"]
                     .as_str()
                     .map(str::to_string);
-                self.work_order =
-                    Some(v["summary"]["work_order"].clone()).filter(|w| !w.is_null());
+                self.work_order = Some(v["summary"]["work_order"].clone()).filter(|w| !w.is_null());
             }
-            self.changed = r.changed;
+            if let Some(d) = &self.design {
+                let stops = crate::cursors::tour_points(d, &self.changed);
+                self.cursors.tour(stops);
+            }
         }
         if std::mem::take(&mut self.refresh_due) {
             self.request_refresh();
@@ -619,6 +634,48 @@ impl AppState {
                 }
             }
             "tool.activity" => {
+                if f.data["state"].as_str() == Some("started") {
+                    let folk = s(&f.data["folk"]);
+                    let tool = s(&f.data["tool"]);
+                    let (key, label, colour) = match folk.as_str() {
+                        "" => (
+                            "engine".to_string(),
+                            "openFTTH engine".to_string(),
+                            self.palette.accent,
+                        ),
+                        "you" => (
+                            "you".to_string(),
+                            "You".to_string(),
+                            egui::Color32::from_rgb(0x2d, 0xd4, 0xbf),
+                        ),
+                        k => (k.to_string(), self.folk_name(k), self.palette.folk(k)),
+                    };
+                    let at = crate::cursors::locate(
+                        &f.data["target"],
+                        self.design.as_ref(),
+                        self.streets.as_ref(),
+                    );
+                    let fallback = crate::cursors::working_spot(self.design.as_ref())
+                        .or_else(|| self.streets.as_ref().map(|s| s.bounds().center()));
+                    self.cursors.started(
+                        &key,
+                        &label,
+                        colour,
+                        &crate::chat::tool_phrase(&tool),
+                        at,
+                        fallback,
+                    );
+                }
+                if matches!(f.data["state"].as_str(), Some("done") | Some("failed")) {
+                    let key = match s(&f.data["folk"]).as_str() {
+                        "" => "engine".to_string(),
+                        k => k.to_string(),
+                    };
+                    // The automatic design runs its steps back to back: only the last one ends it.
+                    if key != "engine" || s(&f.data["tool"]) == "export_gpkg" || f.data["state"] == "failed" {
+                        self.cursors.finished(&key);
+                    }
+                }
                 let chip = ToolChip {
                     folk: s(&f.data["folk"]),
                     tool: s(&f.data["tool"]),
@@ -664,8 +721,16 @@ impl AppState {
             }
             "design.stage" => self.stage = f.data["stage"].as_str().map(str::to_string),
             "folk" => {
-                self.folk_states
-                    .insert(s(&f.data["key"]), s(&f.data["state"]));
+                let key = s(&f.data["key"]);
+                let state = s(&f.data["state"]);
+                // An idle member has no tool running, even if a stopped turn never said so.
+                if state == "idle" {
+                    for c in self.chips.iter_mut().filter(|c| c.folk == key && c.state == "started") {
+                        c.state = "done".into();
+                    }
+                    self.cursors.finished(&key);
+                }
+                self.folk_states.insert(key, state);
             }
             "engine" => self.load_engines(),
             "project" => {
@@ -1035,7 +1100,6 @@ impl AppState {
     }
 }
 
-
 /// Everything the app shows about a design version, read on a worker thread.
 struct Refresh {
     generation: u64,
@@ -1045,14 +1109,15 @@ struct Refresh {
     validation: Option<Value>,
     versions: Option<Vec<Value>>,
     project: Option<Value>,
-    changed: Vec<String>,
 }
 
 impl Refresh {
     fn load(client: &Client, dir: &std::path::Path, generation: u64) -> Refresh {
         let bundle = dir.join("design");
         let design = if bundle.exists() {
-            Design::read_dir(&bundle).map(Some).map_err(|e| e.to_string())
+            Design::read_dir(&bundle)
+                .map(Some)
+                .map_err(|e| e.to_string())
         } else {
             Ok(None)
         };
@@ -1070,18 +1135,6 @@ impl Refresh {
             Ok(Value::Array(v)) => Some(v),
             _ => None,
         };
-        let mut changed = Vec::new();
-        if let Some(v) = versions.as_ref().filter(|v| v.len() >= 2) {
-            if let Ok(d) = client.diff(&s(&v[1]["version"]), &s(&v[0]["version"])) {
-                for k in ["added", "modified"] {
-                    for u in d[k].as_array().into_iter().flatten().filter_map(Value::as_str) {
-                        if !u.starts_with("table:") {
-                            changed.push(u.to_string());
-                        }
-                    }
-                }
-            }
-        }
         Refresh {
             generation,
             design,
@@ -1090,7 +1143,27 @@ impl Refresh {
             validation: read_json("validation.json"),
             versions,
             project: client.project().ok(),
-            changed,
         }
     }
+}
+
+/// Elements added or altered from `old` to `new`, by id. Nothing on the first load of a project,
+/// so an opened design is not shown as all-new.
+fn changed_between(old: Option<&Design>, new: &Design) -> Vec<String> {
+    let Some(old) = old else {
+        return Vec::new();
+    };
+    let before: HashMap<&str, &openftth_core::Element> = old
+        .elements
+        .iter()
+        .map(|e| (e.element_uuid.as_str(), e))
+        .collect();
+    new.elements
+        .iter()
+        .filter(|e| match before.get(e.element_uuid.as_str()) {
+            None => true,
+            Some(o) => o.geometry != e.geometry || o.props != e.props || o.openftth != e.openftth,
+        })
+        .map(|e| e.element_uuid.clone())
+        .collect()
 }

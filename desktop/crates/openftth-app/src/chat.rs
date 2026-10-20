@@ -7,8 +7,8 @@ use crate::markdown;
 use crate::state::{stage_index, AppState, ChatMessage, STAGES};
 use crate::theme::{Weight, R};
 use crate::widgets::{
-    self, button, button_ex, caps, clock_time, dot, hairline, mono_text,
-    panel_header, pulse_dot, tag, text, Kind,
+    self, button, button_ex, caps, clock_time, dot, hairline, mono_text, panel_header, pulse_dot,
+    tag, text, Kind,
 };
 
 pub const PROMPT_DESIGN: &str = "Design this area with the current rulebook: import the data, build the twin, place POP, FDHs and FATs, route everything, validate and give me the BOQ.";
@@ -86,9 +86,32 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Op
     Frame::new()
         .inner_margin(Margin::symmetric(10, 0))
         .show(ui, |ui| {
+            let mut mention: Option<String> = None;
             panel_header(ui, &p, "Crew", |ui| {
+                let members: Vec<widgets::Member> = st
+                    .crew
+                    .iter()
+                    .map(|m| {
+                        let state = st
+                            .folk_states
+                            .get(&m.key)
+                            .cloned()
+                            .unwrap_or_else(|| "idle".into());
+                        widgets::Member {
+                            key: m.key.clone(),
+                            name: m.name.clone(),
+                            title: m.title.clone(),
+                            state,
+                        }
+                    })
+                    .collect();
+                // Right to left: the stack sits at the edge, the waiting tag before it.
+                if let Some(k) = widgets::avatar_stack(ui, &p, &members) {
+                    mention = Some(k);
+                }
                 let n = st.pending_approvals().count();
                 if n > 0 {
+                    ui.add_space(6.0);
                     tag(
                         ui,
                         &format!("{n} waiting"),
@@ -97,11 +120,22 @@ pub fn chat_panel(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Op
                     );
                 }
             });
-            ui.add_space(6.0);
-            presence(ui, st);
-            ui.add_space(6.0);
-            stage_row(ui, st);
-            ui.add_space(4.0);
+            if let Some(name) = mention {
+                if !composer.text.is_empty() && !composer.text.ends_with(' ') {
+                    composer.text.push(' ');
+                }
+                composer.text.push('@');
+                composer.text.push_str(&name);
+                composer.text.push(' ');
+                composer.caret_to_end = true;
+            }
+            ui.add_space(2.0);
+            status_line(ui, st);
+            ui.add_space(8.0);
+            let idx = st.stage.as_deref().map(stage_index);
+            let working = st.busy() || st.chips.iter().any(|c| c.state == "started");
+            widgets::stage_bar(ui, &p, &STAGES, idx, working);
+            ui.add_space(10.0);
             hairline(ui, &p);
         });
 
@@ -258,46 +292,101 @@ fn tool_group(ui: &mut Ui, st: &AppState, composer: &mut Composer, ix: &[usize])
     }
 }
 
-fn presence(ui: &mut Ui, st: &AppState) {
-    let p = st.palette;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 14.0;
-        for m in &st.crew {
-            let state = st
-                .folk_states
-                .get(&m.key)
-                .cloned()
-                .unwrap_or_else(|| "idle".into());
-            let active = state != "idle";
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                widgets::folk_badge(ui, &p, &m.key, &m.name, active, 20.0);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.label(text(
-                        &m.name,
-                        12.0,
-                        Weight::Medium,
-                        if active { p.text } else { p.text2 },
-                    ));
-                    ui.label(text(
-                        if active { state.as_str() } else { "idle" },
-                        10.0,
-                        Weight::Regular,
-                        if active { p.folk(&m.key) } else { p.text3 },
-                    ));
-                });
-            })
-            .response
-            .on_hover_text(&m.title);
-        }
-    });
+/// What a tool does, as a phrase after "is": "placing cabinets".
+pub fn tool_phrase(tool: &str) -> String {
+    let known = match tool {
+        "import_osm" => "importing the area and map",
+        "build_twin" => "building the street twin",
+        "set_pop" => "placing the POP",
+        "cluster_homes" => "placing FATs",
+        "place_fdh" => "placing cabinets",
+        "assign_pon" => "grouping homes into PONs",
+        "route_feeder" => "routing feeder cables",
+        "route_distribution" => "routing distribution cables",
+        "route_drops" => "routing drops",
+        "place_chambers" => "placing chambers",
+        "size_cables" => "sizing cables",
+        "assign_fibers" => "assigning fibres",
+        "check_rules" => "checking the rules",
+        "check_operator" => "checking the operator rules",
+        "boq" => "pricing the bill of quantities",
+        "splice_schedule" => "writing the splice schedule",
+        "export_gpkg" => "exporting the GeoPackage",
+        "trace_fibre" => "tracing a fibre",
+        "homes_behind" => "finding the homes behind",
+        "move_site" => "moving a site",
+        "exclude_building" => "excluding a building",
+        "forbid_street" => "closing a street to digging",
+        "explain_element" => "reading the reasons",
+        "design_summary" | "versions" | "diff_versions" => "reviewing the design",
+        "get_rulebook" | "explain_rule" => "reading the rulebook",
+        "set_rule" => "changing a rule",
+        "generate_scenarios" => "comparing scenarios",
+        "open_work_order" => "opening a work order",
+        "post_work_order" => "posting the work order",
+        _ => "",
+    };
+    if known.is_empty() {
+        format!("running {}", tool.replace('_', " "))
+    } else {
+        known.to_string()
+    }
 }
 
-fn stage_row(ui: &mut Ui, st: &AppState) {
+/// One line under the title: who is doing what right now, or "Ready".
+fn status_line(ui: &mut Ui, st: &AppState) {
     let p = st.palette;
-    let idx = st.stage.as_deref().map(stage_index);
-    widgets::stepper(ui, &p, &STAGES, idx);
+    let started = st.chips.iter().rev().find(|c| c.state == "started");
+    let busy_member = st
+        .folk_states
+        .iter()
+        .find(|(_, v)| *v != "idle")
+        .map(|(k, v)| (k.clone(), v.clone()));
+    let (who, colour, doing) = match (started, busy_member) {
+        (Some(c), _) => {
+            let who = if c.folk.is_empty() {
+                "openFTTH engine".to_string()
+            } else {
+                st.folk_name(&c.folk)
+            };
+            let colour = if c.folk.is_empty() {
+                p.accent
+            } else {
+                p.folk(&c.folk)
+            };
+            (Some(who), colour, format!("is {}…", tool_phrase(&c.tool)))
+        }
+        (None, Some((k, state))) => {
+            let doing = match state.as_str() {
+                "waiting" => "is waiting for your approval".to_string(),
+                "tooling" => "is using the engine…".to_string(),
+                _ => "is thinking…".to_string(),
+            };
+            (Some(st.folk_name(&k)), p.folk(&k), doing)
+        }
+        _ => (None, p.text3, String::new()),
+    };
+    ui.horizontal(|ui| {
+        ui.set_height(18.0);
+        ui.spacing_mut().item_spacing.x = 6.0;
+        match who {
+            Some(who) => {
+                pulse_dot(ui, colour, 3.0);
+                ui.label(text(who, 12.0, Weight::Semibold, p.text));
+                ui.add(egui::Label::new(text(doing, 12.0, Weight::Regular, p.text2)).truncate());
+            }
+            None => {
+                dot(ui, p.green.gamma_multiply(0.8), 3.0);
+                ui.label(text("Ready", 12.0, Weight::Medium, p.text2));
+                ui.label(text(
+                    "· ask the crew, or design automatically",
+                    11.5,
+                    Weight::Regular,
+                    p.text3,
+                ));
+            }
+        }
+    });
 }
 
 fn chips(ui: &mut Ui, st: &AppState) {
@@ -625,7 +714,11 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
     {
         send_now = true;
     }
-    let border = if field_focused { p.accent.gamma_multiply(0.7) } else { p.line };
+    let border = if field_focused {
+        p.accent.gamma_multiply(0.7)
+    } else {
+        p.line
+    };
     Frame::new()
         .fill(p.bg2)
         .stroke(Stroke::new(1.0, border))
@@ -705,7 +798,13 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
                         if live { Sense::click() } else { Sense::hover() },
                     );
                     let fill = match (busy, can_send, resp.hovered()) {
-                        (true, _, h) => if h { p.red.gamma_multiply(0.9) } else { p.bg3 },
+                        (true, _, h) => {
+                            if h {
+                                p.red.gamma_multiply(0.9)
+                            } else {
+                                p.bg3
+                            }
+                        }
                         (false, true, true) => p.accent.gamma_multiply(1.12),
                         (false, true, false) => p.accent,
                         _ => p.bg3,
@@ -753,7 +852,13 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
                         ui.painter(),
                         icons::square(m.center(), 15.0),
                         Icon::Mic,
-                        if on { p.accent } else if open { p.text2 } else { p.text3 },
+                        if on {
+                            p.accent
+                        } else if open {
+                            p.text2
+                        } else {
+                            p.text3
+                        },
                     );
                     let mresp = mresp.on_hover_text(if on {
                         "Stop dictating"
