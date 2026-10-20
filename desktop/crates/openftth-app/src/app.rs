@@ -1113,6 +1113,11 @@ project {}",
         match self.st.tab {
             Tab::Twin => {
                 let placing = self.placing.clone();
+                let reveal = if self.show_cursors {
+                    self.st.cursors.reveal(self.twin.scale())
+                } else {
+                    crate::cursors::Reveal::default()
+                };
                 // The selection plus every element on the current fibre trace is highlighted.
                 let mut lit = self.st.selection.clone();
                 lit.extend(self.st.trace_ids());
@@ -1126,6 +1131,7 @@ project {}",
                     &lit,
                     &st.changed,
                     placing.as_ref().map(|p| p.uuid.as_str()),
+                    &reveal,
                 );
                 st.cursor = resp.cursor;
                 st.hovered = resp.hovered;
@@ -1142,13 +1148,12 @@ project {}",
                 let map = resp.response;
                 if self.show_cursors {
                     let rect = map.rect;
-                    let p = self.st.palette;
                     let view = &self.twin;
                     let scale = view.scale();
                     let look = self
                         .st
                         .cursors
-                        .show(ui, rect, scale, &p, |m| view.to_screen(rect, m));
+                        .show(ui, rect, scale, |m| view.to_screen(rect, m));
                     if let Some(m) = look {
                         self.twin.centre_on(m);
                     }

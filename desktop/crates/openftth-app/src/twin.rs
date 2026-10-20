@@ -320,6 +320,7 @@ impl TwinView {
         selection: &[String],
         changed: &[String],
         placing: Option<&str>,
+        reveal: &crate::cursors::Reveal,
     ) -> TwinResponse {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
@@ -447,11 +448,16 @@ impl TwinView {
                 if !b.bbox.intersects(&view) {
                     continue;
                 }
+                let shown = reveal.alpha.get(uuid_of(b.idx)).copied().unwrap_or(1.0);
+                if shown <= 0.0 {
+                    continue;
+                }
                 let fill = if changed_set.contains(uuid_of(b.idx)) {
                     p.red.gamma_multiply(0.3)
                 } else {
                     p.map_building
-                };
+                }
+                .gamma_multiply(shown);
                 let pts: Vec<Pos2> = b.pts.iter().map(tf).collect();
                 shapes.push(Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
                 if edge != Stroke::NONE {
@@ -474,7 +480,18 @@ impl TwinView {
                     continue;
                 }
                 let uuid = uuid_of(c.idx);
-                let pts: Vec<Pos2> = c.pts.iter().map(tf).collect();
+                let shown = reveal.alpha.get(uuid).copied().unwrap_or(1.0);
+                if shown <= 0.0 {
+                    continue;
+                }
+                let mut pts: Vec<Pos2> = c.pts.iter().map(tf).collect();
+                if let Some(share) = reveal.partial.get(uuid) {
+                    // Being drawn by a crew cursor: only the part it has drawn so far.
+                    pts = crate::cursors::polyline_prefix(&pts, *share);
+                    if pts.len() < 2 {
+                        continue;
+                    }
+                }
                 if selected_set.contains(uuid) {
                     shapes.push(Shape::line(
                         pts.clone(),
@@ -485,7 +502,8 @@ impl TwinView {
                     p.red
                 } else {
                     base
-                };
+                }
+                .gamma_multiply(shown);
                 if let Some(q) = probe {
                     consider(polyline_distance(&pts, q), 7.0, c.idx);
                 }
@@ -517,12 +535,19 @@ impl TwinView {
             }
             let pos = tf(&pt.xy);
             let uuid = uuid_of(pt.idx);
-            let r = if k == 0 && scale < 0.5 { 1.2 } else { radii[k] };
+            let shown = reveal.alpha.get(uuid).copied().unwrap_or(1.0);
+            if shown <= 0.0 {
+                continue;
+            }
+            // Swept-in elements grow into place as they fade in.
+            let grow = 0.4 + 0.6 * shown;
+            let r = if k == 0 && scale < 0.5 { 1.2 } else { radii[k] } * grow;
             let c = if changed_set.contains(uuid) {
                 p.red
             } else {
                 p.kind(POINT_KINDS[k])
-            };
+            }
+            .gamma_multiply(shown);
             if selected_set.contains(uuid) {
                 shapes.push(Shape::circle_filled(
                     pos,

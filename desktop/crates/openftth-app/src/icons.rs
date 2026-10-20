@@ -482,3 +482,62 @@ mod ico {
         v
     }
 }
+
+/// A crew member's role, drawn in their avatar: Surveyor a compass, Planner a fibre split,
+/// Checker a tick in a shield, Drafter a drawing sheet. `rect` is the glyph's square.
+pub fn paint_crew_glyph(painter: &Painter, rect: Rect, key: &str, color: Color32) {
+    let s = rect.width().min(rect.height()) / 16.0;
+    let o = rect.center() - vec2(8.0, 8.0) * s;
+    let p = |x: f32, y: f32| o + vec2(x, y) * s;
+    let w = (1.6 * s).max(1.0);
+    let stroke = Stroke::new(w, color);
+    let pen = |pts: Vec<Pos2>| {
+        for q in &pts {
+            painter.circle_filled(*q, w / 2.0, color);
+        }
+        painter.add(PathShape::line(pts, PathStroke::new(w, color)));
+    };
+    match key {
+        "surveyor" => {
+            painter.circle_stroke(p(8.0, 8.0), 6.0 * s, stroke);
+            painter.add(egui::Shape::convex_polygon(
+                vec![p(8.0, 3.6), p(9.7, 8.0), p(8.0, 12.4), p(6.3, 8.0)],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        "planner" => {
+            pen(vec![p(2.5, 8.0), p(7.0, 8.0)]);
+            pen(vec![p(7.0, 8.0), p(12.0, 3.8)]);
+            pen(vec![p(7.0, 8.0), p(12.0, 12.2)]);
+            pen(vec![p(7.0, 8.0), p(12.6, 8.0)]);
+            painter.circle_filled(p(2.6, 8.0), 1.7 * s, color);
+        }
+        "checker" => {
+            pen(vec![
+                p(8.0, 1.8),
+                p(13.2, 3.8),
+                p(13.0, 8.6),
+                p(8.0, 14.2),
+                p(3.0, 8.6),
+                p(2.8, 3.8),
+                p(8.0, 1.8),
+            ]);
+            pen(vec![p(5.4, 8.0), p(7.3, 9.9), p(10.8, 6.0)]);
+        }
+        "drafter" => {
+            painter.rect_stroke(
+                Rect::from_min_max(p(3.2, 1.8), p(12.8, 14.2)),
+                1.2 * s,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            pen(vec![p(5.8, 5.6), p(10.2, 5.6)]);
+            pen(vec![p(5.8, 8.4), p(10.2, 8.4)]);
+            pen(vec![p(5.8, 11.2), p(8.4, 11.2)]);
+        }
+        _ => {
+            painter.circle_filled(p(8.0, 8.0), 2.5 * s, color);
+        }
+    }
+}

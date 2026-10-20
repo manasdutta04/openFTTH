@@ -171,6 +171,8 @@ pub struct AppState {
     /// that arrives meanwhile marks the next load as due.
     refresh_rx: Option<Receiver<Refresh>>,
     refresh_due: bool,
+    /// The version list and project status still need fetching from the engine once it is free.
+    engine_refresh_due: bool,
     pub connected: bool,
     pub palette: Palette,
     pub crew: Vec<CrewMember>,
@@ -254,6 +256,7 @@ impl AppState {
             cursors: Default::default(),
             refresh_rx: None,
             refresh_due: false,
+            engine_refresh_due: false,
             engines: Vec::new(),
             engine: None,
             pending_open: None,
@@ -480,11 +483,20 @@ impl AppState {
         };
         let client = self.client.clone();
         let generation = self.project_generation;
+        // While a tool runs the engine answers nothing else, so only the files are read; the
+        // version list and status follow once the work stops.
+        let with_engine = !self.engine_working();
+        self.engine_refresh_due = !with_engine;
         let (tx, rx) = mpsc::channel();
         self.refresh_rx = Some(rx);
         std::thread::spawn(move || {
-            let _ = tx.send(Refresh::load(&client, &dir, generation));
+            let _ = tx.send(Refresh::load(&client, &dir, generation, with_engine));
         });
+    }
+
+    /// A crew member or the automatic design has a tool running.
+    fn engine_working(&self) -> bool {
+        self.busy() || self.chips.iter().any(|c| c.state == "started")
     }
 
     fn poll_refresh(&mut self) {
@@ -505,7 +517,10 @@ impl AppState {
                 Ok(Some(d)) => {
                     // What this version changed, by comparing with the design on screen: no
                     // round trip to the engine, which may be busy with the next step.
-                    self.changed = changed_between(self.design.as_ref(), &d);
+                    let (added, moved, updated) = changed_between(self.design.as_ref(), &d);
+                    // The cursors visit what is new or has moved; data-only updates just glow.
+                    self.cursors.version(&d, &added, &moved);
+                    self.changed = added.into_iter().chain(moved).chain(updated).collect();
                     self.design = Some(d);
                 }
                 Ok(None) => {}
@@ -524,10 +539,6 @@ impl AppState {
                     .as_str()
                     .map(str::to_string);
                 self.work_order = Some(v["summary"]["work_order"].clone()).filter(|w| !w.is_null());
-            }
-            if let Some(d) = &self.design {
-                let stops = crate::cursors::tour_points(d, &self.changed);
-                self.cursors.tour(stops);
             }
         }
         if std::mem::take(&mut self.refresh_due) {
@@ -594,6 +605,9 @@ impl AppState {
     pub fn drain_frames(&mut self) {
         self.poll_open();
         self.poll_refresh();
+        if self.engine_refresh_due && self.refresh_rx.is_none() && !self.engine_working() {
+            self.request_refresh();
+        }
         while let Ok(f) = self.rx.try_recv() {
             self.apply(f);
         }
@@ -657,22 +671,23 @@ impl AppState {
                     );
                     let fallback = crate::cursors::working_spot(self.design.as_ref())
                         .or_else(|| self.streets.as_ref().map(|s| s.bounds().center()));
-                    self.cursors.started(
-                        &key,
-                        &label,
-                        colour,
-                        &crate::chat::tool_phrase(&tool),
-                        at,
-                        fallback,
-                    );
+                    let thought = format!("Now I'm {}…", crate::chat::tool_phrase(&tool));
+                    self.cursors
+                        .started(&key, &label, colour, &thought, at, fallback);
                 }
                 if matches!(f.data["state"].as_str(), Some("done") | Some("failed")) {
                     let key = match s(&f.data["folk"]).as_str() {
                         "" => "engine".to_string(),
                         k => k.to_string(),
                     };
+                    if let Some(summary) = f.data["summary"].as_str() {
+                        self.cursors.step_done(&key, summary);
+                    }
                     // The automatic design runs its steps back to back: only the last one ends it.
-                    if key != "engine" || s(&f.data["tool"]) == "export_gpkg" || f.data["state"] == "failed" {
+                    if key != "engine"
+                        || s(&f.data["tool"]) == "export_gpkg"
+                        || f.data["state"] == "failed"
+                    {
                         self.cursors.finished(&key);
                     }
                 }
@@ -725,7 +740,11 @@ impl AppState {
                 let state = s(&f.data["state"]);
                 // An idle member has no tool running, even if a stopped turn never said so.
                 if state == "idle" {
-                    for c in self.chips.iter_mut().filter(|c| c.folk == key && c.state == "started") {
+                    for c in self
+                        .chips
+                        .iter_mut()
+                        .filter(|c| c.folk == key && c.state == "started")
+                    {
                         c.state = "done".into();
                     }
                     self.cursors.finished(&key);
@@ -1112,7 +1131,7 @@ struct Refresh {
 }
 
 impl Refresh {
-    fn load(client: &Client, dir: &std::path::Path, generation: u64) -> Refresh {
+    fn load(client: &Client, dir: &std::path::Path, generation: u64, with_engine: bool) -> Refresh {
         let bundle = dir.join("design");
         let design = if bundle.exists() {
             Design::read_dir(&bundle)
@@ -1131,8 +1150,8 @@ impl Refresh {
                 .ok()
                 .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         };
-        let versions = match client.versions(60) {
-            Ok(Value::Array(v)) => Some(v),
+        let versions = match with_engine.then(|| client.versions(60)) {
+            Some(Ok(Value::Array(v))) => Some(v),
             _ => None,
         };
         Refresh {
@@ -1142,28 +1161,32 @@ impl Refresh {
             boq: read_json("boq.json"),
             validation: read_json("validation.json"),
             versions,
-            project: client.project().ok(),
+            project: with_engine.then(|| client.project().ok()).flatten(),
         }
     }
 }
 
 /// Elements added or altered from `old` to `new`, by id. Nothing on the first load of a project,
 /// so an opened design is not shown as all-new.
-fn changed_between(old: Option<&Design>, new: &Design) -> Vec<String> {
+fn changed_between(old: Option<&Design>, new: &Design) -> (Vec<String>, Vec<String>, Vec<String>) {
     let Some(old) = old else {
-        return Vec::new();
+        return (Vec::new(), Vec::new(), Vec::new());
     };
     let before: HashMap<&str, &openftth_core::Element> = old
         .elements
         .iter()
         .map(|e| (e.element_uuid.as_str(), e))
         .collect();
-    new.elements
-        .iter()
-        .filter(|e| match before.get(e.element_uuid.as_str()) {
-            None => true,
-            Some(o) => o.geometry != e.geometry || o.props != e.props || o.openftth != e.openftth,
-        })
-        .map(|e| e.element_uuid.clone())
-        .collect()
+    let (mut added, mut moved, mut updated) = (Vec::new(), Vec::new(), Vec::new());
+    for e in &new.elements {
+        match before.get(e.element_uuid.as_str()) {
+            None => added.push(e.element_uuid.clone()),
+            Some(o) if o.geometry != e.geometry => moved.push(e.element_uuid.clone()),
+            Some(o) if o.props != e.props || o.openftth != e.openftth => {
+                updated.push(e.element_uuid.clone())
+            }
+            Some(_) => {}
+        }
+    }
+    (added, moved, updated)
 }

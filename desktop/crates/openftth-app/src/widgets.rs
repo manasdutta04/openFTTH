@@ -675,21 +675,14 @@ pub fn avatar_stack(ui: &mut Ui, p: &Palette, members: &[Member]) -> Option<Stri
             colour.gamma_multiply(0.42)
         };
         painter.circle_filled(c, size / 2.0, fill);
-        let initial: String = m
-            .name
-            .chars()
-            .next()
-            .map(|ch| ch.to_uppercase().to_string())
-            .unwrap_or_default();
-        painter.text(
-            c + egui::vec2(0.0, 0.5),
-            egui::Align2::CENTER_CENTER,
-            initial,
-            font(10.5, Weight::Semibold),
+        icons::paint_crew_glyph(
+            &painter,
+            egui::Rect::from_center_size(c, egui::vec2(12.5, 12.5)),
+            &m.key,
             if active || hovered == Some(i) {
                 Color32::WHITE
             } else {
-                Color32::WHITE.gamma_multiply(0.7)
+                Color32::WHITE.gamma_multiply(0.72)
             },
         );
     }
