@@ -57,14 +57,28 @@ pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) {
                         });
                     });
                     ui.add_space(28.0);
-                    ui.columns(2, |cols| {
-                        // `columns` justifies text; plain top-down keeps labels ragged-right.
-                        cols[0].with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            start_column(ui, st, form, &mut open)
-                        });
-                        cols[1].with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            recent_column(ui, st, &mut open)
-                        });
+                    // Two columns of fixed width, so a row's click area never reaches into the
+                    // other column (a Recent click used to land on "Choose the design area").
+                    let gap = 32.0;
+                    let col_w = ((ui.available_width() - gap) / 2.0).max(240.0);
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        ui.allocate_ui_with_layout(
+                            vec2(col_w, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(col_w);
+                                start_column(ui, st, form, &mut open)
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            vec2(col_w, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(col_w);
+                                recent_column(ui, st, &mut open)
+                            },
+                        );
                     });
                 });
             });
