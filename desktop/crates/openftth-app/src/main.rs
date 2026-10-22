@@ -6,6 +6,7 @@ mod chat;
 mod cursors;
 mod dictate;
 mod icons;
+mod import;
 mod inspector;
 mod markdown;
 mod state;

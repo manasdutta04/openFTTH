@@ -140,6 +140,25 @@ impl Client {
         self.send("POST", "/api/project", &body)
     }
 
+    /// The layers in data files and the import profile the engine proposes for them.
+    pub fn import_inspect(&self, paths: &[String]) -> Result<Value, ClientError> {
+        self.send("POST", "/api/import/inspect", &json!({ "paths": paths }))
+    }
+
+    /// Save an import profile and read its data: returns `{path, report}` (the quality report).
+    pub fn import_profile(
+        &self,
+        name: &str,
+        profile: &Value,
+        rulebook: &str,
+    ) -> Result<Value, ClientError> {
+        self.send(
+            "POST",
+            "/api/import/profile",
+            &json!({ "name": name, "profile": profile, "rulebook": rulebook }),
+        )
+    }
+
     pub fn close_project(&self) -> Result<Value, ClientError> {
         self.send("DELETE", "/api/project", &Value::Null)
     }

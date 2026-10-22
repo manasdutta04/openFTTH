@@ -128,8 +128,17 @@ struct GeomCache {
     uuid_index: HashMap<String, usize>,
 }
 
-const CABLE_KINDS: [&str; 3] = ["drop", "distribution", "feeder"];
-const POINT_KINDS: [&str; 5] = ["home", "chamber", "fat", "fdh", "pop"];
+/// Indexed by `CLine::class`; existing ducts are drawn first, under the designed cables.
+const CABLE_KINDS: [&str; 4] = ["drop", "distribution", "feeder", "existing_duct"];
+const POINT_KINDS: [&str; 7] = [
+    "home",
+    "chamber",
+    "fat",
+    "fdh",
+    "pop",
+    "existing_pole",
+    "existing_manhole",
+];
 
 fn design_key(d: Option<&Design>) -> (usize, usize) {
     d.map(|d| (d.elements.as_ptr() as usize, d.elements.len()))
@@ -467,9 +476,14 @@ impl TwinView {
         }
 
         // Cables: drops are the thinnest and the most numerous, so they go first.
-        let cable_on = [layers.drops, layers.distribution, layers.feeder];
-        let cable_w = [0.9f32, 2.2, 3.4];
-        for cls in 0..3u8 {
+        let cable_on = [
+            layers.drops,
+            layers.distribution,
+            layers.feeder,
+            layers.existing,
+        ];
+        let cable_w = [0.9f32, 2.2, 3.4, 1.6];
+        for cls in [3u8, 0, 1, 2] {
             if !cable_on[cls as usize] || (cls == 0 && scale < 0.35) {
                 continue;
             }
@@ -507,7 +521,11 @@ impl TwinView {
                 if let Some(q) = probe {
                     consider(polyline_distance(&pts, q), 7.0, c.idx);
                 }
-                shapes.push(Shape::line(pts, Stroke::new(w, color)));
+                if cls == 3 {
+                    shapes.extend(Shape::dashed_line(&pts, Stroke::new(w, color), 6.0, 3.0));
+                } else {
+                    shapes.push(Shape::line(pts, Stroke::new(w, color)));
+                }
             }
         }
 
@@ -518,8 +536,10 @@ impl TwinView {
             layers.fats,
             layers.fdhs,
             true,
+            layers.existing,
+            layers.existing,
         ];
-        let radii = [2.0f32, 3.0, 5.0, 7.0, 9.0];
+        let radii = [2.0f32, 3.0, 5.0, 7.0, 9.0, 3.0, 3.5];
         let edge = Stroke::new(1.0, p.map_bg);
         for pt in &cache.points {
             let k = pt.kind as usize;
@@ -579,6 +599,13 @@ impl TwinView {
                     Rect::from_center_size(pos, Vec2::splat(r * 2.0)),
                     1.0,
                     c,
+                )),
+                5 => shapes.push(Shape::circle_stroke(pos, r, Stroke::new(1.5, c))),
+                6 => shapes.push(Shape::rect_stroke(
+                    Rect::from_center_size(pos, Vec2::splat(r * 2.0)),
+                    0.0,
+                    Stroke::new(1.5, c),
+                    egui::StrokeKind::Middle,
                 )),
                 4 => {
                     shapes.push(Shape::circle_filled(pos, r, c));
@@ -772,7 +799,7 @@ impl TwinView {
                         ui.label(caps("Layers", p.text3));
                     });
                     ui.add_space(4.0);
-                    let rows: [(&str, &str, &mut bool); 9] = [
+                    let rows: [(&str, &str, &mut bool); 10] = [
                         ("Feeder", "feeder", &mut layers.feeder),
                         ("Distribution", "distribution", &mut layers.distribution),
                         ("Drops", "drop", &mut layers.drops),
@@ -782,6 +809,7 @@ impl TwinView {
                         ("Homes", "home", &mut layers.homes),
                         ("Buildings", "building", &mut layers.buildings),
                         ("Streets", "street", &mut layers.streets),
+                        ("Existing network", "existing_duct", &mut layers.existing),
                     ];
                     for (label, kind, on) in rows {
                         let (r, resp) = ui
@@ -805,6 +833,14 @@ impl TwinView {
                         );
                         let painter = ui.painter();
                         match kind {
+                            "existing_duct" => {
+                                painter.extend(Shape::dashed_line(
+                                    &[sw.left_center(), sw.right_center()],
+                                    Stroke::new(1.6, c),
+                                    4.0,
+                                    2.0,
+                                ));
+                            }
                             "feeder" | "distribution" | "drop" | "street" => {
                                 let w = match kind {
                                     "feeder" => 3.0,

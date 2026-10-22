@@ -16,6 +16,7 @@ use crate::chat::{
     PROMPT_VALIDATE,
 };
 use crate::icons::{self, Icon};
+use crate::import::ImportWizard;
 use crate::inspector::{inspector, is_excluded, is_movable, InspectorAction};
 use crate::state::{AppState, Tab};
 use crate::tabs::{backstage_tab, boq_tab, splice_tab, versions_tab, TabState};
@@ -56,6 +57,7 @@ pub struct OpenFtthApp {
     about: bool,
     engine_form: Option<EngineForm>,
     confirm_reset: bool,
+    import: ImportWizard,
     frame_ms: f32,
     /// The site the engineer is choosing a new position for (click on the map).
     placing: Option<Placing>,
@@ -182,6 +184,7 @@ impl OpenFtthApp {
             about: false,
             engine_form: None,
             confirm_reset: false,
+            import: ImportWizard::new(),
             frame_ms: 0.0,
             placing: None,
             steer: None,
@@ -499,6 +502,9 @@ project {}",
             if menu_item(ui, &p, "New project", None, true) {
                 self.st.close_project();
             }
+            if menu_item(ui, &p, "Import data…", None, !busy) {
+                self.import.open = true;
+            }
             ui.menu_button(Self::menu_title("Open recent", &p), |ui| {
                 widgets::menu_begin(ui, 260.0);
                 let recents = self.st.recents.clone();
@@ -589,6 +595,7 @@ project {}",
                     ("FDH cabinets", &mut l.fdhs),
                     ("FATs", &mut l.fats),
                     ("Chambers", &mut l.chambers),
+                    ("Existing network", &mut l.existing),
                     ("Homes", &mut l.homes),
                     ("Buildings", &mut l.buildings),
                     ("Streets", &mut l.streets),
@@ -1455,6 +1462,7 @@ impl eframe::App for OpenFtthApp {
         self.about_window(ui.ctx());
         self.engine_window(ui.ctx());
         self.reset_window(ui.ctx());
+        self.import.show(ui.ctx(), &mut self.st);
         self.steer_window(ui.ctx());
         self.st.toasts.show(ui.ctx(), &p);
         self.resize_zones(ui.ctx());

@@ -117,6 +117,8 @@ pub struct Layers {
     pub fats: bool,
     pub fdhs: bool,
     pub chambers: bool,
+    /// Ducts, poles and manholes that already exist (imported, not designed).
+    pub existing: bool,
 }
 
 impl Default for Layers {
@@ -131,6 +133,7 @@ impl Default for Layers {
             fats: true,
             fdhs: true,
             chambers: true,
+            existing: true,
         }
     }
 }

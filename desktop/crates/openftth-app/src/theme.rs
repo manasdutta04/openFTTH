@@ -208,6 +208,13 @@ impl Palette {
                     Color32::BLACK
                 }
             }
+            "existing_duct" | "existing_pole" | "existing_manhole" => {
+                if dark {
+                    Color32::from_rgb(0x8f, 0xa3, 0xb8)
+                } else {
+                    Color32::from_rgb(0x5b, 0x6b, 0x7c)
+                }
+            }
             "chamber" => {
                 if dark {
                     Color32::from_rgb(0xb0, 0x8a, 0x6a)
