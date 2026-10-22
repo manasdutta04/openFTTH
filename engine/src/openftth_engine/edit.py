@@ -1,5 +1,5 @@
-"""The engineer's own edits: add a site, draw a cable, split it, delete, set an attribute,
-reassign a home or a FAT, and undo or redo any of them.
+"""The engineer's own edits: add a site, draw a cable, split or join cables, delete, set an
+attribute, reassign a home or a FAT, change a splice, and undo or redo any of them.
 
 Every edit is a tool call with a reason on record, snapped to the street twin, and one version;
 nothing here invents a number the engineer did not give or the engine did not compute. Sites
@@ -10,6 +10,7 @@ design as it now stands, so the app can mark what the edit broke.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import networkx as nx
@@ -19,7 +20,6 @@ from .interchange import Feature
 from .pipeline import (
     Session,
     _commit,
-    _label,
     _merge,
     _rejected,
     _rerun,
@@ -29,14 +29,18 @@ from .pipeline import (
     assign_pon,
 )
 from .results import Decision, ToolResult
+from .solve.fibers import FIBERS_PER_TUBE, tube_fiber
 from .validate import run_all_checks
 
 #: Tools whose versions undo and redo step through: they only change the design file.
 UNDOABLE = (
     "add_site",
     "delete_element",
+    "delete_elements",
     "draw_cable",
     "split_cable",
+    "join_cables",
+    "edit_splice",
     "set_attribute",
     "reassign",
     "move_site",
@@ -64,6 +68,16 @@ FIELD_WORDS = {
     "manhole_type": "chamber type",
 }
 STATUSES = ("planned", "approved", "in_construction", "as_built", "in_service", "retired")
+
+
+def _label(f: Feature) -> str:
+    """What the engineer calls an element: its name, a chamber's id, or a drop's two ends."""
+    for key in ("name", "manhole_id", "site_name", "pole_id"):
+        if f.props.get(key):
+            return str(f.props[key])
+    if f.kind == "drop" and f.props.get("from_label") and f.props.get("to_label"):
+        return f"drop {f.props['from_label']} → {f.props['to_label']}"
+    return f"{f.kind} {f.element_uuid[:8]}"
 
 
 def _reason(tool: str, reason: str) -> str | None:
@@ -219,51 +233,70 @@ def add_site(s: Session, kind: str, lon: float, lat: float, reason: str) -> Tool
     return _record_edit(s, _checked(s, result), started)
 
 
+def _delete_refusal(s: Session, element_uuid: str, going: set[str]) -> str | None:
+    """Why an element cannot be deleted, given everything else deleted with it."""
+    if element_uuid not in s.design:
+        return f"no element {element_uuid} in the design"
+    f = s.design.get(element_uuid)
+    kind = f.kind or ""
+    if kind not in DELETABLE:
+        return f"a {kind} cannot be deleted by hand"
+    name = _label(f)
+    if kind == "fat":
+        served = [
+            h
+            for h in s.design.by_kind("home")
+            if h.openftth.get("fat_id") == element_uuid and h.element_uuid not in going
+        ]
+        if served:
+            return f"{name} still serves {len(served)} home(s); reassign them first"
+    if kind == "fdh":
+        served = [
+            x
+            for x in s.design.by_kind("fat")
+            if x.openftth.get("fdh_id") == element_uuid and x.element_uuid not in going
+        ]
+        if served:
+            return f"{name} still feeds {len(served)} FAT(s); reassign them first"
+    if kind == "pop":
+        left = [x for x in s.design.by_kind("pop") if x.element_uuid not in going]
+        if not left:
+            return "the design needs a POP; move it instead"
+    return None
+
+
+def _cut_connections(s: Session, going: set[str]) -> int:
+    """Remove the fibre connections that ran through deleted elements; returns how many."""
+    conns = s.design.tables.get("fiber_connection") or []
+    keys = (
+        "source_element_uuid",
+        "dest_element_uuid",
+        "source_cable_uuid",
+        "dest_cable_uuid",
+    )
+    keep = [c for c in conns if not any(c.get(k) in going for k in keys)]
+    cut = len(conns) - len(keep)
+    if cut:
+        s.design.set_table("fiber_connection", keep)
+        _recount_points(s)
+    return cut
+
+
 def delete_element(s: Session, element_uuid: str, reason: str) -> ToolResult:
     """Take a site or a cable out of the design. A FAT or a cabinet that still serves something
     is refused: reassign what it serves first, so nothing is left without a connection."""
     why = _reason("delete_element", reason)
     if not why:
         return _rejected("delete_element", "a reason is required; every manual edit records why")
-    if element_uuid not in s.design:
-        return _rejected("delete_element", f"no element {element_uuid} in the design")
+    refusal = _delete_refusal(s, element_uuid, {element_uuid})
+    if refusal:
+        return _rejected("delete_element", refusal)
     f = s.design.get(element_uuid)
     kind = f.kind or ""
-    if kind not in DELETABLE:
-        return _rejected("delete_element", f"a {kind} cannot be deleted by hand")
     name = _label(f)
-    if kind == "fat":
-        served = [h for h in s.design.by_kind("home") if h.openftth.get("fat_id") == element_uuid]
-        if served:
-            return _rejected(
-                "delete_element", f"{name} still serves {len(served)} home(s); reassign them first"
-            )
-    if kind == "fdh":
-        served = [x for x in s.design.by_kind("fat") if x.openftth.get("fdh_id") == element_uuid]
-        if served:
-            return _rejected(
-                "delete_element", f"{name} still feeds {len(served)} FAT(s); reassign them first"
-            )
-    if kind == "pop" and len(s.design.by_kind("pop")) == 1:
-        return _rejected("delete_element", "the design needs a POP; move it instead")
     started = _begin(s)
     s.design.remove(element_uuid)
-    # Fibres that ran through it are cut: their connections go with it.
-    conns = s.design.tables.get("fiber_connection") or []
-    keep = [
-        c
-        for c in conns
-        if element_uuid
-        not in (
-            c.get("source_element_uuid"),
-            c.get("dest_element_uuid"),
-            c.get("source_cable_uuid"),
-            c.get("dest_cable_uuid"),
-        )
-    ]
-    cut = len(conns) - len(keep)
-    if cut:
-        s.design.set_table("fiber_connection", keep)
+    cut = _cut_connections(s, {element_uuid})
     result = ToolResult(
         tool="delete_element",
         summary=f"{name} deleted"
@@ -283,6 +316,54 @@ def delete_element(s: Session, element_uuid: str, reason: str) -> ToolResult:
     if kind in CABLE_KINDS and f.openftth.get("drawn_by") != "engineer":
         result.warnings.append(
             f"{name} was routed by the engine: routing it again brings it back; forbid the street or move a site to change the route for good"
+        )
+    return _record_edit(s, _checked(s, result), started)
+
+
+def delete_elements(s: Session, element_uuids: list[str], reason: str) -> ToolResult:
+    """Delete several sites and cables as one edit (one undo step). Homes, buildings and other
+    things that are never deleted by hand are skipped; anything deletable that cannot go (a FAT
+    still serving a home outside the set) refuses the whole edit."""
+    why = _reason("delete_elements", reason)
+    if not why:
+        return _rejected("delete_elements", "a reason is required; every manual edit records why")
+    ids = list(dict.fromkeys(element_uuids or []))
+    present = [u for u in ids if u in s.design]
+    doomed = [u for u in present if (s.design.get(u).kind or "") in DELETABLE]
+    skipped = len(ids) - len(doomed)
+    if not doomed:
+        return _rejected("delete_elements", "nothing in the selection can be deleted by hand")
+    going = set(doomed)
+    for u in doomed:
+        refusal = _delete_refusal(s, u, going)
+        if refusal:
+            return _rejected("delete_elements", refusal)
+    started = _begin(s)
+    names = [_label(s.design.get(u)) for u in doomed]
+    for u in doomed:
+        s.design.remove(u)
+    cut = _cut_connections(s, going)
+    shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+    result = ToolResult(
+        tool="delete_elements",
+        summary=f"{len(doomed)} element(s) deleted: {shown}"
+        + (f"; {cut} fibre connection(s) removed" if cut else ""),
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="delete_elements",
+                element=u,
+                reason=f"{name} deleted by the engineer with {len(doomed) - 1} other element(s): {why}.",
+                values={"connections_removed": cut},
+                source="user",
+            )
+            for u, name in zip(doomed, names, strict=True)
+        ],
+        data={"elements": doomed},
+    )
+    if skipped:
+        result.warnings.append(
+            f"{skipped} selected element(s) left as they are (homes, buildings and streets are not deleted by hand)"
         )
     return _record_edit(s, _checked(s, result), started)
 
@@ -339,6 +420,103 @@ def _cable_feature(
             **extra,
         },
     )
+
+
+def _cable_nodes(s: Session, f: Feature) -> list[int]:
+    """A cable's street nodes in order, from its line: vertices snap to their nodes, repeats
+    from curved streets drop out, and gaps are filled along the street graph."""
+    twin = _twin(s)
+    G = twin.graph
+    snapped: list[int] = []
+    for lon_, lat_ in f.geometry.coords:
+        p = _to_metric(twin, lon_, lat_)
+        n = int(twin.nearest_node(p.x, p.y)[0])
+        if not snapped or snapped[-1] != n:
+            snapped.append(n)
+    if len(snapped) < 2:
+        return snapped
+    path = [snapped[0]]
+    for a, b in zip(snapped[:-1], snapped[1:], strict=False):
+        if G.has_edge(a, b):
+            path.append(b)
+            continue
+        try:
+            path.extend(nx.shortest_path(G, a, b, weight="cost")[1:])
+        except nx.NetworkXNoPath:
+            return []
+    return path
+
+
+def _point_nodes(s: Session) -> dict[str, int | None]:
+    """The street node of every splice point."""
+    out: dict[str, int | None] = {}
+    for pt in s.design.tables.get("splice_point") or []:
+        try:
+            node = json.loads(pt.get("config_json") or "{}").get("node")
+        except (TypeError, ValueError):
+            node = None
+        out[str(pt["uuid"])] = int(node) if node is not None else None
+    return out
+
+
+def _splice_point(s: Session, node: int, element_uuid: str) -> str:
+    """The engineer's splice point at a street node (made when there is none)."""
+    pid = s.uid("splice_point", f"manual:{node}")
+    points = list(s.design.tables.get("splice_point") or [])
+    if not any(pt["uuid"] == pid for pt in points):
+        points.append(
+            {
+                "uuid": pid,
+                "element_uuid": element_uuid,
+                "port_count": 0,
+                "used_ports": 0,
+                "config_json": json.dumps({"tree": "manual", "node": node}, sort_keys=True),
+                "notes": "",
+            }
+        )
+        s.design.set_table("splice_point", points)
+    return pid
+
+
+def _recount_points(s: Session) -> None:
+    """Splice point port counts follow their connections; a point left with none goes."""
+    if "splice_point" not in s.design.tables:
+        return
+    counts: dict[str, int] = {}
+    for c in s.design.tables.get("fiber_connection") or []:
+        pid = str(c.get("splice_point_uuid") or "")
+        counts[pid] = counts.get(pid, 0) + 1
+    points = []
+    for pt in s.design.tables["splice_point"]:
+        n = counts.get(str(pt["uuid"]), 0)
+        if n:
+            points.append({**pt, "port_count": n, "used_ports": n})
+    s.design.set_table("splice_point", points)
+
+
+def _splice_row(s: Session, key: str, pid: str, **fields: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "uuid": s.uid("fiber_connection", key),
+        "splice_point_uuid": pid,
+        "source_element_uuid": None,
+        "source_cable_uuid": None,
+        "source_tube": None,
+        "source_fiber": None,
+        "source_port": None,
+        "source_side": None,
+        "dest_element_uuid": None,
+        "dest_cable_uuid": None,
+        "dest_tube": None,
+        "dest_fiber": None,
+        "dest_port": None,
+        "dest_side": None,
+        "connection_type": "splice",
+        "loss_db": s.rules.loss_db.splice,
+        "tray_ref": None,
+        "notes": None,
+    }
+    row.update(fields)
+    return row
 
 
 def draw_cable(
@@ -430,11 +608,9 @@ def split_cable(s: Session, element_uuid: str, lon: float, lat: float, reason: s
     if kind not in CABLE_KINDS:
         return _rejected("split_cable", f"only a cable can be split, not a {kind}")
     twin = _twin(s)
-    line = f.geometry
-    nodes = []
-    for lon_, lat_ in line.coords:
-        p = _to_metric(twin, lon_, lat_)
-        nodes.append(int(twin.nearest_node(p.x, p.y)[0]))
+    nodes = _cable_nodes(s, f)
+    if len(nodes) < 2:
+        return _rejected("split_cable", "the cable's line does not follow the street graph")
     node, _d = _snap(s, lon, lat)
     if node not in nodes[1:-1]:
         # The nearest node on the cable itself, by straight distance from the point.
@@ -492,9 +668,11 @@ def split_cable(s: Session, element_uuid: str, lon: float, lat: float, reason: s
             )
         )
         chamber_note = f"; chamber CH-{node} added for the splice"
+    spliced = _splice_through(s, element_uuid, second_id, nodes, i, node)
+    splice_note = f"; {spliced} fibre(s) spliced straight through" if spliced else ""
     result = ToolResult(
         tool="split_cable",
-        summary=f"{name} split at street node {node} into {name}-A and {name}-B{chamber_note}",
+        summary=f"{name} split at street node {node} into {name}-A and {name}-B{chamber_note}{splice_note}",
         decisions=[
             Decision(
                 stage="solve",
@@ -508,6 +686,336 @@ def split_cable(s: Session, element_uuid: str, lon: float, lat: float, reason: s
         data={"element": element_uuid, "parts": [element_uuid, second_id], "node": node},
     )
     return _record_edit(s, _checked(s, result), started)
+
+
+def _splice_through(s: Session, a: str, b: str, nodes: list[int], i: int, node: int) -> int:
+    """After a split at nodes[i]: connections on the far part now name the second cable, and every
+    fibre the cable carried is spliced straight through at the new chamber, in the direction
+    light ran. Returns how many fibres were spliced."""
+    conns = s.design.tables.get("fiber_connection")
+    if not conns:
+        return 0
+    pnode = _point_nodes(s)
+    pos: dict[int, int] = {}
+    for k, n in enumerate(nodes):
+        pos.setdefault(n, k)
+    flow: dict[tuple[int, int], str] = {}
+    rows = []
+    for c in conns:
+        c = dict(c)
+        at = pnode.get(str(c.get("splice_point_uuid") or ""))
+        far = at is not None and pos.get(at, -1) > i
+        for side in ("source", "dest"):
+            if c.get(f"{side}_cable_uuid") != a:
+                continue
+            key = (int(c[f"{side}_tube"]), int(c[f"{side}_fiber"]))
+            if far:
+                c[f"{side}_cable_uuid"] = b
+            if side == "dest":
+                # Light enters the cable where it is the destination of a connection.
+                flow[key] = "ba" if far else "ab"
+            else:
+                flow.setdefault(key, "ab" if far else "ba")
+        rows.append(c)
+    if flow:
+        chamber = next(
+            c.element_uuid
+            for c in s.design.by_kind("chamber")
+            if int(c.openftth.get("node", -1)) == node
+        )
+        pid = _splice_point(s, node, chamber)
+        for (t, fb), way in sorted(flow.items()):
+            up, down = (a, b) if way == "ab" else (b, a)
+            rows.append(
+                _splice_row(
+                    s,
+                    f"split:{a}:{node}:{t}:{fb}",
+                    pid,
+                    source_cable_uuid=up,
+                    source_tube=t,
+                    source_fiber=fb,
+                    dest_cable_uuid=down,
+                    dest_tube=t,
+                    dest_fiber=fb,
+                )
+            )
+    s.design.set_table("fiber_connection", rows)
+    _recount_points(s)
+    return len(flow)
+
+
+def join_cables(s: Session, first_uuid: str, second_uuid: str, reason: str) -> ToolResult:
+    """Join two cables of the same kind and size that end at the same street node into one (the
+    first keeps its id and name). The straight splices at the joint go; a joint that crosses
+    fibres is refused, so no fibre is renumbered silently."""
+    why = _reason("join_cables", reason)
+    if not why:
+        return _rejected("join_cables", "a reason is required; every manual edit records why")
+    if first_uuid == second_uuid:
+        return _rejected("join_cables", "pick two different cables")
+    for u in (first_uuid, second_uuid):
+        if u not in s.design:
+            return _rejected("join_cables", f"no element {u} in the design")
+    a, b = s.design.get(first_uuid), s.design.get(second_uuid)
+    kind = a.kind or ""
+    if kind not in CABLE_KINDS or (b.kind or "") not in CABLE_KINDS:
+        return _rejected("join_cables", "only cables can be joined")
+    an, bn = _label(a), _label(b)
+    if b.kind != kind:
+        return _rejected("join_cables", f"{an} is a {kind} cable and {bn} a {b.kind} cable")
+    for key in ("fiber_count", "cable_count"):
+        if int(a.props.get(key, 1)) != int(b.props.get(key, 1)):
+            return _rejected(
+                "join_cables",
+                f"{an} and {bn} differ in {FIELD_WORDS[key]} ({a.props.get(key)} and {b.props.get(key)}); set them alike first",
+            )
+    na, nb = _cable_nodes(s, a), _cable_nodes(s, b)
+    if len(na) < 2 or len(nb) < 2:
+        return _rejected("join_cables", "a cable's line does not follow the street graph")
+    if na[-1] == nb[0]:
+        path = na + nb[1:]
+    elif na[-1] == nb[-1]:
+        path = na + nb[::-1][1:]
+    elif na[0] == nb[-1]:
+        path = nb + na[1:]
+    elif na[0] == nb[0]:
+        path = na[::-1] + nb[1:]
+    else:
+        return _rejected(
+            "join_cables",
+            f"{an} and {bn} do not meet: join cables that end at the same street node",
+        )
+    joint = na[-1] if na[-1] in (nb[0], nb[-1]) else na[0]
+    if len(set(path)) < len(path):
+        return _rejected("join_cables", "joined, the cable would run along the same street twice")
+    pnode = _point_nodes(s)
+    conns = s.design.tables.get("fiber_connection") or []
+    pair = {first_uuid, second_uuid}
+    rows, straight = [], 0
+    for c in conns:
+        at = pnode.get(str(c.get("splice_point_uuid") or ""))
+        ends = {c.get("source_cable_uuid"), c.get("dest_cable_uuid")}
+        if at == joint and ends == pair:
+            if (c["source_tube"], c["source_fiber"]) != (c["dest_tube"], c["dest_fiber"]):
+                src = _label(s.design.get(c["source_cable_uuid"]))
+                dst = _label(s.design.get(c["dest_cable_uuid"]))
+                return _rejected(
+                    "join_cables",
+                    f"at the joint {src} T{c['source_tube']}:{c['source_fiber']} is spliced to {dst} T{c['dest_tube']}:{c['dest_fiber']}; re-patch it straight first",
+                )
+            straight += 1
+            continue
+        c = dict(c)
+        for side in ("source", "dest"):
+            if c.get(f"{side}_cable_uuid") == second_uuid:
+                c[f"{side}_cable_uuid"] = first_uuid
+        rows.append(c)
+    started = _begin(s)
+    extra = {
+        k: v for k, v in a.openftth.items() if k not in ("edges", "surfaces", "trench_cost", "kind")
+    }
+    extra["drawn_by"] = "engineer"
+    extra["placed_reason"] = why
+    # The two halves of a split come back under the name they had before it.
+    halves = {an[-2:], bn[-2:]} == {"-A", "-B"} and an[:-2] == bn[:-2]
+    name = an[:-2] if halves else an
+    joined = _cable_feature(
+        s, first_uuid, kind, path, name, int(a.props.get("fiber_count", 1)), extra
+    )
+    for key in ("cable_count", "status", "notes"):
+        if key in a.props:
+            joined.props[key] = a.props[key]
+    s.design.remove(second_uuid)
+    s.design.add(joined)
+    if conns:
+        s.design.set_table("fiber_connection", rows)
+        _recount_points(s)
+    pnode = _point_nodes(s)
+    left = [
+        c
+        for c in s.design.by_kind("chamber")
+        if int(c.openftth.get("node", -1)) == joint and not any(n == joint for n in pnode.values())
+    ]
+    result = ToolResult(
+        tool="join_cables",
+        summary=f"{an} and {bn} joined at street node {joint} into {name}, {joined.props['length_m']:.0f} m"
+        + (f"; {straight} straight splice(s) at the joint removed" if straight else ""),
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="join_cables",
+                element=first_uuid,
+                reason=f"{an} and {bn} joined by the engineer: {why}.",
+                values={
+                    "joint": joint,
+                    "removed": second_uuid,
+                    "length_m": joined.props["length_m"],
+                    "splices_removed": straight,
+                },
+                source="user",
+            )
+        ],
+        data={"element": first_uuid, "kind": kind, "removed": second_uuid},
+    )
+    for c in left:
+        result.warnings.append(
+            f"{_label(c)} at the joint now holds no splice; delete it if it is not needed"
+        )
+    return _record_edit(s, _checked(s, result), started)
+
+
+# ---- splices ----------------------------------------------------------------------------------
+
+SPLICE_TYPES = ("splice", "patch")
+
+
+def _end_text(s: Session, c: dict[str, Any], side: str) -> str:
+    cable = c.get(f"{side}_cable_uuid")
+    if cable:
+        name = _label(s.design.get(cable)) if cable in s.design else cable[:8]
+        return f"{name} T{c[f'{side}_tube']}:{c[f'{side}_fiber']}"
+    el = c.get(f"{side}_element_uuid") or ""
+    name = _label(s.design.get(el)) if el in s.design else el[:8]
+    return f"{name} port {c.get(f'{side}_port')}"
+
+
+def edit_splice(
+    s: Session,
+    connection_uuid: str,
+    reason: str,
+    remove: bool = False,
+    connection_type: str | None = None,
+    tray_ref: str | None = None,
+    notes: str | None = None,
+    source_fiber: int | None = None,
+    dest_fiber: int | None = None,
+) -> ToolResult:
+    """Change one row of the splice schedule: re-patch either end to another fibre of the same
+    cable (a fibre number counted from 1 across tubes), make it a splice or a patch (its loss
+    follows from the rulebook), set the tray or a note, or remove it."""
+    why = _reason("edit_splice", reason)
+    if not why:
+        return _rejected("edit_splice", "a reason is required; every manual edit records why")
+    conns = s.design.tables.get("fiber_connection") or []
+    row = next((c for c in conns if c.get("uuid") == connection_uuid), None)
+    if row is None:
+        return _rejected("edit_splice", f"no fibre connection {connection_uuid}")
+    before_text = f"{_end_text(s, row, 'source')} → {_end_text(s, row, 'dest')}"
+    pid = str(row.get("splice_point_uuid") or "")
+    point = next(
+        (pt for pt in s.design.tables.get("splice_point") or [] if pt["uuid"] == pid), None
+    )
+    closure = point.get("element_uuid") if point else None
+    where = _label(s.design.get(closure)) if closure and closure in s.design else "the closure"
+    new = dict(row)
+    changes: list[str] = []
+    values: dict[str, Any] = {}
+    if remove:
+        changes.append("removed")
+    else:
+        if connection_type is not None and connection_type != row.get("connection_type"):
+            if row.get("connection_type") == "splitter":
+                return _rejected(
+                    "edit_splice", "a splitter's own connections are not edited by hand"
+                )
+            if connection_type not in SPLICE_TYPES:
+                return _rejected("edit_splice", f"a connection is one of {', '.join(SPLICE_TYPES)}")
+            loss = (
+                s.rules.loss_db.splice if connection_type == "splice" else s.rules.loss_db.connector
+            )
+            new["connection_type"] = connection_type
+            new["loss_db"] = loss
+            changes.append(f"now a {connection_type} ({loss:g} dB from the rulebook)")
+            values["connection_type"] = connection_type
+        for side, number in (("source", source_fiber), ("dest", dest_fiber)):
+            if number is None:
+                continue
+            cable = row.get(f"{side}_cable_uuid")
+            if not cable or cable not in s.design:
+                return _rejected("edit_splice", f"the {side} end is a port, not a cable fibre")
+            try:
+                n = int(number)
+            except (TypeError, ValueError):
+                return _rejected("edit_splice", "a fibre number is a whole number")
+            cf = s.design.get(cable)
+            capacity = int(cf.props.get("fiber_count", 0)) * int(cf.props.get("cable_count", 1))
+            if not 1 <= n <= capacity:
+                return _rejected(
+                    "edit_splice", f"{_label(cf)} carries fibres 1 to {capacity}, not {n}"
+                )
+            t, fb = tube_fiber(n, FIBERS_PER_TUBE)
+            if (row.get(f"{side}_tube"), row.get(f"{side}_fiber")) == (t, fb):
+                continue
+            taken = next(
+                (
+                    c
+                    for c in conns
+                    if c is not row
+                    and c.get(f"{side}_cable_uuid") == cable
+                    and (c.get(f"{side}_tube"), c.get(f"{side}_fiber")) == (t, fb)
+                ),
+                None,
+            )
+            if taken:
+                return _rejected(
+                    "edit_splice",
+                    f"fibre {n} of {_label(cf)} (T{t}:{fb}) is already used: {_end_text(s, taken, 'source')} → {_end_text(s, taken, 'dest')}",
+                )
+            new[f"{side}_tube"], new[f"{side}_fiber"] = t, fb
+            changes.append(f"{side} end on fibre {n} (T{t}:{fb})")
+            values[f"{side}_fiber"] = n
+        for key, value in (("tray_ref", tray_ref), ("notes", notes)):
+            if value is not None and (value.strip() or None) != row.get(key):
+                new[key] = value.strip() or None
+                changes.append(
+                    f"{'tray' if key == 'tray_ref' else 'note'} {value.strip() or 'cleared'}"
+                )
+                values[key] = new[key]
+        if not changes:
+            return _rejected("edit_splice", "nothing to change")
+    started = _begin(s)
+    rows = [c for c in conns if c is not row]
+    if not remove:
+        rows.append(new)
+    s.design.set_table("fiber_connection", rows)
+    if remove:
+        _recount_points(s)
+    result = ToolResult(
+        tool="edit_splice",
+        summary=f"Splice in {where} ({before_text}): {'; '.join(changes)}",
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="edit_splice",
+                element=closure,
+                reason=f"Splice {before_text} in {where} changed by the engineer ({'; '.join(changes)}): {why}.",
+                values={"connection": connection_uuid, **values, "removed": remove},
+                source="user",
+            )
+        ],
+        data={"connection": connection_uuid, "element": closure},
+    )
+    if remove:
+        result.warnings.append(
+            "the fibre through this splice is now cut: trace it again or re-patch"
+        )
+    return _record_edit(s, _checked(s, result), started)
+
+
+def list_violations(s: Session) -> dict[str, Any]:
+    """The rule check of the design as it stands, per element, for the map (nothing is written)."""
+    violations, _stats = run_all_checks(s.design, s.rules)
+    by_check: dict[str, int] = {}
+    for v in violations:
+        by_check[v.check] = by_check.get(v.check, 0) + 1
+    return {
+        "count": len(violations),
+        "by_check": by_check,
+        "items": [
+            {"check": v.check, "element": v.element, "message": v.message, "severity": v.severity}
+            for v in violations
+        ][:2000],
+    }
 
 
 # ---- attributes and assignments ---------------------------------------------------------------

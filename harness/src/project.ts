@@ -71,7 +71,19 @@ export const DISALLOWED_FOR_FOLKS = [
 export const STEER_TOOLS = ["move_site", "exclude_building", "forbid_street"] as const;
 /** The engineer's editing tools on the map. Each result carries its own rule check, so no
  *  crew turn (which may cost money) follows them. */
-export const EDIT_TOOLS = ["add_site", "delete_element", "draw_cable", "split_cable", "set_attribute", "reassign", "undo_edit", "redo_edit"] as const;
+export const EDIT_TOOLS = [
+  "add_site",
+  "delete_element",
+  "delete_elements",
+  "draw_cable",
+  "split_cable",
+  "join_cables",
+  "edit_splice",
+  "set_attribute",
+  "reassign",
+  "undo_edit",
+  "redo_edit",
+] as const;
 export type SteerTool = (typeof STEER_TOOLS)[number];
 
 /** The engine's tool result, as every tool returns it. */
@@ -397,6 +409,11 @@ export class ProjectService {
   /** What undo and redo would do now (the engine keeps the edit stack). */
   async editHistory(): Promise<unknown> {
     return this.requireEngine().call("edit_history");
+  }
+
+  /** The rule check of the design as it stands, per element, for the map's markers. */
+  async violations(): Promise<unknown> {
+    return this.requireEngine().call("list_violations");
   }
 
   /** Every project folder under the data dir, newest first. */

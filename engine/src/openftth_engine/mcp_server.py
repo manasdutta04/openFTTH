@@ -399,6 +399,55 @@ def split_cable(element_uuid: str, lon: float, lat: float, reason: str) -> dict[
 
 
 @mcp.tool()
+def join_cables(first_uuid: str, second_uuid: str, reason: str) -> dict[str, Any]:
+    """Join two cables of the same kind and size that end at the same street node into one; the
+    straight splices at the joint go. A joint that crosses fibres is refused."""
+    return _out(edit.join_cables(_s(), first_uuid, second_uuid, reason))
+
+
+@mcp.tool()
+def delete_elements(element_uuids: list[str], reason: str) -> dict[str, Any]:
+    """Delete several sites and cables as one edit (one undo step); homes and buildings are
+    skipped."""
+    return _out(edit.delete_elements(_s(), element_uuids, reason))
+
+
+@mcp.tool()
+def edit_splice(
+    connection_uuid: str,
+    reason: str,
+    remove: bool = False,
+    connection_type: str | None = None,
+    tray_ref: str | None = None,
+    notes: str | None = None,
+    source_fiber: int | None = None,
+    dest_fiber: int | None = None,
+) -> dict[str, Any]:
+    """Change one splice schedule row: re-patch an end to another fibre of the same cable
+    (numbered from 1 across tubes), make it a splice or a patch, set the tray or a note, or
+    remove it. Fibre numbers come from the engineer, never from you."""
+    return _out(
+        edit.edit_splice(
+            _s(),
+            connection_uuid,
+            reason,
+            remove=remove,
+            connection_type=connection_type,
+            tray_ref=tray_ref,
+            notes=notes,
+            source_fiber=source_fiber,
+            dest_fiber=dest_fiber,
+        )
+    )
+
+
+@mcp.tool()
+def list_violations() -> dict[str, Any]:
+    """The rule check of the design as it stands, per element (nothing is written)."""
+    return edit.list_violations(_s())
+
+
+@mcp.tool()
 def set_attribute(element_uuid: str, key: str, value: Any, reason: str) -> dict[str, Any]:
     """Change an attribute the engineer owns: name, status, notes, fiber_count, cable_count,
     slack_m, port_capacity or manhole_type, checked against the rulebook."""
