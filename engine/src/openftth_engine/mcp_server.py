@@ -240,9 +240,17 @@ def build_twin() -> dict[str, Any]:
 
 
 @mcp.tool()
-def set_pop(lon: float | None = None, lat: float | None = None) -> dict[str, Any]:
-    """Place the POP/OLT site. Without coordinates it goes to the area centroid (recorded as an assumption)."""
-    return _out(pipeline.set_pop(_s(), lon, lat))
+def set_pop(
+    lon: float | None = None,
+    lat: float | None = None,
+    count: int | None = None,
+    sites: list[list[float]] | None = None,
+) -> dict[str, Any]:
+    """Place the POP/OLT site, or several. Without coordinates one POP goes to the area centroid
+    (recorded as an assumption); an area with more units than `pops.max_units` gets several,
+    each with its own catchment. `count` asks for a number of POPs, `sites` gives their
+    [lon, lat] positions."""
+    return _out(pipeline.set_pop(_s(), lon, lat, count, sites))
 
 
 @mcp.tool()

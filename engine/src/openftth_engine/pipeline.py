@@ -15,6 +15,7 @@ from typing import Any
 
 import geopandas as gpd
 import networkx as nx
+import numpy as np
 from shapely.geometry import LineString, Point, mapping
 
 from .deliver import build_boq, render_map
@@ -28,6 +29,7 @@ from .project import Project
 from .results import Decision, ToolResult
 from .rules import Rulebook
 from .solve.cluster import Demand, capacitated_sites, repair_reach
+from .solve.pops import split_catchments
 from .solve.routing import RoutedTree, route_tree
 from .twin import Twin, build_twin
 from .validate import run_all_checks
@@ -448,7 +450,130 @@ def build_twin_tool(s: Session) -> ToolResult:
 # ---- Solve --------------------------------------------------------------------------------
 
 
-def set_pop(s: Session, lon: float | None = None, lat: float | None = None) -> ToolResult:
+def set_pop(
+    s: Session,
+    lon: float | None = None,
+    lat: float | None = None,
+    count: int | None = None,
+    sites: list[list[float]] | None = None,
+) -> ToolResult:
+    """Place the POP, or several when the area holds more units than one POP serves
+    (`pops.max_units`), `count` asks for, or `sites` (the engineer's [lon, lat] list) gives."""
+    r = s.rules
+    homes = s.design.by_kind("home")
+    total = sum(int(h.openftth.get("units", 1)) for h in homes)
+    given = [list(p) for p in (sites or [])]
+    wanted = count or max(1, -(-total // r.pops.max_units))
+    if len(given) > 1 or len(_pinned(s, "pop")) > 1 or (not given and wanted > 1 and lon is None):
+        return _set_pops(s, given, wanted)
+    for h in homes:
+        h.openftth.pop("pop_id", None)
+    if given:
+        lon, lat = given[0]
+    return _set_single_pop(s, lon, lat)
+
+
+def _set_pops(s: Session, given: list[list[float]], wanted: int) -> ToolResult:
+    """Several POPs and the catchment of each: the engineer's sites (or pinned POPs) when there
+    are any, otherwise sites from a weighted k-means; homes split by a capacitated min-cost flow."""
+    s.project.set_stage("solve")
+    twin = _twin(s)
+    r = s.rules
+    before = s.design.copy()
+    homes = sorted(s.design.by_kind("home"), key=lambda h: h.element_uuid)
+    hxy = np.asarray([twin.xy[int(h.openftth["node"])] for h in homes], dtype=float)
+    hunits = np.asarray([int(h.openftth.get("units", 1)) for h in homes], dtype=int)
+    pinned = _pinned(s, "pop")
+    decisions: list[Decision] = []
+    fixed_nodes: list[int] = []
+    keep_ids: list[str | None] = []
+    if given:
+        for lon, lat in given:
+            p = gpd.GeoSeries([Point(lon, lat)], crs=4326).to_crs(twin.crs).iloc[0]
+            node, _d = twin.nearest_node(p.x, p.y)
+            fixed_nodes.append(int(node))
+            keep_ids.append(None)
+        decisions.append(
+            Decision(
+                stage="solve",
+                tool="set_pop",
+                reason=f"{len(given)} POP sites given by the engineer, each snapped to the nearest street node.",
+                values={"pops": len(given)},
+                source="user",
+            )
+        )
+    elif pinned:
+        fixed_nodes = [int(p.openftth["node"]) for p in pinned]
+        keep_ids = [p.element_uuid for p in pinned]
+        decisions.append(_pin_decision("set_pop", pinned, "catchments"))
+    split = split_catchments(
+        hxy,
+        hunits,
+        wanted,
+        r.pops.max_units,
+        fixed=twin.xy[fixed_nodes] if fixed_nodes else None,
+    )
+    nodes = fixed_nodes or [int(twin.nearest_node(x, y)[0]) for x, y in split.centres]
+    if not fixed_nodes:
+        decisions.append(
+            Decision(
+                stage="solve",
+                tool="set_pop",
+                reason=f"{sum(split.units)} units are more than one POP serves ({r.pops.max_units} units), so the area gets "
+                f"{len(nodes)} POPs, placed by a weighted k-means over the homes and snapped to the street.",
+                values={"pops": len(nodes), "max_units": r.pops.max_units},
+                source="rulebook",
+            )
+        )
+    decisions.append(
+        Decision(
+            stage="solve",
+            tool="set_pop",
+            reason="Each home belongs to one POP: a min-cost flow keeps every POP within "
+            f"{max(r.pops.max_units, -(-sum(split.units) // len(nodes)))} units and homes as close to their POP "
+            "as the capacities allow (straight-line distance).",
+            values={"units": split.units},
+            source="solver",
+        )
+    )
+    s.design.remove_where(kind="pop")
+    ids: list[str] = []
+    for i, node in enumerate(nodes):
+        pid = keep_ids[i] if i < len(keep_ids) and keep_ids[i] else s.uid("odf", f"pop:{i + 1}")
+        old = next((p for p in pinned if p.element_uuid == pid), None)
+        s.design.add(
+            Feature(
+                element_uuid=pid,
+                element_type="odf",
+                placement="indoor",
+                geometry=_wgs(twin, twin.node_point(node)),
+                props={"name": f"POP-{i + 1}", "site_name": f"POP-{i + 1}"},
+                openftth={
+                    **(old.openftth if old else {}),
+                    "kind": "pop",
+                    "node": int(node),
+                    "units": int(split.units[i]),
+                    "homes": int(sum(1 for o in split.owner if o == i)),
+                },
+            )
+        )
+        ids.append(pid)
+    for h, o in zip(homes, split.owner, strict=False):
+        h.openftth["pop_id"] = ids[o]
+    s.cache["pop_node"] = int(nodes[0])
+    return _commit(
+        s,
+        ToolResult(
+            tool="set_pop",
+            summary=f"{len(nodes)} POPs: " + ", ".join(f"{u} units" for u in split.units),
+            decisions=decisions,
+            data={"pops": len(nodes), "nodes": [int(n) for n in nodes], "units": split.units},
+        ),
+        before,
+    )
+
+
+def _set_single_pop(s: Session, lon: float | None = None, lat: float | None = None) -> ToolResult:
     s.project.set_stage("solve")
     twin = _twin(s)
     pinned = _pinned(s, "pop")
@@ -699,12 +824,52 @@ def cluster_homes(s: Session, time_limit_s: float = 20.0) -> ToolResult:
     )
 
 
+def _pops(s: Session) -> list[Feature]:
+    """The POPs, in name order (POP, or POP-1, POP-2, …)."""
+    return sorted(s.design.by_kind("pop"), key=lambda p: str(p.props.get("name", "")))
+
+
+def _settle_fat_pops(s: Session) -> None:
+    """With several POPs, a FAT belongs to the POP that most of its units belong to, and its
+    homes follow it: one FAT is never fed from two POPs."""
+    pops = _pops(s)
+    if len(pops) < 2:
+        for f in s.design.by_kind("fat"):
+            f.openftth.pop("pop_id", None)
+        return
+    homes = s.design.by_kind("home")
+    for fat in sorted(s.design.by_kind("fat"), key=lambda f: f.element_uuid):
+        mine = [
+            h
+            for h in homes
+            if fat.element_uuid in (h.openftth.get("fat_ids") or [h.openftth.get("fat_id")])
+        ]
+        votes: dict[str, int] = {}
+        for h in mine:
+            pid = h.openftth.get("pop_id")
+            if pid:
+                votes[pid] = votes.get(pid, 0) + int(h.openftth.get("units", 1))
+        if not votes:
+            continue
+        pid = max(sorted(votes), key=lambda k: votes[k])
+        fat.openftth["pop_id"] = pid
+        for h in mine:
+            h.openftth["pop_id"] = pid
+
+
+def _feeder_tree(s: Session, fdh: Feature | None) -> RoutedTree | None:
+    """The feeder tree that feeds `fdh`: its POP's, or the only one."""
+    pid = fdh.openftth.get("pop_id") if fdh else None
+    return s.trees.get(f"feeder:{pid}") if pid else s.trees.get("feeder")
+
+
 def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
     """Place FDHs (splitter cabinets) over the FATs, capacity in homes served."""
     s.project.set_stage("solve")
     twin = _twin(s)
     r = s.rules
     before = s.design.copy()
+    _settle_fat_pops(s)
     fats = s.design.by_kind("fat")
     pinned = _pinned(s, "fdh")
     pinned_at = {int(f.openftth["node"]): f for f in pinned}
@@ -721,24 +886,55 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
     # Distance is priced as distribution cable only: the trench along the street is needed for
     # the drops anyway, so it must not push the solver towards many small cabinets.
     per_m = r.units.cable_base_per_m + 24 * r.units.cable_per_fiber_m
-    sites, stats = capacitated_sites(
-        twin.graph,
-        twin.xy,
-        demands,
-        capacity=capacity,
-        max_dist_m=r.distances.max_dist_m * FDH_REACH_FACTOR,
-        open_cost=r.units.fdh_288 + r.labour.fdh_install,
-        per_m_cost=per_m,
-        candidate_nodes=candidates,
-        time_limit_s=time_limit_s,
-        k_nearest=1000,
-        fixed_nodes=set(pinned_at),
-    )
-    # The clustering prices distance to the nearest candidate, so a FAT can end up on a cabinet
-    # that is within reach as the crow flies but not along the street: check and move those.
-    sites, moved, stranded = repair_reach(
-        twin.graph, sites, r.distances.max_dist_m, capacity, keep_nodes=set(pinned_at)
-    )
+    # With several POPs each catchment gets its own cabinets, so no cabinet straddles two.
+    pops = _pops(s)
+    fat_pop = {f.element_uuid: f.openftth.get("pop_id") for f in fats}
+    if len(pops) > 1:
+        pop_xy = {p.element_uuid: twin.xy[int(p.openftth["node"])] for p in pops}
+
+        def nearest_pop(node: int) -> str:
+            return min(sorted(pop_xy), key=lambda k: float(np.hypot(*(pop_xy[k] - twin.xy[node]))))
+
+        groups = [
+            (p.element_uuid, [d for d in demands if fat_pop[d.key] == p.element_uuid]) for p in pops
+        ]
+        pin_pop = {n: nearest_pop(n) for n in pinned_at}
+    else:
+        groups = [(None, demands)]
+        pin_pop = {n: None for n in pinned_at}
+    # Cabinets serve FATs along streets only: a bore is the feeder's to take, where routing
+    # weighs its price; reach measured through one would not match the distribution route.
+    streets = _streets_only(twin)
+    sites = []
+    site_pop: dict[int, str | None] = {}
+    statuses: list[str] = []
+    moved = stranded = 0
+    for pid, group in groups:
+        pins = {n for n, p in pin_pop.items() if p == pid}
+        g_sites, g_stats = capacitated_sites(
+            streets,
+            twin.xy,
+            group,
+            capacity=capacity,
+            max_dist_m=r.distances.max_dist_m * FDH_REACH_FACTOR,
+            open_cost=r.units.fdh_288 + r.labour.fdh_install,
+            per_m_cost=per_m,
+            candidate_nodes=candidates,
+            time_limit_s=time_limit_s,
+            k_nearest=1000,
+            fixed_nodes=pins,
+        )
+        # The clustering prices distance to the nearest candidate, so a FAT can end up on a
+        # cabinet within reach as the crow flies but not along the street: check and move those.
+        g_sites, g_moved, g_stranded = repair_reach(
+            streets, g_sites, r.distances.max_dist_m, capacity, keep_nodes=pins
+        )
+        for site in g_sites:
+            site_pop[id(site)] = pid
+        sites += g_sites
+        statuses += g_stats.status
+        moved += g_moved
+        stranded += g_stranded
     s.design.remove_where(kind="fdh")
     fat_by_id = {f.element_uuid: f for f in fats}
     for i, site in enumerate(sites):
@@ -772,6 +968,7 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
                     "units": site.units,
                     "capacity": chosen,
                     "fats": len(site.members),
+                    **({"pop_id": site_pop[id(site)]} if site_pop.get(id(site)) else {}),
                     **(
                         {
                             "placed_by": "engineer",
@@ -794,7 +991,7 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
         Decision(
             stage="solve",
             tool="place_fdh",
-            reason=f"FDHs placed by capacitated clustering of FATs (CP-SAT, status {','.join(stats.status)}) at street intersections, ≤ {capacity} units per cabinet ({r.fdh.max_fill_pct:g}% of {cap_max}), each FAT within {r.distances.max_dist_m:g} m; cabinet size then shrunk to the smallest that fits.",
+            reason=f"FDHs placed by capacitated clustering of FATs (CP-SAT, status {','.join(statuses)}) at street intersections, ≤ {capacity} units per cabinet ({r.fdh.max_fill_pct:g}% of {cap_max}), each FAT within {r.distances.max_dist_m:g} m; cabinet size then shrunk to the smallest that fits.",
             values={
                 "fdhs": len(sites),
                 "capacity_used": capacity,
@@ -896,43 +1093,72 @@ def route_feeder(s: Session) -> ToolResult:
     twin = _twin(s)
     r = s.rules
     before = s.design.copy()
-    pop = s.cache.get("pop_node")
-    if pop is None:
-        pop = int(s.design.by_kind("pop")[0].openftth["node"])
+    pops = _pops(s)
     fdhs = s.design.by_kind("fdh")
-    terminals: dict[int, int] = {}
-    for f in fdhs:
-        node = int(f.openftth["node"])
-        terminals[node] = terminals.get(node, 0) + int(f.openftth.get("pons", 1))
-    tree = route_tree(twin.graph, pop, terminals)
-    s.trees["feeder"] = tree
+    multi = len(pops) > 1
+    for key in [k for k in s.trees if k.startswith("feeder")]:
+        del s.trees[key]
     s.design.remove_where(kind="feeder")
-    n = _emit_cable_sections(s, tree, "feeder", r.fibers.feeder, prefix="FDR")
-    for f in fdhs:
-        f.openftth["feeder_path_m"] = round(_path_length(twin, tree, int(f.openftth["node"])), 1)
+    n = 0
+    length = 0.0
+    unreachable = 0
+    per_pop: list[str] = []
+    for pop in pops:
+        mine = [f for f in fdhs if not multi or f.openftth.get("pop_id") == pop.element_uuid]
+        terminals: dict[int, int] = {}
+        for f in mine:
+            node = int(f.openftth["node"])
+            terminals[node] = terminals.get(node, 0) + int(f.openftth.get("pons", 1))
+        tree = route_tree(twin.graph, int(pop.openftth["node"]), terminals)
+        s.trees[f"feeder:{pop.element_uuid}" if multi else "feeder"] = tree
+        n += _emit_cable_sections(
+            s,
+            tree,
+            "feeder",
+            r.fibers.feeder,
+            prefix=f"{pop.props['name']}-FDR" if multi else "FDR",
+            pop_id=pop.element_uuid if multi else None,
+        )
+        for f in mine:
+            f.openftth["feeder_path_m"] = round(
+                _path_length(twin, tree, int(f.openftth["node"])), 1
+            )
+        length += tree.total_length_m()
+        unreachable += len(tree.unreachable)
+        per_pop.append(
+            f"{pop.props['name']} {tree.total_length_m():.0f} m to {len(terminals)} FDH(s)"
+        )
+    if pops:
+        s.cache["pop_node"] = int(pops[0].openftth["node"])
     crossing_decisions = _sync_crossings(s, "route_feeder")
     decisions = [
         Decision(
             stage="solve",
             tool="route_feeder",
-            reason="Feeder routed POP → FDHs as a min-cost Steiner tree over the street graph (trench cost per metre by surface); fibre count per section = downstream PONs + spare, rounded up the feeder ladder.",
+            reason="Feeder routed POP → FDHs as a min-cost Steiner tree over the street graph (trench cost per metre by surface); fibre count per section = downstream PONs + spare, rounded up the feeder ladder."
+            + (" Each POP feeds only the cabinets in its own catchment." if multi else ""),
             values={
                 "sections": n,
-                "length_m": round(tree.total_length_m(), 1),
-                "unreachable_fdhs": len(tree.unreachable),
+                "length_m": round(length, 1),
+                "unreachable_fdhs": unreachable,
+                **({"pops": len(pops)} if multi else {}),
             },
         )
     ] + crossing_decisions
+    terminals_total = len({int(f.openftth["node"]) for f in fdhs})
+    summary = (
+        f"feeder {length:.0f} m in {n} sections: " + "; ".join(per_pop)
+        if multi
+        else f"feeder {length:.0f} m in {n} sections to {terminals_total} FDH(s)"
+    )
     return _commit(
         s,
         ToolResult(
             tool="route_feeder",
-            summary=f"feeder {tree.total_length_m():.0f} m in {n} sections to {len(terminals)} FDH(s)",
+            summary=summary,
             decisions=decisions,
-            warnings=[f"{len(tree.unreachable)} FDH(s) unreachable from the POP"]
-            if tree.unreachable
-            else [],
-            data={"length_m": round(tree.total_length_m(), 1)},
+            warnings=[f"{unreachable} FDH(s) unreachable from their POP"] if unreachable else [],
+            data={"length_m": round(length, 1)},
         ),
         before,
     )
@@ -946,6 +1172,7 @@ def route_distribution(s: Session) -> ToolResult:
     s.design.remove_where(kind="distribution")
     total = 0.0
     n = 0
+    grafted = 0
     homes_by_fat: dict[str, list[Feature]] = {}
     for h in s.design.by_kind("home"):
         homes_by_fat.setdefault(h.openftth.get("fat_id", ""), []).append(h)
@@ -957,7 +1184,10 @@ def route_distribution(s: Session) -> ToolResult:
         for f in fats:
             node = int(f.openftth["node"])
             terminals[node] = terminals.get(node, 0) + int(f.openftth["units"])
-        tree = route_tree(twin.graph, int(fdh.openftth["node"]), terminals)
+        tree = route_tree(
+            twin.graph, int(fdh.openftth["node"]), terminals, max_path_m=r.distances.max_dist_m
+        )
+        grafted += len(tree.grafted)
         s.trees[fdh.element_uuid] = tree
         n += _emit_cable_sections(
             s,
@@ -980,7 +1210,20 @@ def route_distribution(s: Session) -> ToolResult:
             reason="Per FDH, distribution routed FDH → FATs as a min-cost Steiner tree; fibre count per section = downstream units (one fibre per home in a centralised-split design) + spare, rounded up the distribution ladder.",
             values={"sections": n, "length_m": round(total, 1)},
         )
-    ] + _sync_crossings(s, "route_distribution")
+    ]
+    if grafted:
+        decisions.append(
+            Decision(
+                stage="solve",
+                tool="route_distribution",
+                reason=f"{grafted} FAT(s) were further than max_dist_m ({r.distances.max_dist_m:g} m) along the "
+                "cheapest tree, though within it along the street; their cable follows the shortest street "
+                "path from the FDH instead, at some extra trench cost.",
+                values={"grafted": grafted},
+                source="solver",
+            )
+        )
+    decisions += _sync_crossings(s, "route_distribution")
     return _commit(
         s,
         ToolResult(
@@ -1161,7 +1404,7 @@ def route_drops(s: Session) -> ToolResult:
             h.openftth["path_to_pop_m"] = round(dist_m + feed_m, 1)
             tree = s.trees.get(fat.openftth.get("fdh_id", ""))
             closures = _closures_on_path(tree, int(fat.openftth["node"])) if tree else 0
-            feeder_tree = s.trees.get("feeder")
+            feeder_tree = _feeder_tree(s, fdh)
             closures += (
                 _closures_on_path(feeder_tree, int(fdh.openftth["node"]))
                 if (feeder_tree and fdh)
@@ -1191,7 +1434,7 @@ def route_drops(s: Session) -> ToolResult:
         # Splices on the path: FAT, FDH (×2: distribution in, feeder in) + one per closure passed.
         tree = s.trees.get(fat.openftth.get("fdh_id", ""))
         closures = _closures_on_path(tree, fn) if tree else 0
-        feeder_tree = s.trees.get("feeder")
+        feeder_tree = _feeder_tree(s, fdh)
         closures += (
             _closures_on_path(feeder_tree, int(fdh.openftth["node"]))
             if (feeder_tree and fdh)
@@ -1257,12 +1500,12 @@ def place_chambers(s: Session) -> ToolResult:
     s.design.remove_where(kind="chamber")
     fdh_nodes = {int(f.openftth["node"]) for f in s.design.by_kind("fdh")}
     fat_nodes = {int(f.openftth["node"]) for f in s.design.by_kind("fat")}
-    pop_node = s.cache.get("pop_node")
+    pop_nodes = {int(p.openftth["node"]) for p in s.design.by_kind("pop")}
     branch: dict[int, int] = {}  # node → max downstream fibres passing
     for key, tree in s.trees.items():
         deg = dict(tree.tree.degree)
         for node, d in deg.items():
-            if d >= 3 or (node in fat_nodes and key != "feeder"):
+            if d >= 3 or (node in fat_nodes and not key.startswith("feeder")):
                 fibres = max(
                     (u for (p, c), u in tree.downstream_units.items() if p == node or c == node),
                     default=0,
@@ -1270,7 +1513,7 @@ def place_chambers(s: Session) -> ToolResult:
                 branch[node] = max(branch.get(node, 0), fibres)
     n_small = n_large = 0
     for node in sorted(set(branch) | fdh_nodes):
-        if node == pop_node:
+        if node in pop_nodes:
             continue
         large = node in fdh_nodes
         size = next(
@@ -1488,6 +1731,7 @@ def _emit_cable_sections(
     ladder: list[int],
     prefix: str,
     fdh_id: str | None = None,
+    pop_id: str | None = None,
 ) -> int:
     twin = _twin(s)
     r = s.rules
@@ -1535,6 +1779,7 @@ def _emit_cable_sections(
                     "surfaces": {k: round(v, 1) for k, v in sec.surfaces.items()},
                     "road_crossings": crossings,
                     "fdh_id": fdh_id,
+                    **({"pop_id": pop_id} if pop_id else {}),
                     "trench_cost": round(sec.cost, 2),
                 },
             )
@@ -1917,16 +2162,26 @@ def assign_fibers(s: Session) -> ToolResult:
                     )
 
     # ---- feeder: one fibre per PON ---------------------------------------------------------
-    pops = s.design.by_kind("pop")
-    if pops:
-        pop = pops[0]
+    pops = _pops(s)
+    multi = len(pops) > 1
+    for pop in pops:
+        # One fibre plan per POP; with several, ids carry the POP so their numbers never collide.
+        fk = f"feeder:{pop.element_uuid}" if multi else "feeder"
         pop_node = int(pop.openftth["node"])
-        secs = s.design.by_kind("feeder")
+        secs = [
+            c
+            for c in s.design.by_kind("feeder")
+            if not multi or c.openftth.get("pop_id") == pop.element_uuid
+        ]
         fsecs = [
             FSection(c.element_uuid, _node_of(c.props["from_label"]), _node_of(c.props["to_label"]))
             for c in secs
         ]
-        fdhs = s.design.by_kind("fdh")
+        fdhs = [
+            f
+            for f in s.design.by_kind("fdh")
+            if not multi or f.openftth.get("pop_id") == pop.element_uuid
+        ]
         demand_at = {}
         for f in fdhs:
             node = int(f.openftth["node"])
@@ -1948,8 +2203,8 @@ def assign_fibers(s: Session) -> ToolResult:
                     if out_sec:
                         t, fb = tube_fiber(tf.local(out_sec, g))
                         connect(
-                            point_for("feeder", pop_node, pop.element_uuid),
-                            f"feeder:pop:{g}",
+                            point_for(fk, pop_node, pop.element_uuid),
+                            f"{fk}:pop:{g}",
                             source_element_uuid=pop.element_uuid,
                             source_port=g,
                             source_side="OLT",
@@ -1962,8 +2217,8 @@ def assign_fibers(s: Session) -> ToolResult:
                     if in_sec:
                         t, fb = tube_fiber(tf.local(in_sec, g))
                         connect(
-                            point_for("feeder", node, f.element_uuid),
-                            f"feeder:fdh:{g}",
+                            point_for(fk, node, f.element_uuid),
+                            f"{fk}:fdh:{g}",
                             source_cable_uuid=in_sec,
                             source_tube=t,
                             source_fiber=fb,
@@ -1974,8 +2229,8 @@ def assign_fibers(s: Session) -> ToolResult:
                     elif node == pop_node:
                         # FDH standing at the POP: OLT port patched straight to the splitter.
                         connect(
-                            point_for("feeder", node, pop.element_uuid),
-                            f"feeder:fdh:{g}",
+                            point_for(fk, node, pop.element_uuid),
+                            f"{fk}:fdh:{g}",
                             source_element_uuid=pop.element_uuid,
                             source_port=g,
                             source_side="OLT",
@@ -2001,8 +2256,8 @@ def assign_fibers(s: Session) -> ToolResult:
                     ti, fi = tube_fiber(tf.local(in_sec, g))
                     to, fo = tube_fiber(tf.local(out_sec, g))
                     connect(
-                        point_for("feeder", node, fallback),
-                        f"feeder:thru:{node}:{g}",
+                        point_for(fk, node, fallback),
+                        f"{fk}:thru:{node}:{g}",
                         source_cable_uuid=in_sec,
                         source_tube=ti,
                         source_fiber=fi,

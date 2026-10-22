@@ -99,6 +99,14 @@ class ConnectorsPerPath(StrictModel):
     ont: int = 1
 
 
+class Pops(StrictModel):
+    max_units: int = Field(
+        4096,
+        ge=1,
+        description="Units one POP (OLT site) serves; an area with more gets several POPs, each with its own catchment",
+    )
+
+
 class Fdh(StrictModel):
     capacities: list[int] = Field([288, 576], description="FDH sizes in splitter output ports")
     max_fill_pct: float = Field(80.0, description="Max initial fill of an FDH")
@@ -236,6 +244,7 @@ class Rulebook(StrictModel):
     distances: Distances = Distances()
     loss_db: LossDb = LossDb()
     connectors_per_path: ConnectorsPerPath = ConnectorsPerPath()
+    pops: Pops = Pops()
     fdh: Fdh = Fdh()
     fat: Fat = Fat()
     chambers: Chambers = Chambers()

@@ -28,6 +28,7 @@ called anything but "draft".
 | `routing` | twin | OSM highway classes no cable may follow (motorways, staircases, planned roads, …); those ways never enter the route graph |
 | `surfaces`, `highway_to_surface` | twin, boq | trench + reinstatement cost per metre by surface; which surface each OSM highway class trenches in |
 | `crossings` | twin, solve, boq | the price of a directional drill under a `motorway`, `railway`, `water` or `unmapped` obstacle (`fixed` for the permit and pits, `per_m` for the drilling) and `max_length_m`, the longest bore offered |
+| `pops` | solve | `max_units`, the units one POP (OLT site) serves; an area with more gets several POPs, each with its own catchment |
 | `units`, `labour` | boq | unit prices |
 
 ## Crossings (twin, solve)
@@ -55,3 +56,13 @@ must be ≤ pon.budget_db, and within one PON max − min ≤ pon.max_differenti
 
 Splice count is derived from the path (FAT, FDH ×2, plus one per branch closure passed), not a
 constant.
+
+## Several POPs (solve)
+
+`set_pop` places one POP while the area holds at most `pops.max_units` units, as before. Beyond
+that, or when asked for a `count` or given `sites`, it places several: a weighted k-means over
+the homes picks the sites (snapped to the street), and a min-cost flow gives every home to one
+POP, keeping each within its capacity and the homes as close to their POP as the capacities
+allow. A FAT belongs to the POP most of its units belong to; cabinets are placed within each
+catchment, so none is fed from two POPs; each POP routes its own feeder tree and numbers its
+own fibres. The elements carry `pop_id`, and a trace from any home ends at its own POP.

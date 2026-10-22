@@ -42,6 +42,9 @@ loss_db:
 
 connectors_per_path: {odf: 2, fdh_in: 1, fdh_out: 1, fat: 1, ont: 1}
 
+pops:
+  max_units: 4096      # units one POP (OLT site) serves; more units get more POPs
+
 fdh:
   capacities: [288, 576]
   max_fill_pct: 80          # assumed

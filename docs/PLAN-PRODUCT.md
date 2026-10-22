@@ -21,6 +21,7 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
 
 ### P2 — Design breadth (engine `solve/`, rulebook)
 - Multiple POPs/OLT sites (given or chosen), POP catchment split.
+  *Done:* POPs by capacity, count or given sites, capacitated catchments, feeder and fibres per POP.
 - Architectures: centralised split (today), cascaded split (rulebook `pon.cascade` exists), point-to-point; XGS-PON budgets.
 - Route types by rulebook and data: underground trench, existing duct reuse (preferred by cost), aerial on poles, façade along building fronts with wall distribution points and façade→underground transitions; each choice priced and explained.
 - Phasing: take-rate and build phases (design all, build by phase), BOQ per phase.

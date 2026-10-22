@@ -492,6 +492,20 @@
       "title": "Pon",
       "type": "object"
     },
+    "Pops": {
+      "additionalProperties": false,
+      "properties": {
+        "max_units": {
+          "default": 4096,
+          "description": "Units one POP (OLT site) serves; an area with more gets several POPs, each with its own catchment",
+          "minimum": 1,
+          "title": "Max Units",
+          "type": "integer"
+        }
+      },
+      "title": "Pops",
+      "type": "object"
+    },
     "Routing": {
       "additionalProperties": false,
       "properties": {
@@ -799,6 +813,12 @@
         "fdh_out": 1,
         "fat": 1,
         "ont": 1
+      }
+    },
+    "pops": {
+      "$ref": "#/$defs/Pops",
+      "default": {
+        "max_units": 4096
       }
     },
     "fdh": {
