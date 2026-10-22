@@ -4,7 +4,33 @@
  */
 
 import { spawn } from "node:child_process";
-import type { EngineConfig } from "./config.ts";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { EngineConfig, HarnessConfig } from "./config.ts";
+
+/** The layers in data files and the import profile the engine proposes for them. */
+export function inspectData(cfg: EngineConfig, paths: string[]): Promise<Record<string, unknown>> {
+  return runEngineJson(cfg, ["inspect", "--json", ...paths]);
+}
+
+/** Save an import profile under the data dir, read its data and return the quality report. */
+export async function saveImportProfile(cfg: HarnessConfig, name: string, profile: Record<string, unknown>, rulebook?: string): Promise<{ path: string; report: Record<string, unknown> }> {
+  const safe = name.replace(/[^\w.-]+/g, "-").slice(0, 60) || "import";
+  const dir = join(cfg.dataDir, "profiles");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${safe}.yaml`);
+  // JSON is valid YAML: the engine reads this file as it is.
+  writeFileSync(path, JSON.stringify({ ...profile, name: safe }, null, 2) + "\n", "utf8");
+  const report = await runEngineJson<Record<string, unknown>>(cfg.engine, ["profile-check", path, "--json", "--rulebook", rulebook ?? cfg.engine.rulebook], 300_000);
+  return { path, report };
+}
+
+/** The import profiles saved under the data dir. */
+export function listImportProfiles(cfg: HarnessConfig): Array<{ name: string; path: string }> {
+  const dir = join(cfg.dataDir, "profiles");
+  const names = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort() : [];
+  return names.map((f) => ({ name: f.replace(/\.yaml$/, ""), path: join(dir, f) }));
+}
 
 /** Run `openftth-engine <args>` and parse the JSON it prints on its last stdout line. */
 export function runEngineJson<T>(cfg: EngineConfig, args: string[], timeoutMs = 120_000): Promise<T> {

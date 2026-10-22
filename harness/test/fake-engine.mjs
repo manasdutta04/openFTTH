@@ -46,6 +46,7 @@ function makeServer() {
   s.registerTool("forbid_street", { description: "no-dig", inputSchema: { osm_id: z.string(), reason: z.string() } }, async ({ osm_id, reason }) => ({ content: [{ type: "text", text: JSON.stringify(steer("forbid_street", reason, { osm_id })) }] }));
   s.registerTool("trace_fibre", { description: "trace", inputSchema: { element_uuid: z.string() } }, async ({ element_uuid }) => ({ content: [{ type: "text", text: JSON.stringify({ tool: "trace_fibre", summary: `home ${element_uuid}: OLT port 3`, data: { reaches_olt: true, olt_port: 3, steps: [{ element: "pop", name: "POP", kind: "pop", side: "OLT", port: 3 }, { element: element_uuid, name: "drop", kind: "drop", tube: 1, fiber: 1 }] } }) }] }));
   s.registerTool("add_trench", { description: "risky", inputSchema: { approval_id: z.string().optional() } }, async ({ approval_id }) => ({ content: [{ type: "text", text: JSON.stringify(approval_id ? { tool: "add_trench", summary: `trench added under ${approval_id}` } : { error: "approval_required", tool: "add_trench" }) }] }));
+  s.registerTool("export_for_construction", { description: "risky", inputSchema: { approval_id: z.string().optional() } }, async ({ approval_id }) => ({ content: [{ type: "text", text: JSON.stringify(approval_id ? { approved_version: versions[0].version, approval_id } : { error: "approval_required", tool: "export_for_construction" }) }] }));
   return s;
 }
 

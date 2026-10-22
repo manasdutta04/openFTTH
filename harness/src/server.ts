@@ -10,8 +10,8 @@ import type { Engines } from "./engines.ts";
 import { listRulebooks, type Crew } from "./crew.ts";
 import { findRepoRoot } from "./config.ts";
 import { join } from "node:path";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { runEngineJson } from "./engine-cli.ts";
+import { inspectData, listImportProfiles, saveImportProfile } from "./engine-cli.ts";
+import { connectionInfo, handleMcpRequest, loadMcpSettings, saveMcpSettings, updateMcpSettings } from "./mcp-public.ts";
 import type { EventBus } from "./events.ts";
 import { DISALLOWED_FOR_FOLKS, HttpError, type ProjectService } from "./project.ts";
 import type { Store } from "./store.ts";
@@ -100,7 +100,7 @@ export function buildServer(d: ServerDeps): Server {
     const paths = Array.isArray(body.paths) ? body.paths.filter((p: unknown) => typeof p === "string") : [];
     if (!paths.length) throw new HttpError(400, "paths is required");
     try {
-      json(res, 200, await runEngineJson(d.cfg.engine, ["inspect", "--json", ...paths]));
+      json(res, 200, await inspectData(d.cfg.engine, paths));
     } catch (err) {
       throw new HttpError(422, (err as Error).message);
     }
@@ -108,24 +108,14 @@ export function buildServer(d: ServerDeps): Server {
   add("POST", "/api/import/profile", async (req, res) => {
     const body = await readJson(req);
     if (!body.profile || typeof body.profile !== "object") throw new HttpError(400, "profile is required");
-    const name = String(body.name ?? (body.profile as { name?: string }).name ?? "import").replace(/[^\w.-]+/g, "-").slice(0, 60) || "import";
-    const dir = join(d.cfg.dataDir, "profiles");
-    mkdirSync(dir, { recursive: true });
-    const path = join(dir, `${name}.yaml`);
-    // JSON is valid YAML: the engine reads this file as it is.
-    writeFileSync(path, JSON.stringify({ ...body.profile, name }, null, 2) + "\n", "utf8");
+    const name = String(body.name ?? (body.profile as { name?: string }).name ?? "import");
     try {
-      const report = await runEngineJson(d.cfg.engine, ["profile-check", path, "--json", "--rulebook", String(body.rulebook ?? d.cfg.engine.rulebook)], 300_000);
-      json(res, 200, { path, report });
+      json(res, 200, await saveImportProfile(d.cfg, name, body.profile, typeof body.rulebook === "string" ? body.rulebook : undefined));
     } catch (err) {
       throw new HttpError(422, (err as Error).message);
     }
   });
-  add("GET", "/api/import/profiles", (_req, res) => {
-    const dir = join(d.cfg.dataDir, "profiles");
-    const names = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort() : [];
-    json(res, 200, names.map((f) => ({ name: f.replace(/\.yaml$/, ""), path: join(dir, f) })));
-  });
+  add("GET", "/api/import/profiles", (_req, res) => json(res, 200, listImportProfiles(d.cfg)));
   add("DELETE", "/api/project", async (req, res) => {
     const purge = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("purge");
     if (purge === "1" || purge === "true") await d.projects.purge();
@@ -195,6 +185,24 @@ export function buildServer(d: ServerDeps): Server {
   add("GET", "/api/backstage", (_req, res, _p, url) => {
     const id = d.projects.current?.id;
     json(res, 200, id ? d.store.readRuntime(id, Number(url.searchParams.get("limit") ?? 200)) : []);
+  });
+
+  // ---- public MCP server for other AI apps (its own token, off until the engineer turns it on)
+  const mcpDeps = { cfg: d.cfg, approvals: d.approvals, engines: d.engines, store: d.store, crew: d.crew, get projects() {
+    return d.projects;
+  } };
+  for (const method of ["POST", "GET", "DELETE"]) {
+    add(method, "/mcp", async (req, res) => handleMcpRequest(mcpDeps, req, res, method === "POST" ? await readJson(req) : undefined), "none");
+  }
+  add("GET", "/api/mcp", (req, res) => {
+    json(res, 200, connectionInfo(d.cfg, loadMcpSettings(d.cfg.dataDir), mcpUrl(req)));
+  });
+  add("POST", "/api/mcp", async (req, res) => {
+    const body = await readJson(req);
+    const s = updateMcpSettings(d.cfg.dataDir, { ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}), rotate: body.rotate === true });
+    const url = mcpUrl(req);
+    saveMcpSettings(d.cfg.dataDir, { ...s, url });
+    json(res, 200, connectionInfo(d.cfg, s, url));
   });
 
   // ---- internal (comms token): permission proxy and engine ------------------------------
@@ -267,6 +275,10 @@ function isLoopback(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   const okOrigin = !origin || /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin);
   return okHost && okOrigin;
+}
+
+function mcpUrl(req: IncomingMessage): string {
+  return `http://${req.headers.host ?? "127.0.0.1"}/mcp`;
 }
 
 function bearer(req: IncomingMessage): string | null {

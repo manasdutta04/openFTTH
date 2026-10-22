@@ -242,6 +242,7 @@ export class ProjectService {
   }
 
   private automating = false;
+  private autoRun: Promise<void> | null = null;
 
   /**
    * Design the open project from its inputs to deliverables with no AI: the engine's tools in
@@ -259,7 +260,7 @@ export class ProjectService {
     this.automating = true;
     const started = Date.now();
     const total = AUTODESIGN_STEPS.length;
-    void room
+    this.autoRun = room
       .exclusive(async () => {
         room.note(`Automatic design started: ${total} engine steps, no AI involved.`, "text", { automatic: true });
         let last: Record<string, unknown> | null = null;
@@ -305,6 +306,32 @@ export class ProjectService {
         this.automating = false;
       });
     return { steps: total };
+  }
+
+  /** Resolves when the automatic design that is running (if any) has stopped. */
+  async whenAutodesignDone(): Promise<void> {
+    await this.autoRun;
+  }
+
+  /**
+   * One engine tool for a caller outside the crew (the public MCP server). Tools that change the
+   * design take the room for their run, so they never interleave with a crew turn.
+   */
+  async runTool<T = Record<string, unknown>>(tool: string, args: Record<string, unknown> = {}, opts: { exclusive?: boolean } = {}): Promise<T> {
+    const engine = this.requireEngine();
+    if (!opts.exclusive) return engine.call<T>(tool, args);
+    const room = this.room;
+    if (!room) throw new HttpError(409, "no project open");
+    if (this.automating || room.busy) throw new HttpError(409, "the crew is working; wait for the turn to finish");
+    return room.exclusive(async () => {
+      const out = await engine.call<T>(tool, args);
+      const o = out as Record<string, unknown> | null;
+      if (o && typeof o.version === "string" && o.version) {
+        this.d.bus.emit("design.version", { version: o.version, tool, summary: o.summary ?? null, changes: o.changes ?? null });
+      }
+      await room.refreshStage();
+      return out;
+    });
   }
 
   get isAutomating(): boolean {

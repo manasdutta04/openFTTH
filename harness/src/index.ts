@@ -11,6 +11,7 @@ import { loadCrew } from "./crew.ts";
 import { selectDriver } from "./drivers/index.ts";
 import { Engines } from "./engines.ts";
 import { EventBus } from "./events.ts";
+import { loadMcpSettings, saveMcpSettings } from "./mcp-public.ts";
 import { ProjectService } from "./project.ts";
 import { buildServer } from "./server.ts";
 import { Store } from "./store.ts";
@@ -84,6 +85,10 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
     log,
     ...(opts.engineAttachUrl ? { engineAttachUrl: opts.engineAttachUrl } : {}),
   });
+
+  // The port changes per launch: the stdio bridge other AI apps start reads it from here.
+  const mcp = loadMcpSettings(cfg.dataDir);
+  if (mcp.token) saveMcpSettings(cfg.dataDir, { ...mcp, url: `${url}/mcp` });
 
   log(`listening on ${url} (data ${cfg.dataDir}, crew ${crew.name})`);
   return {
