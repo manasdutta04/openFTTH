@@ -171,8 +171,30 @@ class Surfaces(StrictModel):
         return sc.trench_per_m + sc.reinstatement_per_m
 
 
+class BarrierCrossing(StrictModel):
+    fixed: float = Field(
+        description="Permit, launch and reception pits, mobilisation: once per crossing"
+    )
+    per_m: float = Field(description="Directional drilling under the barrier, per metre")
+
+
 class Crossings(StrictModel):
     road_drill_per_m: float = 180.0
+    max_length_m: float = Field(
+        80.0,
+        description="Longest bore the engine offers under a motorway, railway or river; longer gaps are left to the detour",
+    )
+    motorway: BarrierCrossing = BarrierCrossing(fixed=12000.0, per_m=350.0)
+    railway: BarrierCrossing = BarrierCrossing(fixed=18000.0, per_m=450.0)
+    water: BarrierCrossing = BarrierCrossing(fixed=9000.0, per_m=300.0)
+    unmapped: BarrierCrossing = Field(
+        BarrierCrossing(fixed=12000.0, per_m=400.0),
+        description="An obstacle the map does not show (streets close together that do not join); priced cautiously",
+    )
+
+    def cost(self, barrier: str, length_m: float) -> float:
+        c: BarrierCrossing = getattr(self, barrier)
+        return c.fixed + c.per_m * length_m
 
 
 class UnitCosts(StrictModel):

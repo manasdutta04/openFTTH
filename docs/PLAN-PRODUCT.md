@@ -25,6 +25,8 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
 - Route types by rulebook and data: underground trench, existing duct reuse (preferred by cost), aerial on poles, façade along building fronts with wall distribution points and façade→underground transitions; each choice priced and explained.
 - Phasing: take-rate and build phases (design all, build by phase), BOQ per phase.
 - Constraints: crossings (rail/water/major road) with permit cost, max cabinet fill per operator pack, keep-outs.
+  *Crossings done:* priced bores under motorways, railways, rivers and unmapped obstacles,
+  taken only when cheaper than going round, with the detour recorded (see RULEBOOK.md).
 - Gate: a terraced street gets façade where allowed, ducts reused where present, aerial where poles exist; scenario table compares them.
 
 ### P3 — Professional manual editing (app + engine edit tools)

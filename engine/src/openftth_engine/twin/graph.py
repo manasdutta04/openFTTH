@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import geopandas as gpd
 import networkx as nx
 import numpy as np
+import pandas as pd
 from pyproj import CRS
 from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point
@@ -124,8 +125,15 @@ class Twin:
         return int(stale.sum())
 
 
-def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules: Rulebook) -> Twin:
-    """Project to a metric CRS, build the street graph, snap homes to it."""
+def build_twin(
+    streets_wgs: gpd.GeoDataFrame,
+    homes_wgs: gpd.GeoDataFrame,
+    rules: Rulebook,
+    barriers_wgs: gpd.GeoDataFrame | None = None,
+    buildings_wgs: gpd.GeoDataFrame | None = None,
+) -> Twin:
+    """Project to a metric CRS, build the street graph, offer priced crossings under the
+    barriers (motorways, railways, rivers) and snap homes to it."""
     if streets_wgs.empty:
         raise ValueError("no streets in the area; cannot build a twin")
     crs = streets_wgs.estimate_utm_crs()
@@ -145,6 +153,7 @@ def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules
                 source="rulebook",
             )
         )
+    barriers = _barrier_lines(streets_wgs, barriers_wgs, crs)
     streets_wgs = streets_wgs[keep]
     if streets_wgs.empty:
         raise ValueError("no routable streets in the area; cannot build a twin")
@@ -209,7 +218,64 @@ def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules
                     osm_id=row.osm_id,
                 )
 
+    joined = _join_dead_ends(G, xy)
+    if joined:
+        decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{joined} street end(s) stopping within {DEAD_END_SNAP_M:g} m of another street, "
+                "without a shared vertex, were joined to it: street layers from CAD or GIS exports "
+                "often leave junctions unsplit.",
+                values={"joined_ends": joined},
+                source="assumption",
+            )
+        )
     _link_ducts(G, xy, rules)
+    offered = _add_crossings(G, xy, barriers, rules)
+    if offered:
+        kinds = sorted({k for k, _ in offered})
+        decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{len(offered)} crossing(s) offered under the {', '.join(kinds)} where streets on both sides are "
+                f"within {rules.crossings.max_length_m:g} m; each is priced as a directional drill (a fixed cost for the "
+                "permit and pits plus a cost per metre), so routing takes one only when it is cheaper than going round.",
+                values={"crossings_offered": len(offered), "barriers": kinds},
+                source="rulebook",
+            )
+        )
+    buildings = (
+        buildings_wgs.to_crs(crs) if buildings_wgs is not None and not buildings_wgs.empty else None
+    )
+    found = _add_gap_crossings(G, xy, buildings, rules)
+    gaps = [k for k, kind in found if kind == "unmapped"]
+    joins = [k for k, kind in found if kind == "join"]
+    if joins:
+        decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{len(joins)} place(s) where two streets come within {MAPPING_GAP_M:g} m without "
+                "meeting in the map were joined as street: a gap that small is a slip in the map data.",
+                values={"joins": len(joins)},
+                source="assumption",
+            )
+        )
+    if gaps:
+        decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{len(gaps)} crossing(s) offered where streets come within "
+                f"{rules.crossings.max_length_m:g} m of each other but do not join within {GAP_REACH_M:g} m: "
+                "something the map does not show lies between them (a canal, a railway, private land). "
+                "Each is priced as a directional drill under an unmapped obstacle; check it on site.",
+                values={"crossings_offered": len(gaps)},
+                source="assumption",
+            )
+        )
     xy_arr = np.asarray(xy, dtype=float)
 
     # Keep the largest connected component; report the rest as a data gap.
@@ -252,6 +318,273 @@ def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules
             )
     twin.homes = homes
     return twin
+
+
+MOTORWAY_CLASSES = ("motorway", "motorway_link", "trunk", "trunk_link")
+CROSSING_STEP_M = 30.0  # how often along a barrier the engine looks for a crossing
+CROSSING_SPACING_M = 150.0  # at most one crossing per this stretch of one barrier
+
+
+def _barrier_lines(
+    streets_wgs: gpd.GeoDataFrame, barriers_wgs: gpd.GeoDataFrame | None, crs: CRS
+) -> gpd.GeoDataFrame:
+    """Motorways from the streets and railways/rivers from the import, projected, in a fixed order."""
+    roads = streets_wgs[streets_wgs["highway"].astype(str).isin(MOTORWAY_CLASSES)]
+    parts = [
+        gpd.GeoDataFrame(
+            {"kind": "motorway", "osm_id": roads["osm_id"].astype(str).values},
+            geometry=roads.geometry.values,
+            crs=streets_wgs.crs,
+        )
+    ]
+    if barriers_wgs is not None and not barriers_wgs.empty:
+        parts.append(barriers_wgs[["kind", "osm_id", "geometry"]].astype({"osm_id": str}))
+    out = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), geometry="geometry", crs=4326)
+    out = out[out.geometry.notna() & ~out.geometry.is_empty].explode(
+        index_parts=False, ignore_index=True
+    )
+    return out.to_crs(crs).sort_values(["kind", "osm_id"], kind="stable").reset_index(drop=True)
+
+
+def _add_crossings(
+    G: nx.Graph, xy: list[tuple[float, float]], barriers: gpd.GeoDataFrame, rules: Rulebook
+) -> list[tuple[str, tuple[int, int]]]:
+    """Offer a bore under a barrier wherever street nodes face each other across it.
+
+    Walking each barrier line every CROSSING_STEP_M, the closest pair of street nodes on opposite
+    sides whose straight link crosses the line and is at most `crossings.max_length_m` long becomes
+    a candidate. A candidate is dropped when the streets already join within a short walk (a bridge
+    or underpass is close), and kept crossings of one kind of barrier are at least CROSSING_SPACING_M
+    apart. Each kept one is an edge whose cost is the rulebook's drilling price.
+    """
+    if barriers.empty or G.number_of_nodes() == 0:
+        return []
+    max_len = rules.crossings.max_length_m
+    nodes = np.fromiter(sorted(G.nodes), dtype=int)
+    pts = np.asarray([xy[n] for n in nodes], dtype=float)
+    tree = cKDTree(pts)
+    offered: list[tuple[str, tuple[int, int]]] = []
+    taken: set[tuple[int, int]] = set()
+    kept: dict[str, list[tuple[float, float]]] = {k: [] for k in barriers["kind"].unique()}
+    for row in barriers.itertuples(index=False):
+        line: LineString = row.geometry
+        kind = str(row.kind)
+        if line.length == 0 or not hasattr(rules.crossings, kind):
+            continue
+        steps = max(1, int(line.length // CROSSING_STEP_M))
+        for k in range(steps + 1):
+            at = min(line.length, k * CROSSING_STEP_M)
+            p = np.asarray(line.interpolate(at).coords[0])
+            q = np.asarray(line.interpolate(min(line.length, at + 1.0)).coords[0])
+            t = (
+                q - p
+                if at + 1.0 <= line.length
+                else p - np.asarray(line.interpolate(at - 1.0).coords[0])
+            )
+            norm = np.hypot(*t)
+            if norm == 0:
+                continue
+            n = np.array([-t[1], t[0]]) / norm
+            near = tree.query_ball_point(p, max_len)
+            side = [(int(nodes[i]), float(np.dot(pts[i] - p, n))) for i in near]
+            left = [i for i, d in side if d > 1.0]
+            right = [i for i, d in side if d < -1.0]
+            best: tuple[float, int, int] | None = None
+            for a in left:
+                for b in right:
+                    d = float(np.hypot(xy[a][0] - xy[b][0], xy[a][1] - xy[b][1]))
+                    if d > max_len or (best is not None and d >= best[0]):
+                        continue
+                    if not LineString([xy[a], xy[b]]).intersects(line):
+                        continue
+                    best = (d, a, b)
+            if best is None:
+                continue
+            d, a, b = best
+            key = (min(a, b), max(a, b))
+            if key in taken or G.has_edge(a, b):
+                continue
+            mid = ((xy[a][0] + xy[b][0]) / 2.0, (xy[a][1] + xy[b][1]) / 2.0)
+            if any(np.hypot(mid[0] - m[0], mid[1] - m[1]) < CROSSING_SPACING_M for m in kept[kind]):
+                continue
+            # Already joined nearby (a bridge, an underpass): no bore needed.
+            reach = nx.single_source_dijkstra_path_length(
+                G, a, cutoff=3 * d + 100.0, weight="length_m"
+            )
+            if b in reach:
+                continue
+            G.add_edge(
+                a,
+                b,
+                length_m=d,
+                cost=rules.crossings.cost(kind, d),
+                surface="crossing",
+                highway=f"crossing_{kind}",
+                osm_id=f"crossing:{kind}:{key[0]}-{key[1]}",
+                crossing=kind,
+            )
+            taken.add(key)
+            offered.append((kind, key))
+            kept[kind].append(mid)
+    return offered
+
+
+GAP_CELL_M = 400.0  # unmapped obstacles are looked for cell by cell
+GAP_REACH_M = 600.0  # streets that do not join within this of a cell count as separated
+MAPPING_GAP_M = 8.0  # closer than this, separated streets are a slip in the map: joined as street
+
+
+def _add_gap_crossings(
+    G: nx.Graph,
+    xy: list[tuple[float, float]],
+    buildings: gpd.GeoDataFrame | None,
+    rules: Rulebook,
+) -> list[tuple[tuple[int, int], str]]:
+    """Offer a bore where streets face each other across something the map does not show.
+
+    Two street nodes at most `crossings.max_length_m` apart whose streets do not join within
+    GAP_REACH_M of them are separated by an obstacle the data leaves out (a canal, a railway,
+    private land). Per cell of GAP_CELL_M, for each pair of street pieces that come that close,
+    the shortest such link that crosses no building is offered, priced as `crossings.unmapped`.
+    """
+    if G.number_of_nodes() == 0:
+        return []
+    max_len = rules.crossings.max_length_m
+    nodes = np.fromiter(sorted(G.nodes), dtype=int)
+    pts = np.asarray([xy[n] for n in nodes], dtype=float)
+    tree = cKDTree(pts)
+    blocked = None
+    if buildings is not None and not buildings.empty:
+        from shapely.strtree import STRtree
+
+        polys = [g for g in buildings.geometry if g is not None and not g.is_empty]
+        blocked = STRtree(polys) if polys else None
+    offered: list[tuple[tuple[int, int], str]] = []
+    mids: list[tuple[float, float]] = []
+    (minx, miny), (maxx, maxy) = pts.min(axis=0), pts.max(axis=0)
+    for cx in np.arange(minx, maxx + 1e-6, GAP_CELL_M):
+        for cy in np.arange(miny, maxy + 1e-6, GAP_CELL_M):
+            core = (pts[:, 0] >= cx) & (pts[:, 0] < cx + GAP_CELL_M)
+            core &= (pts[:, 1] >= cy) & (pts[:, 1] < cy + GAP_CELL_M)
+            if not core.any():
+                continue
+            win = (pts[:, 0] >= cx - GAP_REACH_M) & (pts[:, 0] < cx + GAP_CELL_M + GAP_REACH_M)
+            win &= (pts[:, 1] >= cy - GAP_REACH_M) & (pts[:, 1] < cy + GAP_CELL_M + GAP_REACH_M)
+            sub = G.subgraph(nodes[win].tolist())
+            piece: dict[int, int] = {}
+            size: dict[int, int] = {}
+            for i, comp in enumerate(
+                sorted(nx.connected_components(sub), key=lambda c: (-len(c), min(c)))
+            ):
+                size[i] = len(comp)
+                for n in comp:
+                    piece[n] = i
+            best: dict[tuple[int, int], tuple[float, int, int]] = {}
+            for ia in np.flatnonzero(core):
+                a = int(nodes[ia])
+                for ib in tree.query_ball_point(pts[ia], max_len):
+                    b = int(nodes[ib])
+                    if b <= a or b not in piece:
+                        continue
+                    pa, pb = piece[a], piece[b]
+                    if pa == pb or min(size[pa], size[pb]) < 3:
+                        continue
+                    d = float(np.hypot(*(pts[ia] - pts[ib])))
+                    key = (min(pa, pb), max(pa, pb))
+                    if key in best and best[key][0] <= d:
+                        continue
+                    seg = LineString([xy[a], xy[b]])
+                    if blocked is not None and any(
+                        blocked.geometries.take(i).intersects(seg) for i in blocked.query(seg)
+                    ):
+                        continue
+                    best[key] = (d, a, b)
+            for _key, (d, a, b) in sorted(best.items()):
+                mid = ((xy[a][0] + xy[b][0]) / 2.0, (xy[a][1] + xy[b][1]) / 2.0)
+                if any(np.hypot(mid[0] - m[0], mid[1] - m[1]) < CROSSING_SPACING_M for m in mids):
+                    continue
+                if G.has_edge(a, b):
+                    continue
+                key = (min(a, b), max(a, b))
+                if d <= MAPPING_GAP_M:
+                    # Two streets that all but touch: a slip in the map, joined as street.
+                    G.add_edge(
+                        a,
+                        b,
+                        length_m=d,
+                        cost=d * rules.surfaces.cost("pavement"),
+                        surface="pavement",
+                        highway="gap_link",
+                        osm_id=f"gap:{key[0]}-{key[1]}",
+                    )
+                    offered.append((key, "join"))
+                    continue
+                G.add_edge(
+                    a,
+                    b,
+                    length_m=d,
+                    cost=rules.crossings.cost("unmapped", d),
+                    surface="crossing",
+                    highway="crossing_unmapped",
+                    osm_id=f"crossing:unmapped:{key[0]}-{key[1]}",
+                    crossing="unmapped",
+                )
+                offered.append((key, "unmapped"))
+                mids.append(mid)
+    return offered
+
+
+DEAD_END_SNAP_M = 2.0  # a street end this close to another street meets it
+
+
+def _join_dead_ends(G: nx.Graph, xy: list[tuple[float, float]]) -> int:
+    """Split a street edge where another street's dead end stops on it, and join the two.
+
+    Returns how many ends were joined. Ends are taken in node order and each splits the nearest
+    edge it does not already touch, so the result is the same on every build.
+    """
+    ends = sorted(n for n in G.nodes if G.degree(n) == 1)
+    if not ends:
+        return 0
+    from shapely.strtree import STRtree
+
+    edges = sorted((min(u, v), max(u, v)) for u, v in G.edges)
+    segs = [LineString([xy[u], xy[v]]) for u, v in edges]
+    index = STRtree(segs)
+    joined = 0
+    split: set[tuple[int, int]] = set()
+    for n in ends:
+        if G.degree(n) != 1:
+            continue
+        pt = Point(xy[n])
+        best: tuple[float, int] | None = None
+        for i in index.query(pt.buffer(DEAD_END_SNAP_M)):
+            u, v = edges[int(i)]
+            if n in (u, v) or (u, v) in split or not G.has_edge(u, v):
+                continue
+            d = segs[int(i)].distance(pt)
+            if d <= DEAD_END_SNAP_M and (best is None or d < best[0]):
+                best = (d, int(i))
+        if best is None:
+            continue
+        u, v = edges[best[1]]
+        seg = segs[best[1]]
+        at = seg.interpolate(seg.project(pt))
+        data = dict(G[u][v])
+        G.remove_edge(u, v)
+        split.add((u, v))
+        m = len(xy)
+        xy.append((round(at.x, 2), round(at.y, 2)))
+        G.add_node(m)
+        total = max(seg.length, 1e-9)
+        for a_, b_ in ((u, m), (m, v)):
+            part = float(np.hypot(xy[a_][0] - xy[b_][0], xy[a_][1] - xy[b_][1]))
+            G.add_edge(a_, b_, **{**data, "length_m": part, "cost": data["cost"] * part / total})
+        gap = float(np.hypot(xy[n][0] - xy[m][0], xy[n][1] - xy[m][1]))
+        per_m = data["cost"] / total
+        G.add_edge(n, m, **{**data, "length_m": gap, "cost": gap * per_m, "osm_id": f"join:{n}"})
+        joined += 1
+    return joined
 
 
 def _link_ducts(G: nx.Graph, xy: list[tuple[float, float]], rules: Rulebook) -> int:

@@ -26,8 +26,21 @@ called anything but "draft".
 | `loss_db`, `connectors_per_path` | validate | connector/splice/splitter losses, fibre attenuation per wavelength, design margin, connectors counted on a path (ODF, FDH in/out, FAT, ONT) |
 | `fdh`, `fat`, `chambers`, `closures`, `slack`, `ducts` | solve | capacities, fill limits, placements, sizes |
 | `routing` | twin | OSM highway classes no cable may follow (motorways, staircases, planned roads, …); those ways never enter the route graph |
-| `surfaces`, `highway_to_surface`, `crossings` | twin, boq | trench + reinstatement cost per metre by surface; which surface each OSM highway class trenches in |
+| `surfaces`, `highway_to_surface` | twin, boq | trench + reinstatement cost per metre by surface; which surface each OSM highway class trenches in |
+| `crossings` | twin, solve, boq | the price of a directional drill under a `motorway`, `railway`, `water` or `unmapped` obstacle (`fixed` for the permit and pits, `per_m` for the drilling) and `max_length_m`, the longest bore offered |
 | `units`, `labour` | boq | unit prices |
+
+## Crossings (twin, solve)
+
+A trench cannot follow or cut across a motorway, a railway or a river. Where streets face each
+other across one within `crossings.max_length_m`, the twin offers a bore as an edge priced
+`fixed + per_m × length`; routing takes it only when it is cheaper than going round, and the
+routing step records both prices. Motorways come from the street data, railways and rivers from
+the extract. Streets that come that close but do not join within 600 m have something between
+them the map does not show (an extract without water, for instance): those get an `unmapped`
+crossing, recorded as an assumption to check on site. A building in the way rules a bore out,
+and gaps under 8 m are joined as ordinary street: a slip in the map. Crossings used appear as
+`route` elements of kind `crossing` and as permit-and-pits and drilling lines in the BOQ.
 
 ## Power budget formula (validate)
 

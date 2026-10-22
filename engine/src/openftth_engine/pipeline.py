@@ -347,6 +347,7 @@ def import_data(
             "homes_wgs": homes_wgs,
             "area": area,
             "no_dig_zones": inp.no_dig,
+            "barriers": inp.barriers,
         }
     )
     saved = profile.save(s.project.dir / PROFILE_FILE)
@@ -393,7 +394,16 @@ def build_twin_tool(s: Session) -> ToolResult:
     before = s.design.copy()
     if "streets" not in s.cache:
         _twin(s)
-    twin = _finish_twin(s, build_twin(s.cache["streets"], s.cache["homes_wgs"], s.rules))
+    twin = _finish_twin(
+        s,
+        build_twin(
+            s.cache["streets"],
+            s.cache["homes_wgs"],
+            s.rules,
+            s.cache.get("barriers"),
+            getattr(s.cache.get("inputs"), "buildings", None),
+        ),
+    )
     s.twin = twin
     # Homes become `to` features (one per building, with a unit count). A home that is
     # already in the design keeps what the solvers put on it (its FAT, PON, drop and path
@@ -599,7 +609,7 @@ def cluster_homes(s: Session, time_limit_s: float = 20.0) -> ToolResult:
     # with the distribution cable, so distance is priced as drop cable only.
     per_m = r.units.drop_per_m
     sites, stats = capacitated_sites(
-        twin.graph,
+        _streets_only(twin),
         twin.xy,
         demands,
         capacity=cap,
@@ -900,6 +910,7 @@ def route_feeder(s: Session) -> ToolResult:
     n = _emit_cable_sections(s, tree, "feeder", r.fibers.feeder, prefix="FDR")
     for f in fdhs:
         f.openftth["feeder_path_m"] = round(_path_length(twin, tree, int(f.openftth["node"])), 1)
+    crossing_decisions = _sync_crossings(s, "route_feeder")
     decisions = [
         Decision(
             stage="solve",
@@ -911,7 +922,7 @@ def route_feeder(s: Session) -> ToolResult:
                 "unreachable_fdhs": len(tree.unreachable),
             },
         )
-    ]
+    ] + crossing_decisions
     return _commit(
         s,
         ToolResult(
@@ -969,7 +980,7 @@ def route_distribution(s: Session) -> ToolResult:
             reason="Per FDH, distribution routed FDH → FATs as a min-cost Steiner tree; fibre count per section = downstream units (one fibre per home in a centralised-split design) + spare, rounded up the distribution ladder.",
             values={"sections": n, "length_m": round(total, 1)},
         )
-    ]
+    ] + _sync_crossings(s, "route_distribution")
     return _commit(
         s,
         ToolResult(
@@ -980,6 +991,114 @@ def route_distribution(s: Session) -> ToolResult:
         ),
         before,
     )
+
+
+def _streets_only(twin: Twin) -> nx.Graph:
+    """The route graph without bores: a home reaches its FAT along streets, never under a
+    motorway, railway or river. Only distribution and feeder cables are worth a bore."""
+    return nx.subgraph_view(
+        twin.graph, filter_edge=lambda u, v: not twin.graph[u][v].get("crossing")
+    )
+
+
+def _drop_path(twin: Twin, home_node: int, fat_node: int) -> list[int]:
+    """A drop's street path, along streets only when there is one."""
+    if home_node == fat_node:
+        return [home_node]
+    try:
+        return nx.shortest_path(_streets_only(twin), home_node, fat_node, weight="length_m")
+    except nx.NetworkXNoPath:
+        return nx.shortest_path(twin.graph, home_node, fat_node, weight="length_m")
+
+
+BARRIER_LABEL = {
+    "motorway": "the motorway",
+    "railway": "the railway",
+    "water": "the river or canal",
+    "unmapped": "an obstacle the map does not show",
+}
+
+
+def _sync_crossings(s: Session, tool: str) -> list[Decision]:
+    """Put a `crossing` route element on every barrier crossing the cables use, and say for each
+    new one what it costs against going round. Returns the decisions for crossings `tool` added."""
+    twin = _twin(s)
+    used: dict[tuple[int, int], str] = {}
+    for c in s.design.by_type("cable.underground"):
+        if c.openftth.get("kind") == "drop":
+            continue
+        for edge, (surface, _metres) in c.openftth.get("edges", {}).items():
+            if str(surface).startswith("crossing:"):
+                a, b = (int(x) for x in edge.split("-"))
+                used[(a, b)] = str(surface).split(":", 1)[1]
+    before = {f.openftth.get("edge") for f in s.design.by_kind("crossing")}
+    s.design.remove_where(kind="crossing")
+    plain = nx.subgraph_view(
+        twin.graph, filter_edge=lambda u, v: not twin.graph[u][v].get("crossing")
+    )
+    decisions: list[Decision] = []
+    for (a, b), barrier in sorted(used.items()):
+        if not twin.graph.has_edge(a, b):
+            continue
+        d = twin.graph[a][b]
+        key = f"{a}-{b}"
+        cost = float(d["cost"])
+        try:
+            detour_cost, path = nx.single_source_dijkstra(plain, a, b, weight="cost")
+            detour_m = sum(
+                plain[u][v]["length_m"] for u, v in zip(path[:-1], path[1:], strict=False)
+            )
+        except nx.NetworkXNoPath:
+            detour_cost, detour_m = math.inf, math.inf
+        label = BARRIER_LABEL.get(barrier, barrier)
+        s.design.add(
+            Feature(
+                element_uuid=s.uid("route", f"crossing:{key}"),
+                element_type="route",
+                geometry=_wgs(twin, twin.path_line([a, b])),
+                props={
+                    "name": f"crossing under {label}",
+                    "method": "directional drilling",
+                    "length_m": round(float(d["length_m"]), 1),
+                    "status": "planned",
+                },
+                openftth={
+                    "kind": "crossing",
+                    "barrier": barrier,
+                    "edge": key,
+                    "cost": round(cost, 2),
+                    **({} if math.isinf(detour_m) else {"detour_m": round(detour_m, 1)}),
+                    **({} if math.isinf(detour_cost) else {"detour_cost": round(detour_cost, 2)}),
+                },
+            )
+        )
+        if key in before:
+            continue
+        price = getattr(s.rules.crossings, barrier)
+        cur = s.rules.currency
+        go_round = (
+            "there is no way round on the streets"
+            if math.isinf(detour_cost)
+            else f"going round would be {detour_m:,.0f} m of trench costing {detour_cost:,.0f} {cur}"
+        )
+        decisions.append(
+            Decision(
+                stage="solve",
+                tool=tool,
+                reason=f"Cables cross under {label} with a {d['length_m']:.0f} m directional drill "
+                f"costing {cost:,.0f} {cur} ({price.fixed:,.0f} for the permit and pits + "
+                f"{price.per_m:,.0f} per metre); {go_round}.",
+                values={
+                    "barrier": barrier,
+                    "length_m": round(float(d["length_m"]), 1),
+                    "cost": round(cost, 2),
+                    "detour_m": None if math.isinf(detour_m) else round(detour_m, 1),
+                    "detour_cost": None if math.isinf(detour_cost) else round(detour_cost, 2),
+                },
+                source="solver",
+            )
+        )
+    return decisions
 
 
 def _recover_home_links(s: Session) -> int:
@@ -1051,7 +1170,7 @@ def route_drops(s: Session) -> ToolResult:
             h.openftth["splices_on_path"] = 3 + closures
             continue
         hn, fn = int(h.openftth["node"]), int(fat.openftth["node"])
-        path = nx.shortest_path(twin.graph, hn, fn, weight="length_m") if hn != fn else [hn]
+        path = _drop_path(twin, hn, fn)
         home_xy = gpd.GeoSeries([h.geometry], crs=4326).to_crs(twin.crs).iloc[0]
         coords = [(home_xy.x, home_xy.y)] + [tuple(twin.xy[p]) for p in path]
         line = LineString(coords) if len(coords) > 1 else LineString([coords[0], coords[0]])
@@ -1350,9 +1469,12 @@ def _twin(s: Session) -> Twin:
                 "homes_wgs": homes_wgs,
                 "area": inp.area,
                 "no_dig_zones": inp.no_dig,
+                "barriers": inp.barriers,
             }
         )
-        s.twin = _finish_twin(s, build_twin(inp.streets, homes_wgs, s.rules))
+        s.twin = _finish_twin(
+            s, build_twin(inp.streets, homes_wgs, s.rules, inp.barriers, inp.buildings)
+        )
         pops = s.design.by_kind("pop")
         if pops:
             s.cache["pop_node"] = int(pops[0].openftth["node"])
@@ -1374,7 +1496,9 @@ def _emit_cable_sections(
         cable_count, fibers = r.ladder_cables(ladder, sec.downstream_units)
         edges = {
             f"{min(u, v)}-{max(u, v)}": (
-                twin.graph[u][v]["surface"],
+                f"crossing:{twin.graph[u][v]['crossing']}"
+                if twin.graph[u][v].get("crossing")
+                else twin.graph[u][v]["surface"],
                 round(twin.graph[u][v]["length_m"], 2),
             )
             for u, v in zip(sec.nodes[:-1], sec.nodes[1:], strict=False)

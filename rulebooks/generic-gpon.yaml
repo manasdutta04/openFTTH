@@ -76,6 +76,12 @@ surfaces:                   # trench + reinstatement cost per metre; all assumed
 
 crossings:
   road_drill_per_m: 180     # assumed
+  max_length_m: 80          # longest bore offered under a barrier
+  # Directional drill under a barrier: fixed = permit, launch and reception pits; per_m = drilling. Assumed.
+  motorway: {fixed: 12000, per_m: 350}
+  railway: {fixed: 18000, per_m: 450}
+  water: {fixed: 9000, per_m: 300}
+  unmapped: {fixed: 12000, per_m: 400}   # an obstacle the map does not show
 
 highway_to_surface:
   motorway: asphalt

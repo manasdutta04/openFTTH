@@ -77,6 +77,12 @@ surfaces:                   # assumed, NOK per metre
 
 crossings:
   road_drill_per_m: 2500
+  max_length_m: 80          # longest bore offered under a barrier
+  # Directional drill under a barrier: fixed = permit, launch and reception pits; per_m = drilling. Assumed.
+  motorway: {fixed: 20000, per_m: 600}
+  railway: {fixed: 30000, per_m: 750}
+  water: {fixed: 15000, per_m: 500}
+  unmapped: {fixed: 20000, per_m: 650}   # an obstacle the map does not show
 
 highway_to_surface:
   motorway: asphalt

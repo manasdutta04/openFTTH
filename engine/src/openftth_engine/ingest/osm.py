@@ -55,6 +55,11 @@ MAX_YES_FOOTPRINT_M2 = 400.0
 STREET_BUFFER_M = 200.0
 MAX_STREET_BUFFER_M = 1600.0
 STREET_PIECES_MAX = 0.05  # share of street vertices allowed off the main connected piece
+# What a trench cannot cross, besides motorways (which are streets the routing excludes).
+BARRIER_TAGS = {
+    "railway": ["rail", "light_rail", "narrow_gauge"],
+    "waterway": ["river", "canal"],
+}
 
 
 @dataclass
@@ -62,6 +67,8 @@ class OsmData:
     streets: gpd.GeoDataFrame  # EPSG:4326 LineStrings with `highway`, `surface`, `osm_id`
     buildings: gpd.GeoDataFrame  # EPSG:4326 Polygons with `building`, `levels`, `flats`, `osm_id`
     street_margin_m: float = 0.0  # how far beyond the area streets were kept
+    # Railways and rivers, which a trench cannot cross: `kind` (railway, water), `osm_id`.
+    barriers: gpd.GeoDataFrame | None = None
 
 
 def import_osm(path: str | Path, area: Polygon | MultiPolygon | None = None) -> OsmData:
@@ -89,6 +96,7 @@ def import_osm(path: str | Path, area: Polygon | MultiPolygon | None = None) -> 
         buildings[dst] = buildings[src] if src in buildings.columns else None
     buildings = buildings[list(cols.values()) + ["osm_id", "geometry"]].copy()
 
+    barriers = _barriers(path)
     margin = 0.0
     if area is not None:
         # Keep streets a little beyond the area so homes on its edge can snap to the street
@@ -97,11 +105,40 @@ def import_osm(path: str | Path, area: Polygon | MultiPolygon | None = None) -> 
         streets, margin = streets_around(streets, area)
         buildings = buildings[buildings.representative_point().within(area)].copy()
 
+    if area is not None and not barriers.empty:
+        zone = gpd.GeoSeries([area], crs=4326)
+        utm = zone.estimate_utm_crs()
+        reach = zone.to_crs(utm).buffer(max(margin, STREET_BUFFER_M)).to_crs(4326).iloc[0]
+        barriers = barriers[barriers.intersects(reach)]
     return OsmData(
         streets=streets.reset_index(drop=True),
         buildings=buildings.reset_index(drop=True),
         street_margin_m=margin,
+        barriers=barriers.reset_index(drop=True),
     )
+
+
+def _barriers(path: Path) -> gpd.GeoDataFrame:
+    """Railway and river lines from the extract, as `kind` (railway, water) and `osm_id`."""
+    try:
+        gdf = _features(path, BARRIER_TAGS)
+    except Exception:  # osmnx raises when the extract has none of these features
+        return gpd.GeoDataFrame({"kind": [], "osm_id": []}, geometry=[], crs=4326)
+    gdf = gdf[gdf.geometry.geom_type.isin(["LineString", "MultiLineString"])]
+    rail = gdf["railway"].isin(BARRIER_TAGS["railway"]) if "railway" in gdf.columns else False
+    water = gdf["waterway"].isin(BARRIER_TAGS["waterway"]) if "waterway" in gdf.columns else False
+    # A railway in a tunnel or on a bridge does not block a trench beside it.
+    lifted = gdf.get("tunnel", None)
+    keep = (rail | water) & ~(
+        lifted.isin(["yes", "building_passage"]) if lifted is not None else False
+    )
+    gdf = gdf[keep].copy()
+    gdf["kind"] = [
+        "railway" if r == r and r in BARRIER_TAGS["railway"] else "water"
+        for r in gdf.get("railway", [None] * len(gdf))
+    ]
+    gdf = gdf[["kind", "osm_id", "geometry"]].explode(index_parts=False, ignore_index=True)
+    return gdf.sort_values("osm_id", kind="stable").reset_index(drop=True)
 
 
 def off_main_share(streets: gpd.GeoDataFrame) -> float:

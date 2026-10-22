@@ -51,6 +51,7 @@ class Inputs:
     poles: gpd.GeoDataFrame
     manholes: gpd.GeoDataFrame
     no_dig: gpd.GeoDataFrame  # polygons with a reason
+    barriers: gpd.GeoDataFrame | None = None  # railways and rivers: kind, osm_id, lines
     decisions: list[Decision] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
 
@@ -118,8 +119,12 @@ def load_inputs(profile: ImportProfile, rules: Rulebook) -> Inputs:
 
     # ---- OpenStreetMap, when given ------------------------------------------------------------
     osm_streets = osm_buildings = None
+    barriers = _empty(["kind", "osm_id"])
     for b in profile.by_role("osm"):
         osm = import_osm(b.path, area)
+        if osm.barriers is not None and not osm.barriers.empty:
+            barriers = osm.barriers
+            counts["barriers"] = len(barriers)
         osm_streets, osm_buildings = osm.streets.copy(), osm.buildings.copy()
         osm_streets["surface_class"] = None
         if osm.street_margin_m > STREET_BUFFER_M:
@@ -401,6 +406,7 @@ def load_inputs(profile: ImportProfile, rules: Rulebook) -> Inputs:
         poles=poles,
         manholes=manholes,
         no_dig=no_dig,
+        barriers=barriers,
         decisions=decisions,
         counts=counts,
     )

@@ -18,7 +18,9 @@ OVERPASS = (
     "https://overpass.private.coffee/api/interpreter",
 )
 USER_AGENT = "openFTTH/0.1 (+https://github.com)"
-STREET_MARGIN_M = 200.0
+# Streets and barriers as far out as the import may widen its margin (ingest.osm.MAX_STREET_BUFFER_M),
+# so an area split by water or a railway still finds the streets that join it up.
+STREET_MARGIN_M = 1600.0
 
 
 def overpass_query(area_path: str | Path) -> str:
@@ -32,6 +34,8 @@ def overpass_query(area_path: str | Path) -> str:
     return (
         "[out:xml][timeout:180];("
         f'way["highway"]({bs:.5f},{bw:.5f},{bn:.5f},{be:.5f});'
+        f'way["railway"~"^(rail|light_rail|narrow_gauge)$"]({bs:.5f},{bw:.5f},{bn:.5f},{be:.5f});'
+        f'way["waterway"~"^(river|canal)$"]({bs:.5f},{bw:.5f},{bn:.5f},{be:.5f});'
         f'way["building"]({so:.5f},{w:.5f},{n:.5f},{e:.5f});'
         f'relation["building"]({so:.5f},{w:.5f},{n:.5f},{e:.5f});'
         ");(._;>;);out meta;"

@@ -55,6 +55,7 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
 
     # ---- civil: trench by surface (shared between feeder and distribution), chambers ----
     trench: dict[str, float] = {}
+    bores: dict[str, list[float]] = {}  # barrier → length of each crossing under it
     seen_edges: set[str] = set()
     for cable in design.by_type("cable.underground"):
         if cable.openftth.get("kind") == "drop":
@@ -63,7 +64,22 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
             if edge in seen_edges:
                 continue
             seen_edges.add(edge)
-            trench[surface] = trench.get(surface, 0.0) + metres
+            if str(surface).startswith("crossing:"):
+                bores.setdefault(str(surface).split(":", 1)[1], []).append(metres)
+            else:
+                trench[surface] = trench.get(surface, 0.0) + metres
+    for barrier in sorted(bores):
+        price = getattr(rules.crossings, barrier)
+        label = {"water": "river or canal", "unmapped": "unmapped obstacle"}.get(barrier, barrier)
+        add(
+            "civil",
+            f"crossing under {label}: permit and pits",
+            len(bores[barrier]),
+            "pc",
+            price.fixed,
+            "directional drill, taken where it is cheaper than going round",
+        )
+        add("civil", f"crossing under {label}: drilling", sum(bores[barrier]), "m", price.per_m)
     for surface in sorted(trench):
         sc = getattr(rules.surfaces, surface)
         add("civil", f"trench in {surface}", trench[surface], "m", sc.trench_per_m)

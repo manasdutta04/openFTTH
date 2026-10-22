@@ -1,5 +1,26 @@
 {
   "$defs": {
+    "BarrierCrossing": {
+      "additionalProperties": false,
+      "properties": {
+        "fixed": {
+          "description": "Permit, launch and reception pits, mobilisation: once per crossing",
+          "title": "Fixed",
+          "type": "number"
+        },
+        "per_m": {
+          "description": "Directional drilling under the barrier, per metre",
+          "title": "Per M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "fixed",
+        "per_m"
+      ],
+      "title": "BarrierCrossing",
+      "type": "object"
+    },
     "Chambers": {
       "additionalProperties": false,
       "properties": {
@@ -77,6 +98,41 @@
           "default": 180.0,
           "title": "Road Drill Per M",
           "type": "number"
+        },
+        "max_length_m": {
+          "default": 80.0,
+          "description": "Longest bore the engine offers under a motorway, railway or river; longer gaps are left to the detour",
+          "title": "Max Length M",
+          "type": "number"
+        },
+        "motorway": {
+          "$ref": "#/$defs/BarrierCrossing",
+          "default": {
+            "fixed": 12000.0,
+            "per_m": 350.0
+          }
+        },
+        "railway": {
+          "$ref": "#/$defs/BarrierCrossing",
+          "default": {
+            "fixed": 18000.0,
+            "per_m": 450.0
+          }
+        },
+        "water": {
+          "$ref": "#/$defs/BarrierCrossing",
+          "default": {
+            "fixed": 9000.0,
+            "per_m": 300.0
+          }
+        },
+        "unmapped": {
+          "$ref": "#/$defs/BarrierCrossing",
+          "default": {
+            "fixed": 12000.0,
+            "per_m": 400.0
+          },
+          "description": "An obstacle the map does not show (streets close together that do not join); priced cautiously"
         }
       },
       "title": "Crossings",
@@ -838,7 +894,24 @@
     "crossings": {
       "$ref": "#/$defs/Crossings",
       "default": {
-        "road_drill_per_m": 180.0
+        "road_drill_per_m": 180.0,
+        "max_length_m": 80.0,
+        "motorway": {
+          "fixed": 12000.0,
+          "per_m": 350.0
+        },
+        "railway": {
+          "fixed": 18000.0,
+          "per_m": 450.0
+        },
+        "water": {
+          "fixed": 9000.0,
+          "per_m": 300.0
+        },
+        "unmapped": {
+          "fixed": 12000.0,
+          "per_m": 400.0
+        }
       }
     },
     "routing": {

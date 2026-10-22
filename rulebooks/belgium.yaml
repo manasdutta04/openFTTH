@@ -77,6 +77,12 @@ surfaces:                   # assumed, EUR per metre, Flemish urban rates
 
 crossings:
   road_drill_per_m: 200
+  max_length_m: 80          # longest bore offered under a barrier
+  # Directional drill under a barrier: fixed = permit, launch and reception pits; per_m = drilling. Assumed.
+  motorway: {fixed: 12000, per_m: 350}
+  railway: {fixed: 20000, per_m: 450}
+  water: {fixed: 10000, per_m: 300}
+  unmapped: {fixed: 12000, per_m: 400}   # an obstacle the map does not show
 
 highway_to_surface:
   motorway: asphalt
