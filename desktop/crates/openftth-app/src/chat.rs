@@ -297,7 +297,7 @@ pub fn tool_phrase(tool: &str) -> String {
     let known = match tool {
         "import_osm" => "importing the area and map",
         "build_twin" => "building the street twin",
-        "set_pop" => "placing the POP",
+        "set_pop" => "placing the POPs",
         "cluster_homes" => "placing FATs",
         "place_fdh" => "placing cabinets",
         "assign_pon" => "grouping homes into PONs",

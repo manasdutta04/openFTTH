@@ -659,7 +659,9 @@ impl TwinView {
             shapes.push(Shape::circle_filled(q, 2.0, p.accent));
         }
         painter.extend(shapes);
-        // The POP label needs the font layout, so it is drawn after the batch.
+        // The POP label needs the font layout, so it is drawn after the batch. With several
+        // POPs each also carries its name beside it, so a catchment can be told from another.
+        let several = cache.points.iter().filter(|pt| pt.kind == 4).count() > 1;
         for pt in cache.points.iter().filter(|pt| pt.kind == 4) {
             let pos = tf(&pt.xy);
             if rect.contains(pos) {
@@ -670,6 +672,15 @@ impl TwinView {
                     font(10.0, Weight::Semibold),
                     p.map_bg,
                 );
+                if several {
+                    painter.text(
+                        pos + Vec2::new(13.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        elements[pt.idx].name(),
+                        font(11.0, Weight::Semibold),
+                        p.text,
+                    );
+                }
             }
         }
 
