@@ -182,6 +182,16 @@ impl Client {
         self.get("/api/project/violations")
     }
 
+    /// Post the open work order: the harness opens an approval card and posts once the
+    /// engineer allows it there. Answers at once with `{approval, pending}`.
+    pub fn post_work_order(&self, why: &str) -> Result<Value, ClientError> {
+        self.send(
+            "POST",
+            "/api/project/work-order/post",
+            &json!({ "why": why }),
+        )
+    }
+
     /// Write the Claude Desktop bundle (`openftth.mcpb`) and return its path.
     pub fn mcp_claude_bundle(&self) -> Result<Value, ClientError> {
         self.send("POST", "/api/mcp/claude-bundle", &json!({}))
@@ -195,6 +205,15 @@ impl Client {
     /// Design the open project end to end with the engine alone (no AI, no cost).
     pub fn autodesign(&self) -> Result<Value, ClientError> {
         self.send("POST", "/api/project/autodesign", &json!({}))
+    }
+
+    /// Prepare the area only (import, data check, street twin), to lay the network out by hand.
+    pub fn prepare_area(&self) -> Result<Value, ClientError> {
+        self.send(
+            "POST",
+            "/api/project/autodesign",
+            &json!({ "prepare": true }),
+        )
     }
 
     pub fn reset_project(&self) -> Result<Value, ClientError> {

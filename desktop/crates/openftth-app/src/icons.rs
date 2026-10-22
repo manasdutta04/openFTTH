@@ -1,4 +1,6 @@
-//! Line icons drawn with the painter on a 16 × 16 grid: crisp at any scale, no icon font.
+//! Interface icons: Material Symbols (Apache-2.0, see NOTICE) rasterised to alpha masks by
+//! `tools/rasterize_marks.py`, downsampled to the exact pixel size they are drawn at and tinted
+//! at paint time. The window's own caption glyphs are drawn on whole pixels instead.
 
 use egui::epaint::{PathShape, PathStroke};
 use std::cell::RefCell;
@@ -8,7 +10,6 @@ use egui::{
     pos2, vec2, Color32, ColorImage, Painter, Pos2, Rect, Stroke, TextureHandle, TextureOptions,
     Vec2,
 };
-use std::f32::consts::TAU;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
@@ -26,139 +27,193 @@ pub enum Icon {
     Refresh,
     Tool,
     Target,
-    Maximize,
-    Restore,
     ArrowUp,
     Mic,
     Link,
+    Select,
+    Fat,
+    Cabinet,
+    Chamber,
+    Pop,
+    Draw,
+    Split,
+    Reassign,
+    Measure,
+    Delete,
+    Join,
+    Undo,
+    Redo,
+    Manual,
+    Auto,
+    Lock,
+    Crew,
+    Maximize,
+    Restore,
+}
+
+/// Pixels per side of the masks in `assets/icons`.
+const ICON_SIZE: usize = 64;
+
+const ICONS: &[(&str, &[u8])] = &[
+    ("plus", include_bytes!("../assets/icons/plus.a8")),
+    ("minus", include_bytes!("../assets/icons/minus.a8")),
+    ("fit", include_bytes!("../assets/icons/fit.a8")),
+    ("close", include_bytes!("../assets/icons/close.a8")),
+    ("stop", include_bytes!("../assets/icons/stop.a8")),
+    ("search", include_bytes!("../assets/icons/search.a8")),
+    ("check", include_bytes!("../assets/icons/check.a8")),
+    ("warning", include_bytes!("../assets/icons/warning.a8")),
+    (
+        "chevron-right",
+        include_bytes!("../assets/icons/chevron-right.a8"),
+    ),
+    (
+        "chevron-down",
+        include_bytes!("../assets/icons/chevron-down.a8"),
+    ),
+    ("folder", include_bytes!("../assets/icons/folder.a8")),
+    ("refresh", include_bytes!("../assets/icons/refresh.a8")),
+    ("tool", include_bytes!("../assets/icons/tool.a8")),
+    ("target", include_bytes!("../assets/icons/target.a8")),
+    ("arrow-up", include_bytes!("../assets/icons/arrow-up.a8")),
+    ("mic", include_bytes!("../assets/icons/mic.a8")),
+    ("link", include_bytes!("../assets/icons/link.a8")),
+    ("select", include_bytes!("../assets/icons/select.a8")),
+    ("fat", include_bytes!("../assets/icons/fat.a8")),
+    ("cabinet", include_bytes!("../assets/icons/cabinet.a8")),
+    ("chamber", include_bytes!("../assets/icons/chamber.a8")),
+    ("pop", include_bytes!("../assets/icons/pop.a8")),
+    ("draw", include_bytes!("../assets/icons/draw.a8")),
+    ("split", include_bytes!("../assets/icons/split.a8")),
+    ("reassign", include_bytes!("../assets/icons/reassign.a8")),
+    ("measure", include_bytes!("../assets/icons/measure.a8")),
+    ("delete", include_bytes!("../assets/icons/delete.a8")),
+    ("join", include_bytes!("../assets/icons/join.a8")),
+    ("undo", include_bytes!("../assets/icons/undo.a8")),
+    ("redo", include_bytes!("../assets/icons/redo.a8")),
+    ("manual", include_bytes!("../assets/icons/manual.a8")),
+    ("auto", include_bytes!("../assets/icons/auto.a8")),
+    ("lock", include_bytes!("../assets/icons/lock.a8")),
+    ("crew", include_bytes!("../assets/icons/crew.a8")),
+];
+
+fn mask_name(icon: Icon) -> Option<&'static str> {
+    match icon {
+        Icon::Plus => Some("plus"),
+        Icon::Minus => Some("minus"),
+        Icon::Fit => Some("fit"),
+        Icon::Close => Some("close"),
+        Icon::Stop => Some("stop"),
+        Icon::Search => Some("search"),
+        Icon::Check => Some("check"),
+        Icon::Warning => Some("warning"),
+        Icon::ChevronRight => Some("chevron-right"),
+        Icon::ChevronDown => Some("chevron-down"),
+        Icon::Folder => Some("folder"),
+        Icon::Refresh => Some("refresh"),
+        Icon::Tool => Some("tool"),
+        Icon::Target => Some("target"),
+        Icon::ArrowUp => Some("arrow-up"),
+        Icon::Mic => Some("mic"),
+        Icon::Link => Some("link"),
+        Icon::Select => Some("select"),
+        Icon::Fat => Some("fat"),
+        Icon::Cabinet => Some("cabinet"),
+        Icon::Chamber => Some("chamber"),
+        Icon::Pop => Some("pop"),
+        Icon::Draw => Some("draw"),
+        Icon::Split => Some("split"),
+        Icon::Reassign => Some("reassign"),
+        Icon::Measure => Some("measure"),
+        Icon::Delete => Some("delete"),
+        Icon::Join => Some("join"),
+        Icon::Undo => Some("undo"),
+        Icon::Redo => Some("redo"),
+        Icon::Manual => Some("manual"),
+        Icon::Auto => Some("auto"),
+        Icon::Lock => Some("lock"),
+        Icon::Crew => Some("crew"),
+        Icon::Maximize | Icon::Restore => None,
+    }
+}
+
+thread_local! {
+    static ICON_TEXTURES: RefCell<HashMap<(&'static str, usize), TextureHandle>> =
+        RefCell::new(HashMap::new());
+}
+
+/// The mask box-filtered down to `px` × `px`: wgpu has no mipmaps here, so a 64 px mask drawn
+/// at 18 px would shimmer without it.
+fn icon_texture(ctx: &egui::Context, name: &'static str, px: usize) -> Option<TextureHandle> {
+    let (_, mask) = ICONS.iter().find(|(k, _)| *k == name)?;
+    ICON_TEXTURES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(t) = cache.get(&(name, px)) {
+            return Some(t.clone());
+        }
+        let step = ICON_SIZE as f32 / px as f32;
+        let mut pixels = Vec::with_capacity(px * px);
+        for y in 0..px {
+            for x in 0..px {
+                let (x0, x1) = (x as f32 * step, (x + 1) as f32 * step);
+                let (y0, y1) = (y as f32 * step, (y + 1) as f32 * step);
+                let (mut sum, mut area) = (0.0f32, 0.0f32);
+                for sy in (y0.floor() as usize)..(y1.ceil() as usize).min(ICON_SIZE) {
+                    let wy = (y1.min(sy as f32 + 1.0) - y0.max(sy as f32)).max(0.0);
+                    for sx in (x0.floor() as usize)..(x1.ceil() as usize).min(ICON_SIZE) {
+                        let wx = (x1.min(sx as f32 + 1.0) - x0.max(sx as f32)).max(0.0);
+                        sum += mask[sy * ICON_SIZE + sx] as f32 * wx * wy;
+                        area += wx * wy;
+                    }
+                }
+                let a = if area > 0.0 { sum / area } else { 0.0 };
+                pixels.push(Color32::from_white_alpha(a.round().clamp(0.0, 255.0) as u8));
+            }
+        }
+        let image = ColorImage {
+            size: [px, px],
+            source_size: Vec2::splat(px as f32),
+            pixels,
+        };
+        let handle = ctx.load_texture(format!("icon-{name}-{px}"), image, TextureOptions::LINEAR);
+        cache.insert((name, px), handle.clone());
+        Some(handle)
+    })
 }
 
 pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
+    if let Some(name) = mask_name(icon) {
+        // Snapped to whole physical pixels and drawn 1:1, so edges stay sharp at any scale.
+        let ppp = painter.ctx().pixels_per_point();
+        let side = rect.width().min(rect.height());
+        let px = ((side * ppp).round() as usize).clamp(8, ICON_SIZE);
+        let size = px as f32 / ppp;
+        let c = rect.center();
+        let min = pos2(
+            ((c.x - size / 2.0) * ppp).round() / ppp,
+            ((c.y - size / 2.0) * ppp).round() / ppp,
+        );
+        if let Some(tex) = icon_texture(painter.ctx(), name, px) {
+            painter.image(
+                tex.id(),
+                Rect::from_min_size(min, Vec2::splat(size)),
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                color,
+            );
+        }
+        return;
+    }
     let s = rect.width().min(rect.height()) / 16.0;
     let o = rect.center() - vec2(8.0, 8.0) * s;
     let p = |x: f32, y: f32| o + vec2(x, y) * s;
     let w = (1.4 * s).max(1.0);
-    let stroke = Stroke::new(w, color);
     let line = |pts: Vec<Pos2>| {
         painter.add(PathShape::line(pts, PathStroke::new(w, color)));
     };
     let closed = |pts: Vec<Pos2>| {
         painter.add(PathShape::closed_line(pts, PathStroke::new(w, color)));
     };
-    // Round caps and joins: a dot at every vertex, for a drawn-with-a-pen finish.
-    let pen = |pts: Vec<Pos2>, width: f32| {
-        for q in &pts {
-            painter.circle_filled(*q, width / 2.0, color);
-        }
-        painter.add(PathShape::line(pts, PathStroke::new(width, color)));
-    };
     match icon {
-        Icon::ArrowUp => {
-            let w2 = (1.9 * s).max(1.2);
-            pen(vec![p(8.0, 13.2), p(8.0, 3.3)], w2);
-            pen(vec![p(3.6, 7.7), p(8.0, 3.3), p(12.4, 7.7)], w2);
-        }
-        Icon::Mic => {
-            let w2 = (1.6 * s).max(1.1);
-            let body = Rect::from_min_max(p(5.9, 1.6), p(10.1, 9.8));
-            painter.rect_stroke(
-                body,
-                2.1 * s,
-                Stroke::new(w2, color),
-                egui::StrokeKind::Middle,
-            );
-            let arc: Vec<Pos2> = (0..=16)
-                .map(|i| {
-                    let a = std::f32::consts::PI * i as f32 / 16.0;
-                    p(8.0 + 4.7 * a.cos(), 7.4 + 4.7 * a.sin())
-                })
-                .collect();
-            pen(arc, w2);
-            pen(vec![p(8.0, 12.2), p(8.0, 14.6)], w2);
-        }
-        Icon::Link => {
-            // Two chain links on the diagonal: stadium outlines that overlap in the middle.
-            let stadium = |a: (f32, f32), b: (f32, f32), r: f32| -> Vec<Pos2> {
-                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-                let ang = dy.atan2(dx);
-                let half = std::f32::consts::FRAC_PI_2;
-                let mut pts = Vec::new();
-                for (c, start) in [(b, ang - half), (a, ang + half)] {
-                    for i in 0..=10 {
-                        let t = start + std::f32::consts::PI * i as f32 / 10.0;
-                        pts.push(p(c.0 + r * t.cos(), c.1 + r * t.sin()));
-                    }
-                }
-                pts
-            };
-            closed(stadium((4.2, 11.8), (7.6, 8.4), 2.5));
-            closed(stadium((8.4, 7.6), (11.8, 4.2), 2.5));
-        }
-        Icon::Plus => {
-            line(vec![p(8.0, 3.0), p(8.0, 13.0)]);
-            line(vec![p(3.0, 8.0), p(13.0, 8.0)]);
-        }
-        Icon::Minus => line(vec![p(3.0, 8.0), p(13.0, 8.0)]),
-        Icon::Fit => {
-            line(vec![p(2.5, 6.0), p(2.5, 2.5), p(6.0, 2.5)]);
-            line(vec![p(10.0, 2.5), p(13.5, 2.5), p(13.5, 6.0)]);
-            line(vec![p(13.5, 10.0), p(13.5, 13.5), p(10.0, 13.5)]);
-            line(vec![p(6.0, 13.5), p(2.5, 13.5), p(2.5, 10.0)]);
-        }
-        Icon::Close => {
-            line(vec![p(4.0, 4.0), p(12.0, 12.0)]);
-            line(vec![p(12.0, 4.0), p(4.0, 12.0)]);
-        }
-        Icon::Stop => {
-            painter.rect_filled(
-                Rect::from_min_max(p(4.0, 4.0), p(12.0, 12.0)),
-                1.5 * s,
-                color,
-            );
-        }
-        Icon::Search => {
-            painter.circle_stroke(p(7.0, 7.0), 4.2 * s, stroke);
-            line(vec![p(10.2, 10.2), p(13.8, 13.8)]);
-        }
-        Icon::Check => line(vec![p(3.2, 8.4), p(6.6, 11.6), p(12.8, 4.6)]),
-        Icon::Warning => {
-            closed(vec![p(8.0, 2.2), p(14.2, 13.4), p(1.8, 13.4)]);
-            line(vec![p(8.0, 6.4), p(8.0, 9.6)]);
-            painter.circle_filled(p(8.0, 11.5), 0.9 * s, color);
-        }
-        Icon::ChevronRight => line(vec![p(6.0, 3.5), p(10.5, 8.0), p(6.0, 12.5)]),
-        Icon::ChevronDown => line(vec![p(3.5, 6.0), p(8.0, 10.5), p(12.5, 6.0)]),
-        Icon::Folder => {
-            closed(vec![
-                p(2.0, 4.0),
-                p(6.0, 4.0),
-                p(7.5, 5.8),
-                p(14.0, 5.8),
-                p(14.0, 13.0),
-                p(2.0, 13.0),
-            ]);
-        }
-        Icon::Refresh => {
-            let mut pts = Vec::new();
-            for i in 0..=18 {
-                let a = 0.3 + i as f32 / 18.0 * (TAU * 0.75);
-                pts.push(p(8.0, 8.0) + Vec2::angled(a) * 5.0 * s);
-            }
-            line(pts);
-            line(vec![p(11.0, 2.8), p(12.6, 5.2), p(10.0, 5.6)]);
-        }
-        Icon::Tool => {
-            line(vec![p(9.8, 2.6), p(13.4, 6.2), p(11.0, 8.6), p(7.4, 5.0)]);
-            line(vec![p(7.4, 5.0), p(2.6, 9.8), p(6.2, 13.4), p(11.0, 8.6)]);
-        }
-        Icon::Target => {
-            painter.circle_stroke(p(8.0, 8.0), 5.0 * s, stroke);
-            painter.circle_filled(p(8.0, 8.0), 1.6 * s, color);
-            line(vec![p(8.0, 1.5), p(8.0, 4.0)]);
-            line(vec![p(8.0, 12.0), p(8.0, 14.5)]);
-            line(vec![p(1.5, 8.0), p(4.0, 8.0)]);
-            line(vec![p(12.0, 8.0), p(14.5, 8.0)]);
-        }
         Icon::Maximize => closed(vec![p(3.0, 3.0), p(13.0, 3.0), p(13.0, 13.0), p(3.0, 13.0)]),
         Icon::Restore => {
             closed(vec![p(3.0, 5.5), p(10.5, 5.5), p(10.5, 13.0), p(3.0, 13.0)]);
@@ -170,6 +225,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(10.5, 10.5),
             ]);
         }
+        _ => {}
     }
 }
 

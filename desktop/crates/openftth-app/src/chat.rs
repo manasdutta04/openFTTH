@@ -528,12 +528,13 @@ fn message_row(ui: &mut Ui, st: &AppState, m: &ChatMessage) {
                     crate::icons::paint(ui.painter(), r, Icon::Tool, p.accent);
                 });
                 ui.vertical(|ui| {
-                    ui.label(text(
-                        "You changed the design",
-                        12.0,
-                        Weight::Semibold,
-                        p.text,
-                    ));
+                    let head = match m.json["tool"].as_str().unwrap_or_default() {
+                        "check_rules" | "check_operator" => "You checked the design",
+                        "open_work_order" => "You opened a work order",
+                        "post_work_order" => "You posted the work order",
+                        _ => "You changed the design",
+                    };
+                    ui.label(text(head, 12.0, Weight::Semibold, p.text));
                     ui.add(egui::Label::new(text(&m.text, 12.0, Weight::Regular, p.text2)).wrap());
                     for w in m.json["warnings"].as_array().into_iter().flatten() {
                         ui.add(
@@ -643,6 +644,12 @@ fn composer_ui(ui: &mut Ui, st: &mut AppState, composer: &mut Composer) -> Optio
                     .clicked()
                 {
                     quick = Some(PROMPT_DESIGN.into());
+                }
+                if button(ui, &p, "Lay out by hand", Kind::Quiet)
+                    .on_hover_text("Prepare the area (free) and place every site and cable yourself; the engine routes, sizes and numbers what you lay out")
+                    .clicked()
+                {
+                    st.lay_out_by_hand();
                 }
             } else {
                 if button(ui, &p, "Validate", Kind::Quiet).clicked() {

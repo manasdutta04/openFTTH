@@ -24,6 +24,11 @@ pub enum Command {
     Undo,
     Redo,
     Join,
+    Mode(bool),
+    Complete,
+    CheckRules,
+    OpenWorkOrder,
+    PostWorkOrder,
     Tool(&'static str),
     Element(String),
 }
@@ -259,6 +264,38 @@ impl CommandPalette {
             open,
         );
         action("Measure a distance", "M", Command::Tool("measure"), open);
+        action(
+            "Manual mode: edit the map by hand",
+            "E",
+            Command::Mode(true),
+            open,
+        );
+        action(
+            "Auto mode: the crew designs",
+            "E",
+            Command::Mode(false),
+            open,
+        );
+        action("Add a POP", "P", Command::Tool("pop"), open);
+        action(
+            "Complete the network from my layout",
+            "",
+            Command::Complete,
+            open,
+        );
+        action("Check the rules (free)", "", Command::CheckRules, open);
+        action(
+            "Open a work order",
+            "",
+            Command::OpenWorkOrder,
+            open && st.work_order.is_none(),
+        );
+        action(
+            "Post the work order",
+            "",
+            Command::PostWorkOrder,
+            open && st.work_order.is_some(),
+        );
         action(
             "Join the two selected cables",
             "J",

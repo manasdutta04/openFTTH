@@ -237,6 +237,12 @@ pub struct AppState {
     violations_rx: Option<Receiver<Option<Value>>>,
     /// The design changed: undo state and rule markers are reloaded once the engine is idle.
     checks_stale: bool,
+    /// A background request whose answer is only a toast (posting a work order).
+    notice_rx: Option<Receiver<Result<String, String>>>,
+    /// When a crew member or the automatic design last touched an engine tool.
+    crew_active_at: Option<Instant>,
+    /// Something asked for manual mode (the "Lay out by hand" button); the app takes it.
+    pub want_manual: bool,
 }
 
 impl AppState {
@@ -291,6 +297,9 @@ impl AppState {
             violations: HashMap::new(),
             violations_rx: None,
             checks_stale: false,
+            notice_rx: None,
+            crew_active_at: None,
+            want_manual: false,
         };
         st.load_crew();
         st.load_engines();
@@ -742,6 +751,9 @@ impl AppState {
                         self.cursors.finished(&key);
                     }
                 }
+                if s(&f.data["folk"]) != "you" {
+                    self.crew_active_at = Some(Instant::now());
+                }
                 let chip = ToolChip {
                     folk: s(&f.data["folk"]),
                     tool: s(&f.data["tool"]),
@@ -864,6 +876,20 @@ impl AppState {
         }
     }
 
+    /// A crew member or the automatic design is working on the design: the map belongs to them
+    /// until they finish, so manual editing pauses. Held a moment after the last tool, so the
+    /// gap between two automatic steps does not unlock it.
+    pub fn crew_working(&self) -> bool {
+        self.busy()
+            || self
+                .chips
+                .iter()
+                .any(|c| c.state == "started" && c.folk != "you")
+            || self
+                .crew_active_at
+                .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2))
+    }
+
     /// An edit is on its way to the engine.
     pub fn editing(&self) -> bool {
         self.edit_rx.is_some()
@@ -872,6 +898,11 @@ impl AppState {
     /// The engineer's edit on the map, sent off the UI thread: the window keeps painting while
     /// the engine snaps, re-plans and checks. The result arrives as toasts and a new version.
     pub fn edit(&mut self, tool: &str, args: Value) {
+        if self.crew_working() {
+            self.toasts
+                .info("The crew is working on the map; manual editing resumes when it finishes");
+            return;
+        }
         if self.edit_rx.is_some() {
             self.toasts.info("The last edit is still being applied");
             return;
@@ -886,6 +917,15 @@ impl AppState {
     }
 
     fn poll_edit(&mut self) {
+        if let Some(rx) = &self.notice_rx {
+            if let Ok(out) = rx.try_recv() {
+                self.notice_rx = None;
+                match out {
+                    Ok(m) => self.toasts.info(m),
+                    Err(e) => self.toasts.error(e),
+                }
+            }
+        }
         // Reads on their own threads: during a crew run they wait their turn at the engine.
         if self.checks_stale && self.project.is_some() {
             self.checks_stale = false;
@@ -953,6 +993,29 @@ impl AppState {
         self.edits_rx = Some(rx);
     }
 
+    /// Ask to post the open work order. The harness raises an approval card in the crew panel;
+    /// the post happens only once the engineer allows it there.
+    pub fn post_work_order(&mut self) {
+        if self.notice_rx.is_some() {
+            return;
+        }
+        let what = self
+            .work_order
+            .as_ref()
+            .map(|w| format!("{} ({})", s(&w["id"]), s(&w["title"])))
+            .unwrap_or_default();
+        let client = self.client.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let out = client
+                .post_work_order(&what)
+                .map(|_| "Allow the card in the crew panel to post the work order".to_string())
+                .map_err(|e| format!("Not posted: {e}"));
+            let _ = tx.send(out);
+        });
+        self.notice_rx = Some(rx);
+    }
+
     /// Ask the engine which elements break a rule, in the background.
     pub fn load_violations(&mut self) {
         if self.project.is_none() || self.violations_rx.is_some() {
@@ -983,6 +1046,25 @@ impl AppState {
                 v["steps"].as_u64().unwrap_or(0)
             )),
             Err(e) => self.toasts.error(format!("Automatic design: {e}")),
+        }
+    }
+
+    /// Lay the network out by hand: prepare the area when it is not yet, or say how to start.
+    pub fn lay_out_by_hand(&mut self) {
+        self.want_manual = true;
+        let prepared = self
+            .design
+            .as_ref()
+            .is_some_and(|d| d.by_kind("home").next().is_some());
+        if prepared {
+            self.toasts.info("Place a POP (P), a cabinet (H) and FATs (T), give them their homes with Reassign (R), draw the cables (D), then Edit → Complete the network");
+            return;
+        }
+        match self.client.prepare_area() {
+            Ok(_) => self
+                .toasts
+                .info("Preparing the area: import, data check and street twin, no AI"),
+            Err(e) => self.toasts.error(format!("Prepare the area: {e}")),
         }
     }
 

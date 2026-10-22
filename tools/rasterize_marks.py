@@ -1,4 +1,5 @@
-"""Rasterise the engine marks (monochrome SVG icons) into alpha masks the desktop app embeds.
+"""Rasterise monochrome SVG icons into alpha masks the desktop app embeds: the engine marks and
+the interface icons (Material Symbols, Apache-2.0, see NOTICE).
 
 The app paints the masks tinted with the theme's text colour, so only coverage matters. No
 image library is needed: paths are flattened, fills use a scanline with the SVG fill rule and
@@ -6,8 +7,8 @@ strokes use the distance to the polyline. Run from the repo root:
 
     python tools/rasterize_marks.py
 
-Input:  desktop/crates/openftth-app/assets/engines/svg/<kind>.svg
-Output: desktop/crates/openftth-app/assets/engines/<kind>.a8  (SIZE x SIZE bytes, row-major)
+Input:  desktop/crates/openftth-app/assets/{engines,icons}/svg/<name>.svg
+Output: desktop/crates/openftth-app/assets/{engines,icons}/<name>.a8  (size x size bytes, row-major)
 """
 
 from __future__ import annotations
@@ -23,7 +24,9 @@ SS = 4  # supersamples per pixel per axis
 MARGIN = 0.04  # of the square, so marks do not touch the tile edge
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / "desktop" / "crates" / "openftth-app" / "assets" / "engines"
+ASSETS_ROOT = ROOT / "desktop" / "crates" / "openftth-app" / "assets"
+#: Each set: (folder, pixels per side, margin). Material Symbols pad their own 24-unit box.
+SETS = (("engines", SIZE, MARGIN), ("icons", 64, 0.0))
 
 Point = tuple[float, float]
 
@@ -270,10 +273,15 @@ def parse_svg(path: Path) -> tuple[tuple[float, float, float, float], list[dict]
 # ---- rasterisation ----------------------------------------------------------------------------
 
 
-def rasterise(viewbox: tuple[float, float, float, float], shapes: list[dict]) -> bytes:
+def rasterise(
+    viewbox: tuple[float, float, float, float],
+    shapes: list[dict],
+    size: int = SIZE,
+    margin: float = MARGIN,
+) -> bytes:
     vx, vy, vw, vh = viewbox
-    n = SIZE * SS
-    usable = 1.0 - 2 * MARGIN
+    n = size * SS
+    usable = 1.0 - 2 * margin
     scale = n * usable / max(vw, vh)
     ox = (n - vw * scale) / 2 - vx * scale
     oy = (n - vh * scale) / 2 - vy * scale
@@ -291,15 +299,15 @@ def rasterise(viewbox: tuple[float, float, float, float], shapes: list[dict]) ->
         if stroke != "none" and width > 0:
             stroke_polys(cover, n, polys, width * scale / 2)
 
-    out = bytearray(SIZE * SIZE)
+    out = bytearray(size * size)
     total = SS * SS
-    for py in range(SIZE):
-        for px in range(SIZE):
+    for py in range(size):
+        for px in range(size):
             s = 0
             for sy in range(SS):
                 row = (py * SS + sy) * n + px * SS
                 s += sum(cover[row : row + SS])
-            out[py * SIZE + px] = round(255 * s / total)
+            out[py * size + px] = round(255 * s / total)
     return bytes(out)
 
 
@@ -362,17 +370,20 @@ def stroke_polys(cover: bytearray, n: int, polys: list[list[Point]], half: float
 
 
 def main() -> int:
-    svgs = sorted((ASSETS / "svg").glob("*.svg"))
-    if not svgs:
-        print(f"no SVGs under {ASSETS / 'svg'}", file=sys.stderr)
+    done = 0
+    for folder, size, margin in SETS:
+        assets = ASSETS_ROOT / folder
+        for svg in sorted((assets / "svg").glob("*.svg")):
+            viewbox, shapes = parse_svg(svg)
+            mask = rasterise(viewbox, shapes, size, margin)
+            out = assets / f"{svg.stem}.a8"
+            out.write_bytes(mask)
+            filled = sum(1 for b in mask if b) / len(mask)
+            print(f"{folder}/{svg.stem:34} {len(shapes)} shapes -> {out.name} ({filled:.0%} covered)")
+            done += 1
+    if not done:
+        print(f"no SVGs under {ASSETS_ROOT}/*/svg", file=sys.stderr)
         return 1
-    for svg in svgs:
-        viewbox, shapes = parse_svg(svg)
-        mask = rasterise(viewbox, shapes)
-        out = ASSETS / f"{svg.stem}.a8"
-        out.write_bytes(mask)
-        filled = sum(1 for b in mask if b) / len(mask)
-        print(f"{svg.stem:22} {len(shapes)} shapes -> {out.name} ({filled:.0%} covered)")
     return 0
 
 

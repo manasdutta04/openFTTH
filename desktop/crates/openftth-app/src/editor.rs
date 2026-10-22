@@ -4,10 +4,11 @@
 //! engine tool call that snaps to the street twin; nothing here decides a number. Measuring
 //! only reads the map: its distances are shown, never written to the design.
 
-use egui::{pos2, vec2, Align2, Color32, CursorIcon, Pos2, Rect, Sense, Shape, Stroke, Ui};
+use egui::{pos2, vec2, Align2, Color32, CursorIcon, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use openftth_core::geo::Mercator;
 use serde_json::json;
 
+use crate::icons::{self, Icon};
 use crate::state::AppState;
 use crate::theme::{font, Palette, Weight};
 use crate::twin::{TwinResponse, TwinView};
@@ -22,6 +23,7 @@ pub enum Tool {
     Split,
     Reassign,
     Measure,
+    AddPop,
 }
 
 impl Tool {
@@ -35,6 +37,7 @@ impl Tool {
             Tool::Split => "Split cable",
             Tool::Reassign => "Reassign",
             Tool::Measure => "Measure",
+            Tool::AddPop => "Add POP",
         }
     }
 
@@ -48,18 +51,53 @@ impl Tool {
             Tool::Split => "S",
             Tool::Reassign => "R",
             Tool::Measure => "M",
+            Tool::AddPop => "P",
         }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Tool::Select => Icon::Select,
+            Tool::AddFat => Icon::Fat,
+            Tool::AddFdh => Icon::Cabinet,
+            Tool::AddChamber => Icon::Chamber,
+            Tool::AddPop => Icon::Pop,
+            Tool::Draw => Icon::Draw,
+            Tool::Split => Icon::Split,
+            Tool::Reassign => Icon::Reassign,
+            Tool::Measure => Icon::Measure,
+        }
+    }
+
+    /// Tools that only read the map stay usable while the crew works.
+    pub fn edits(self) -> bool {
+        !matches!(self, Tool::Select | Tool::Measure)
+    }
+
+    pub fn from_key(name: &str) -> Option<Tool> {
+        Some(match name {
+            "fat" => Tool::AddFat,
+            "fdh" => Tool::AddFdh,
+            "chamber" => Tool::AddChamber,
+            "pop" => Tool::AddPop,
+            "draw" => Tool::Draw,
+            "split" => Tool::Split,
+            "reassign" => Tool::Reassign,
+            "measure" => Tool::Measure,
+            "select" => Tool::Select,
+            _ => return None,
+        })
     }
 
     fn hint(self) -> &'static str {
         match self {
             Tool::Select => "",
-            Tool::AddFat | Tool::AddFdh | Tool::AddChamber => {
+            Tool::AddFat | Tool::AddFdh | Tool::AddChamber | Tool::AddPop => {
                 "Click where it goes: it snaps to the nearest street node and is pinned"
             }
             Tool::Draw => "Click points along the route · Enter or double-click finishes · Backspace drops the last point",
             Tool::Split => "Click a cable where it should be split: a chamber is added there",
-            Tool::Reassign => "Select a home or a FAT, then click the FAT or cabinet it should go to",
+            Tool::Reassign => "Select homes or FATs (Shift-click, Shift-drag a box), then click the FAT or cabinet they go to",
             Tool::Measure => "Click points to measure in a straight line · Backspace drops the last point · nothing is written to the design",
         }
     }
@@ -97,6 +135,8 @@ fn ground_m(a: (f64, f64), b: (f64, f64)) -> f64 {
 }
 
 pub struct Editor {
+    /// Manual mode: the engineer edits the map by hand. Auto: the crew and the engine design it.
+    pub manual: bool,
     pub tool: Tool,
     pub reason: String,
     pub cable_kind: &'static str,
@@ -106,6 +146,7 @@ pub struct Editor {
 impl Default for Editor {
     fn default() -> Self {
         Self {
+            manual: false,
             tool: Tool::Select,
             reason: "manual edit".into(),
             cable_kind: "distribution",
@@ -116,8 +157,125 @@ impl Default for Editor {
 
 impl Editor {
     pub fn set_tool(&mut self, tool: Tool) {
+        if tool.edits() {
+            self.manual = true;
+        }
         self.tool = tool;
         self.points.clear();
+    }
+
+    /// Switch between Auto and Manual. Leaving Manual puts the tools away.
+    pub fn set_manual(&mut self, on: bool) {
+        self.manual = on;
+        if !on {
+            self.tool = Tool::Select;
+            self.points.clear();
+        }
+    }
+
+    /// The Auto / Manual switch at the map's top-left corner. Manual is locked while the crew
+    /// works on the map.
+    pub fn mode_switch(&mut self, ui: &mut Ui, rect: Rect, p: &Palette, st: &AppState) {
+        let locked = st.crew_working();
+        let mut pick: Option<bool> = None;
+        egui::Area::new(egui::Id::unique("edit-mode"))
+            .fixed_pos(rect.left_top() + vec2(10.0, 10.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                crate::widgets::float_frame(p)
+                    .inner_margin(egui::Margin::same(3))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let auto = segment(ui, p, Icon::Auto, "Auto", !self.manual, true)
+                                .on_hover_text(
+                                    "Auto: the crew and the engine design the network (E switches)",
+                                );
+                            if auto.clicked() {
+                                pick = Some(false);
+                            }
+                            let manual = segment(
+                                ui,
+                                p,
+                                if locked { Icon::Lock } else { Icon::Manual },
+                                "Manual",
+                                self.manual,
+                                !locked,
+                            )
+                            .on_hover_text(if locked {
+                                "Locked while the crew works on the map"
+                            } else {
+                                "Manual: place sites and draw cables yourself (E switches)"
+                            });
+                            if manual.clicked() {
+                                pick = Some(true);
+                            }
+                        });
+                    });
+            });
+        if let Some(on) = pick {
+            self.set_manual(on);
+        }
+    }
+
+    /// While the crew works: say so over the map, with a way to stop it.
+    pub fn lock_banner(&mut self, ui: &mut Ui, rect: Rect, p: &Palette, st: &mut AppState) {
+        if !self.manual || !st.crew_working() {
+            return;
+        }
+        let mut stop = false;
+        egui::Area::new(egui::Id::unique("edit-lock"))
+            .fixed_pos(pos2(rect.left() + 196.0, rect.top() + 10.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                crate::widgets::float_frame(p).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                        icons::paint(ui.painter(), r, Icon::Crew, p.amber);
+                        ui.vertical(|ui| {
+                            ui.label(crate::widgets::text(
+                                "Manual editing is paused",
+                                12.5,
+                                Weight::Semibold,
+                                p.text,
+                            ));
+                            ui.label(crate::widgets::text(
+                                "The crew is working on the map. Your tools come back when it finishes.",
+                                11.5,
+                                Weight::Regular,
+                                p.text3,
+                            ));
+                        });
+                        ui.add_space(8.0);
+                        if crate::widgets::button(ui, p, "Stop the crew", crate::widgets::Kind::Quiet)
+                            .clicked()
+                        {
+                            stop = true;
+                        }
+                    });
+                });
+            });
+        if stop {
+            st.interrupt();
+        }
+    }
+
+    /// The thin accent frame round the map that says Manual mode is on.
+    pub fn frame(&self, ui: &Ui, rect: Rect, p: &Palette, st: &AppState) {
+        if !self.manual {
+            return;
+        }
+        let c = if st.crew_working() {
+            p.text3.gamma_multiply(0.5)
+        } else {
+            p.accent.gamma_multiply(0.8)
+        };
+        ui.painter_at(rect).rect_stroke(
+            rect.shrink(1.0),
+            0.0,
+            Stroke::new(2.0, c),
+            egui::StrokeKind::Inside,
+        );
     }
 
     fn reason(&self) -> String {
@@ -138,9 +296,13 @@ impl Editor {
         st: &AppState,
     ) -> Option<BarAction> {
         let mut action = None;
-        let busy = st.busy() || st.editing();
+        if !self.manual {
+            return None;
+        }
+        let locked = st.crew_working();
+        let busy = locked || st.editing();
         egui::Area::new(egui::Id::unique("edit-toolbar"))
-            .fixed_pos(rect.left_top() + vec2(10.0, 10.0))
+            .fixed_pos(rect.left_top() + vec2(10.0, 52.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 crate::widgets::float_frame(p).show(ui, |ui| {
@@ -152,44 +314,52 @@ impl Editor {
                         Tool::AddFat,
                         Tool::AddFdh,
                         Tool::AddChamber,
+                        Tool::AddPop,
                         Tool::Draw,
                         Tool::Split,
                         Tool::Reassign,
                         Tool::Measure,
                     ] {
                         let active = self.tool == tool;
-                        let resp = tool_button(
-                            ui,
-                            p,
-                            active,
-                            !busy || matches!(tool, Tool::Select | Tool::Measure),
-                            |pa, r, c| glyph(pa, r, tool, c),
-                        )
-                        .on_hover_text(format!(
-                            "{} ({})",
-                            tool.label(),
-                            tool.key()
-                        ));
+                        let resp =
+                            tool_button(ui, p, active, !busy || !tool.edits(), |pa, r, c| {
+                                icons::paint(pa, r, tool.icon(), c)
+                            })
+                            .on_hover_text(
+                                if locked && tool.edits() {
+                                    format!("{}: paused while the crew works", tool.label())
+                                } else {
+                                    format!("{} ({})", tool.label(), tool.key())
+                                },
+                            );
                         if resp.clicked() {
                             self.set_tool(if active { Tool::Select } else { tool });
                         }
                     }
                     crate::widgets::hairline(ui, p);
                     let has_sel = !st.selection.is_empty();
-                    if tool_button(ui, p, false, has_sel && !busy, trash)
-                        .on_hover_text("Delete the selection (Del)")
-                        .clicked()
+                    if tool_button(ui, p, false, has_sel && !busy, |pa, r, c| {
+                        icons::paint(pa, r, Icon::Delete, c)
+                    })
+                    .on_hover_text("Delete the selection (Del)")
+                    .clicked()
                     {
                         action = Some(BarAction::Delete);
                     }
-                    if tool_button(ui, p, false, join_pair(st).is_some() && !busy, join_glyph)
-                        .on_hover_text("Join the two selected cables (J)")
-                        .clicked()
+                    if tool_button(
+                        ui,
+                        p,
+                        false,
+                        join_pair(st).is_some() && !busy,
+                        |pa, r, c| icons::paint(pa, r, Icon::Join, c),
+                    )
+                    .on_hover_text("Join the two selected cables (J)")
+                    .clicked()
                     {
                         action = Some(BarAction::Join);
                     }
                     if tool_button(ui, p, false, st.can_undo() && !busy, |pa, r, c| {
-                        undo_glyph(pa, r, c, false)
+                        icons::paint(pa, r, Icon::Undo, c)
                     })
                     .on_hover_text(undo_hint(st, "undo", "Undo (Ctrl+Z)"))
                     .clicked()
@@ -197,7 +367,7 @@ impl Editor {
                         action = Some(BarAction::Undo);
                     }
                     if tool_button(ui, p, false, st.can_redo() && !busy, |pa, r, c| {
-                        undo_glyph(pa, r, c, true)
+                        icons::paint(pa, r, Icon::Redo, c)
                     })
                     .on_hover_text(undo_hint(st, "redo", "Redo (Ctrl+Y)"))
                     .clicked()
@@ -212,14 +382,15 @@ impl Editor {
     /// The bar across the top of the map while a tool is active: what to do, the cable type,
     /// and the reason that goes on the record with every edit.
     pub fn edit_bar(&mut self, ui: &mut Ui, rect: Rect, p: &Palette, st: &mut AppState) {
-        if self.tool == Tool::Select {
+        if self.tool == Tool::Select || !self.manual || st.crew_working() {
             return;
         }
         let mut finish = false;
         let mut cancel = false;
+        // Beside the mode switch, not centred: a side panel opening must not move it under the pointer.
         egui::Area::new(egui::Id::unique("edit-bar"))
-            .fixed_pos(pos2(rect.center().x, rect.top() + 10.0))
-            .pivot(Align2::CENTER_TOP)
+            .fixed_pos(pos2(rect.left() + 196.0, rect.top() + 10.0))
+            .pivot(Align2::LEFT_TOP)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 crate::widgets::float_frame(p).show(ui, |ui| {
@@ -325,6 +496,12 @@ impl Editor {
         if self.points.len() < 2 {
             return;
         }
+        if st.editing() || st.busy() {
+            // Keep the points: the cable is sent once the last change has been applied.
+            st.toasts
+                .info("The last change is still being applied; press Enter again in a moment");
+            return;
+        }
         let pts: Vec<[f64; 2]> = self.points.iter().map(|(lon, lat)| [*lon, *lat]).collect();
         st.edit(
             "draw_cable",
@@ -336,7 +513,10 @@ impl Editor {
     /// A click on the map with the current tool. Returns true when the tool used the click (so
     /// it does not also change the selection).
     pub fn on_map(&mut self, resp: &TwinResponse, st: &mut AppState) -> bool {
-        if self.tool == Tool::Select {
+        if self.tool == Tool::Select || !self.manual {
+            return false;
+        }
+        if self.tool.edits() && st.crew_working() {
             return false;
         }
         if resp.response.hovered() {
@@ -369,10 +549,11 @@ impl Editor {
                 .unwrap_or_default()
         };
         match self.tool {
-            Tool::AddFat | Tool::AddFdh | Tool::AddChamber => {
+            Tool::AddFat | Tool::AddFdh | Tool::AddChamber | Tool::AddPop => {
                 let kind = match self.tool {
                     Tool::AddFat => "fat",
                     Tool::AddFdh => "fdh",
+                    Tool::AddPop => "pop",
                     _ => "chamber",
                 };
                 st.edit(
@@ -391,27 +572,31 @@ impl Editor {
                 _ => st.toasts.info("Click on a cable to split it"),
             },
             Tool::Reassign => {
-                let from = st.selection.first().cloned();
-                match (from, resp.clicked.clone()) {
-                    (Some(from), Some(to)) if from != to => {
-                        let pair = (kind_of(&from), kind_of(&to));
-                        if pair == ("home".into(), "fat".into())
-                            || pair == ("fat".into(), "fdh".into())
-                        {
-                            st.edit(
-                                "reassign",
-                                json!({ "element_uuid": from, "to_uuid": to, "reason": reason }),
-                            );
-                        } else {
-                            st.toasts
-                                .info("Reassign a home to a FAT, or a FAT to a cabinet");
-                        }
-                    }
-                    (None, Some(id)) => st.selection = vec![id],
-                    _ => st
-                        .toasts
-                        .info("Select a home or a FAT first, then click where it goes"),
+                // A FAT is where selected homes go, a cabinet where selected FATs go; a click on
+                // anything else selects it like the Select tool does (Shift adds to it).
+                let Some(to) = resp.clicked.clone() else {
+                    return false;
+                };
+                let want = match kind_of(&to).as_str() {
+                    "fat" => "home",
+                    "fdh" => "fat",
+                    _ => "",
+                };
+                let movers: Vec<String> = st
+                    .selection
+                    .iter()
+                    .filter(|id| !want.is_empty() && kind_of(id) == want)
+                    .cloned()
+                    .collect();
+                if movers.is_empty() {
+                    return false;
                 }
+                let args = if let [one] = movers.as_slice() {
+                    json!({ "element_uuid": one, "to_uuid": to, "reason": reason })
+                } else {
+                    json!({ "element_uuids": movers, "to_uuid": to, "reason": reason })
+                };
+                st.edit("reassign", args);
             }
             Tool::Select | Tool::Measure => {}
         }
@@ -498,16 +683,6 @@ impl Editor {
     }
 }
 
-fn join_glyph(pa: &egui::Painter, r: Rect, c: Color32) {
-    let s = Stroke::new(1.6, c);
-    let at = |x: f32, y: f32| pos2(r.left() + x * r.width(), r.top() + y * r.height());
-    pa.line_segment([at(0.0, 0.5), at(0.38, 0.5)], s);
-    pa.line_segment([at(0.62, 0.5), at(1.0, 0.5)], s);
-    pa.circle_filled(at(0.5, 0.5), 2.4, c);
-    pa.line_segment([at(0.3, 0.25), at(0.42, 0.42)], Stroke::new(1.2, c));
-    pa.line_segment([at(0.7, 0.25), at(0.58, 0.42)], Stroke::new(1.2, c));
-}
-
 fn undo_hint(st: &AppState, which: &str, fallback: &str) -> String {
     st.edits
         .as_ref()
@@ -555,111 +730,52 @@ fn tool_button(
     }
 }
 
-/// Each tool's mark, drawn in the 16 px square `r`.
-fn glyph(pa: &egui::Painter, r: Rect, tool: Tool, c: Color32) {
-    let s = Stroke::new(1.6, c);
-    let at = |x: f32, y: f32| pos2(r.left() + x * r.width(), r.top() + y * r.height());
-    match tool {
-        Tool::Select => {
-            pa.add(Shape::convex_polygon(
-                vec![
-                    at(0.2, 0.05),
-                    at(0.85, 0.6),
-                    at(0.52, 0.62),
-                    at(0.68, 0.95),
-                    at(0.55, 1.0),
-                    at(0.4, 0.68),
-                    at(0.2, 0.85),
-                ],
-                Color32::TRANSPARENT,
-                s,
-            ));
-        }
-        Tool::AddFat => {
-            pa.add(Shape::convex_polygon(
-                vec![at(0.5, 0.1), at(0.95, 0.9), at(0.05, 0.9)],
-                Color32::TRANSPARENT,
-                s,
-            ));
-        }
-        Tool::AddFdh => {
-            pa.rect_filled(Rect::from_min_max(at(0.15, 0.15), at(0.85, 0.85)), 2.0, c);
-        }
-        Tool::AddChamber => {
-            pa.rect_stroke(
-                Rect::from_min_max(at(0.15, 0.15), at(0.85, 0.85)),
-                1.0,
-                s,
-                egui::StrokeKind::Middle,
-            );
-            pa.line_segment([at(0.15, 0.5), at(0.85, 0.5)], s);
-        }
-        Tool::Draw => {
-            pa.add(Shape::line(
-                vec![at(0.05, 0.9), at(0.35, 0.45), at(0.6, 0.6), at(0.95, 0.1)],
-                s,
-            ));
-            for q in [at(0.05, 0.9), at(0.35, 0.45), at(0.6, 0.6), at(0.95, 0.1)] {
-                pa.circle_filled(q, 1.8, c);
-            }
-        }
-        Tool::Split => {
-            pa.line_segment([at(0.05, 0.5), at(0.38, 0.5)], s);
-            pa.line_segment([at(0.62, 0.5), at(0.95, 0.5)], s);
-            pa.line_segment(
-                [at(0.5, 0.1), at(0.5, 0.9)],
-                Stroke::new(1.2, c.gamma_multiply(0.7)),
-            );
-        }
-        Tool::Measure => {
-            // A ruler laid at an angle, with ticks.
-            pa.add(Shape::closed_line(
-                vec![at(0.05, 0.7), at(0.7, 0.05), at(0.95, 0.3), at(0.3, 0.95)],
-                s,
-            ));
-            for t in [0.25f32, 0.4, 0.55] {
-                let a = at(0.05 + t, 0.7 - t);
-                pa.line_segment([a, a + vec2(3.0, 3.0)], Stroke::new(1.2, c));
-            }
-        }
-        Tool::Reassign => {
-            pa.circle_stroke(at(0.22, 0.75), 2.6, s);
-            pa.add(Shape::line(
-                vec![at(0.3, 0.62), at(0.55, 0.3), at(0.88, 0.25)],
-                s,
-            ));
-            pa.add(Shape::line(
-                vec![at(0.7, 0.1), at(0.88, 0.25), at(0.72, 0.42)],
-                s,
-            ));
-        }
+/// One half of the Auto / Manual switch.
+fn segment(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: Icon,
+    label: &str,
+    on: bool,
+    enabled: bool,
+) -> egui::Response {
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.to_string(), font(12.0, Weight::Semibold), p.text);
+    let size = vec2(galley.size().x + 38.0, 26.0);
+    let (rect, resp) = ui.allocate_exact_size(
+        size,
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    let painter = ui.painter();
+    if on {
+        painter.rect_filled(rect, 5.0, p.accent_soft);
+    } else if enabled && resp.hovered() {
+        painter.rect_filled(rect, 5.0, p.bg3);
     }
-}
-
-fn trash(pa: &egui::Painter, r: Rect, c: Color32) {
-    let s = Stroke::new(1.5, c);
-    let at = |x: f32, y: f32| pos2(r.left() + x * r.width(), r.top() + y * r.height());
-    pa.line_segment([at(0.1, 0.22), at(0.9, 0.22)], s);
-    pa.line_segment([at(0.38, 0.08), at(0.62, 0.08)], s);
-    pa.add(Shape::line(
-        vec![at(0.2, 0.22), at(0.27, 0.95), at(0.73, 0.95), at(0.8, 0.22)],
-        s,
-    ));
-}
-
-fn undo_glyph(pa: &egui::Painter, r: Rect, c: Color32, redo: bool) {
-    let s = Stroke::new(1.6, c);
-    let flip = |x: f32| if redo { 1.0 - x } else { x };
-    let at = |x: f32, y: f32| pos2(r.left() + flip(x) * r.width(), r.top() + y * r.height());
-    let arc: Vec<Pos2> = (0..=12)
-        .map(|i| {
-            let t = std::f32::consts::PI * (i as f32 / 12.0);
-            at(0.55 + 0.32 * t.cos(), 0.55 + 0.3 * t.sin() - 0.0)
-        })
-        .collect();
-    pa.add(Shape::line(arc, s));
-    pa.add(Shape::line(
-        vec![at(0.1, 0.35), at(0.23, 0.58), at(0.42, 0.42)],
-        s,
-    ));
+    let c = if !enabled {
+        p.text3.gamma_multiply(0.6)
+    } else if on {
+        p.accent
+    } else {
+        p.text2
+    };
+    let ir = Rect::from_center_size(pos2(rect.left() + 17.0, rect.center().y), Vec2::splat(16.0));
+    icons::paint(painter, ir, icon, c);
+    painter.text(
+        pos2(rect.left() + 30.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        font(12.0, Weight::Semibold),
+        c,
+    );
+    if enabled {
+        resp.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        resp
+    }
 }

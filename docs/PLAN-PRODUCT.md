@@ -43,8 +43,20 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
   violations after it. The app has a tool bar on the map (V select, T FAT, H cabinet,
   C chamber, D draw, S split, R reassign, M measure, J join), Shift-click and Shift-drag box
   selection, Del for one or many, Ctrl+Z/Y, rule-issue rings on the map with their messages,
-  a Table tab per layer with inline edit, and an edit strip in the Splices tab. Still to do:
-  the full by-hand gate through to posting a work order.
+  a Table tab per layer with inline edit, and an edit strip in the Splices tab.
+  *Gate passed (2026-10-22):* on a fresh two-block area (`fixtures/gent/area-hand.geojson`,
+  62 homes) the network was built in the app by hand only: "Lay out by hand" prepared the area,
+  a POP, a cabinet and four FATs were placed, homes and FATs were given to them by box selection
+  and Reassign, one feeder and four distribution cables were drawn, and Edit → Complete the
+  network routed, sized and numbered it along exactly those cables. The free checks reported no
+  violations (worst ODN loss 21.36 dB of 28.0 dB) and no operator-pack violations; WO-0001 was
+  opened and posted to the network of record through its approval card.
+  `engine/tests/test_hand_built.py` repeats the gate, including a refused post while the layout
+  still broke the rules.
+  The map has an Auto / Manual switch (E): Manual brings out the tool bar, frames the map in the
+  accent colour and shows in the status bar; while a crew member or the automatic design works,
+  manual editing is locked (greyed tools, a banner with "Stop the crew", every edit refused).
+  Icons are Material Symbols (Apache-2.0, see NOTICE).
 
 ### P4 — Plan sheets, reports and exchange (engine `deliver/`, app)
 - Plan sheets: atlas of A3/A1 pages over the area (or per block), operator symbology from the operator pack, legend, scale bar, north arrow, title block from work order, label placement without collisions; PDF and DXF (own writers: DXF R12/R2000 text format, PDF via matplotlib backend already present).

@@ -7,3 +7,7 @@ engine/, harness/ and desktop/.
 
 Fixture data under fixtures/ is derived from OpenStreetMap,
 © OpenStreetMap contributors, available under the Open Database Licence (ODbL).
+
+Interface icons in desktop/crates/openftth-app/assets/icons/ are Material Symbols by Google,
+available under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0);
+the SVG sources are kept next to the rasterised masks.

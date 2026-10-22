@@ -12,6 +12,8 @@ pub struct Prefs {
     pub show_crew: bool,
     pub show_cursors: bool,
     pub follow_crew: bool,
+    /// Manual editing mode (the map's tool bar is out).
+    pub manual: bool,
 }
 
 impl Default for Prefs {
@@ -21,6 +23,7 @@ impl Default for Prefs {
             show_crew: true,
             show_cursors: true,
             follow_crew: false,
+            manual: false,
         }
     }
 }
@@ -51,6 +54,10 @@ impl Prefs {
             show_crew: flag("show_crew", d.show_crew),
             show_cursors: flag("show_cursors", d.show_cursors),
             follow_crew: flag("follow_crew", d.follow_crew),
+            manual: v["mode"]
+                .as_str()
+                .map(|m| m == "manual")
+                .unwrap_or(d.manual),
         }
     }
 
@@ -63,6 +70,7 @@ impl Prefs {
             "show_crew": self.show_crew,
             "show_cursors": self.show_cursors,
             "follow_crew": self.follow_crew,
+            "mode": if self.manual { "manual" } else { "auto" },
         });
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);

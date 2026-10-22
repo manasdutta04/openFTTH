@@ -62,6 +62,8 @@ pub struct OpenFtthApp {
     /// The preferences as last written, so they are saved only when they change.
     saved_prefs: Prefs,
     about: bool,
+    /// The title of the work order being opened, while its dialog shows.
+    wo_dialog: Option<String>,
     palette: CommandPalette,
     editor: Editor,
     table: TableState,
@@ -196,7 +198,11 @@ impl OpenFtthApp {
             saved_prefs: prefs,
             about: false,
             palette: CommandPalette::default(),
-            editor: Editor::default(),
+            wo_dialog: None,
+            editor: Editor {
+                manual: prefs.manual,
+                ..Editor::default()
+            },
             table: TableState::default(),
             engine_form: None,
             confirm_reset: false,
@@ -568,7 +574,22 @@ project {}",
 
         ui.menu_button(Self::menu_title("Edit", &p), |ui| {
             widgets::menu_begin(ui, 260.0);
-            let free = open && !busy && !self.st.editing();
+            let free = open && !busy && !self.st.editing() && !self.st.crew_working();
+            let manual = self.editor.manual;
+            if menu_item(
+                ui,
+                &p,
+                if manual {
+                    "Switch to Auto mode"
+                } else {
+                    "Switch to Manual mode"
+                },
+                Some("E"),
+                open && (manual || !self.st.crew_working()),
+            ) {
+                self.editor.set_manual(!manual);
+            }
+            menu_separator(ui, &p);
             if menu_item(ui, &p, "Undo", Some("Ctrl+Z"), free && self.st.can_undo()) {
                 self.st.edit("undo_edit", serde_json::json!({}));
             }
@@ -586,6 +607,24 @@ project {}",
                 free && join_pair(&self.st).is_some(),
             ) {
                 self.join_selection();
+            }
+            menu_separator(ui, &p);
+            if menu_item(ui, &p, "Complete the network", None, free) {
+                self.complete_network();
+            }
+            if menu_item(ui, &p, "Check the rules", None, free) {
+                self.st.edit("check_rules", serde_json::json!({}));
+            }
+            if menu_item(ui, &p, "Check the operator pack", None, free) {
+                self.st.edit("check_operator", serde_json::json!({}));
+            }
+            menu_separator(ui, &p);
+            let wo_open = self.st.work_order.is_some();
+            if menu_item(ui, &p, "Open a work order…", None, free && !wo_open) {
+                self.wo_dialog = Some(String::new());
+            }
+            if menu_item(ui, &p, "Post the work order…", None, free && wo_open) {
+                self.st.post_work_order();
             }
             menu_separator(ui, &p);
             if menu_item(ui, &p, "Copy selected ids", Some("Ctrl+C"), has_selection) {
@@ -679,6 +718,9 @@ project {}",
             let can = open && !busy;
             if menu_item(ui, &p, "Design automatically (free, no AI)", None, can) {
                 self.st.autodesign();
+            }
+            if menu_item(ui, &p, "Lay out by hand (prepare the area)", None, can) {
+                self.st.lay_out_by_hand();
             }
             if menu_item(ui, &p, "Ask the crew to design this area", None, can) {
                 self.st.send(PROMPT_DESIGN);
@@ -1030,6 +1072,36 @@ project {}",
                 ));
                 ui.add_space(10.0);
             }
+            if self.st.project.is_some() {
+                let locked = self.st.crew_working();
+                let (label, icon, c) = match (self.editor.manual, locked) {
+                    (true, true) => ("Manual · paused", Icon::Lock, p.amber),
+                    (true, false) => ("Manual", Icon::Manual, p.accent),
+                    (false, _) => ("Auto", Icon::Auto, p.text3),
+                };
+                let resp = ui
+                    .horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let (r, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                        crate::icons::paint(ui.painter(), r, icon, c);
+                        ui.label(text(label, 11.0, Weight::Semibold, c));
+                    })
+                    .response
+                    .interact(Sense::click())
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(if locked {
+                        "The crew is working on the map; manual editing waits for it"
+                    } else if self.editor.manual {
+                        "Manual mode: you edit the map. Click (or E) for Auto"
+                    } else {
+                        "Auto mode: the crew and the engine design. Click (or E) for Manual"
+                    });
+                if resp.clicked() && (self.editor.manual || !locked) {
+                    let on = !self.editor.manual;
+                    self.editor.set_manual(on);
+                }
+                ui.add_space(10.0);
+            }
             if let Some(wo) = &self.st.work_order {
                 ui.label(text(
                     format!("{} open · {}", s_str(&wo["id"]), s_str(&wo["title"])),
@@ -1235,7 +1307,10 @@ project {}",
                     Some(BarAction::Join) => self.join_selection(),
                     None => {}
                 }
+                self.editor.frame(ui, map.rect, &p, &self.st);
+                self.editor.mode_switch(ui, map.rect, &p, &self.st);
                 self.editor.edit_bar(ui, map.rect, &p, &mut self.st);
+                self.editor.lock_banner(ui, map.rect, &p, &mut self.st);
                 if self.show_cursors {
                     let rect = map.rect;
                     let view = &self.twin;
@@ -1467,6 +1542,78 @@ project {}",
         }
     }
 
+    /// Route, size and number the network the engineer laid out by hand, as one edit.
+    fn complete_network(&mut self) {
+        if self.st.editing() || self.st.busy() {
+            return;
+        }
+        let args = serde_json::json!({ "reason": self.edit_reason() });
+        self.st.edit("complete_network", args);
+    }
+
+    /// The title for a new work order; opening it is the engineer's own action, no card needed.
+    fn work_order_window(&mut self, ctx: &egui::Context) {
+        let Some(title) = self.wo_dialog.as_mut() else {
+            return;
+        };
+        let p = self.st.palette;
+        let mut open = true;
+        let mut go = false;
+        let mut cancel = false;
+        egui::Window::new("Open a work order")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.add(
+                    egui::Label::new(text(
+                        "Changes from here on belong to the work order until it is posted to the network of record. Posting asks for your approval.",
+                        12.5,
+                        Weight::Regular,
+                        p.text2,
+                    ))
+                    .wrap(),
+                );
+                ui.add_space(8.0);
+                ui.label(text("Title", 11.5, Weight::Medium, p.text3));
+                let field = ui.add(
+                    egui::TextEdit::singleline(title)
+                        .hint_text("e.g. Two blocks off the square")
+                        .desired_width(f32::INFINITY),
+                );
+                // The title takes the keyboard as the dialog opens, so typing never reaches the
+                // map's shortcuts.
+                if !field.has_focus() && ui.ctx().memory(|m| m.focused().is_none()) {
+                    field.request_focus();
+                }
+                if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    go = true;
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let ok = !title.trim().is_empty();
+                    if widgets::button_enabled(ui, &p, "Open", widgets::Kind::Prominent, ok)
+                        .clicked()
+                    {
+                        go = true;
+                    }
+                    if widgets::button(ui, &p, "Cancel", widgets::Kind::Quiet).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if go {
+            if let Some(t) = self.wo_dialog.take().filter(|t| !t.trim().is_empty()) {
+                self.st
+                    .edit("open_work_order", serde_json::json!({ "title": t.trim() }));
+            }
+        } else if !open || cancel {
+            self.wo_dialog = None;
+        }
+    }
+
     fn edit_reason(&self) -> String {
         let r = self.editor.reason.trim();
         if r.is_empty() {
@@ -1498,20 +1645,31 @@ project {}",
             Command::About => self.about = true,
             Command::Undo => self.st.edit("undo_edit", serde_json::json!({})),
             Command::Join => self.join_selection(),
+            Command::Complete => self.complete_network(),
+            Command::CheckRules => self.st.edit("check_rules", serde_json::json!({})),
+            Command::OpenWorkOrder => self.wo_dialog = Some(String::new()),
+            Command::PostWorkOrder => self.st.post_work_order(),
             Command::Redo => self.st.edit("redo_edit", serde_json::json!({})),
             Command::Tool(name) => {
-                let tool = match name {
-                    "fat" => Tool::AddFat,
-                    "fdh" => Tool::AddFdh,
-                    "chamber" => Tool::AddChamber,
-                    "draw" => Tool::Draw,
-                    "split" => Tool::Split,
-                    "reassign" => Tool::Reassign,
-                    "measure" => Tool::Measure,
-                    _ => Tool::Select,
-                };
+                let tool = Tool::from_key(name).unwrap_or(Tool::Select);
                 self.st.tab = Tab::Twin;
-                self.editor.set_tool(tool);
+                if tool.edits() && self.st.crew_working() {
+                    self.st
+                        .toasts
+                        .info("Manual editing is paused while the crew works on the map");
+                } else {
+                    self.editor.set_tool(tool);
+                }
+            }
+            Command::Mode(manual) => {
+                self.st.tab = Tab::Twin;
+                if manual && self.st.crew_working() {
+                    self.st
+                        .toasts
+                        .info("Manual editing is paused while the crew works on the map");
+                } else {
+                    self.editor.set_manual(manual);
+                }
             }
             Command::Element(id) => {
                 if let Some(e) = self.st.design.as_ref().and_then(|d| d.get(&id)) {
@@ -1547,6 +1705,27 @@ project {}",
             )
         });
         let on_map = self.st.tab == Tab::Twin && self.st.project.is_some();
+        let locked = self.st.crew_working();
+        if locked && self.editor.tool.edits() {
+            // The crew took the map: put the tool down rather than leave a half-made edit.
+            self.editor.set_tool(Tool::Select);
+            self.st
+                .toasts
+                .info("Manual editing paused: the crew is working on the map");
+        }
+        if self.st.want_manual {
+            self.st.want_manual = false;
+            self.editor.set_manual(true);
+        }
+        if on_map
+            && !typing
+            && !ctrl
+            && ui.input(|i| i.key_pressed(Key::E))
+            && (self.editor.manual || !locked)
+        {
+            let on = !self.editor.manual;
+            self.editor.set_manual(on);
+        }
         if on_map && !typing {
             let (keys, del, enter, back, join) = ui.input(|i| {
                 (
@@ -1559,6 +1738,7 @@ project {}",
                         (i.key_pressed(Key::S) && !i.modifiers.ctrl, Tool::Split),
                         (i.key_pressed(Key::R), Tool::Reassign),
                         (i.key_pressed(Key::M), Tool::Measure),
+                        (i.key_pressed(Key::P), Tool::AddPop),
                     ],
                     i.key_pressed(Key::Delete),
                     i.key_pressed(Key::Enter),
@@ -1568,15 +1748,15 @@ project {}",
             });
             if !ctrl {
                 for (pressed, tool) in keys {
-                    if pressed {
+                    if pressed && !(locked && tool.edits()) {
                         self.editor.set_tool(tool);
                     }
                 }
             }
-            if del {
+            if del && self.editor.manual {
                 self.delete_selection();
             }
-            if join {
+            if join && self.editor.manual {
                 self.join_selection();
             }
             if enter && self.editor.tool == Tool::Draw {
@@ -1719,6 +1899,7 @@ impl eframe::App for OpenFtthApp {
         self.about_window(ui.ctx());
         self.engine_window(ui.ctx());
         self.reset_window(ui.ctx());
+        self.work_order_window(ui.ctx());
         self.import.show(ui.ctx(), &mut self.st);
         self.connect.show(ui.ctx(), &mut self.st);
         if let Some(cmd) = self.palette.show(ui.ctx(), &self.st) {
@@ -1729,6 +1910,7 @@ impl eframe::App for OpenFtthApp {
             show_crew: self.show_crew,
             show_cursors: self.show_cursors,
             follow_crew: self.follow_crew,
+            manual: self.editor.manual,
         };
         if now != self.saved_prefs {
             now.save();

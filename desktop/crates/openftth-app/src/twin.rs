@@ -27,6 +27,9 @@ pub struct TwinView {
     pub context: Option<MapContext>,
     /// Where a Shift-drag selection box started.
     boxing: Option<Pos2>,
+    /// The map's area last frame: when a side panel opens or closes the left edge stays put,
+    /// so what is under the pointer does not jump sideways.
+    last_rect: Option<Rect>,
 }
 
 impl Default for TwinView {
@@ -39,6 +42,7 @@ impl Default for TwinView {
             legend_open: true,
             context: None,
             boxing: None,
+            last_rect: None,
         }
     }
 }
@@ -352,6 +356,12 @@ impl TwinView {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
         painter.rect_filled(rect, 0.0, p.map_bg);
+        if let Some(prev) = self.last_rect.replace(rect) {
+            let narrower = prev.width() - rect.width();
+            if self.fitted && narrower.abs() > 0.5 && (prev.left() - rect.left()).abs() < 0.5 {
+                self.center[0] -= (narrower / 2.0) as f64 / self.scale;
+            }
+        }
 
         if !self.fitted {
             let mut b = design.map(Design::bounds).unwrap_or_else(Bounds::empty);

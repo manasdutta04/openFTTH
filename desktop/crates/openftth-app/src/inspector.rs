@@ -269,7 +269,8 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                     }
                     let skip = [
                         "kind", "edges", "surfaces", "node", "building", "fat_ids", "mdu",
-                        "fat_id", "fdh_id", "home", "lifecycle", "provenance",
+                        "fat_id", "fdh_id", "home", "lifecycle", "provenance", "drawn_edges",
+                        "edited",
                     ];
                     let shown: Vec<String> = e.props.values().map(s).collect();
                     for (k, v) in e
