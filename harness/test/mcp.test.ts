@@ -1,12 +1,12 @@
 /**
- * The public MCP server: an MCP client over streamable HTTP and through the stdio bridge, with
- * the fake design engine. Covers the off switch, the token, the curated tools, resources,
- * prompts and the approval card a risky tool opens in the app.
+ * openFTTH's MCP link: an MCP client over the link and through the Claude Desktop bridge, with
+ * the fake design engine. Covers the off switch, the key, loopback-only access, install links,
+ * the bundle, the curated tools, resources, prompts and the approval card a risky tool opens.
  */
 
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -46,34 +46,59 @@ after(async () => {
 const api = (path: string, init: RequestInit = {}) =>
   fetch(`${h.url}${path}`, { ...init, headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", ...(init.headers ?? {}) } });
 
-async function connect(token: string): Promise<Client> {
+async function connect(link: string): Promise<Client> {
   const client = new Client({ name: "test-client", version: "0.0.1" });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${h.url}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+  await client.connect(new StreamableHTTPClientTransport(new URL(link)));
   return client;
 }
 
 const parse = (r: any) => JSON.parse(r.content[0].text);
+const link = async (): Promise<any> => (await api("/api/mcp")).json();
+const post = async (body: unknown): Promise<any> => (await api("/api/mcp", { method: "POST", body: JSON.stringify(body) })).json();
 
-test("the MCP server is off until the engineer turns it on, and needs its own token", async () => {
-  const off = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-  assert.equal(off.status, 404);
-  assert.match(((await off.json()) as any).error, /Connect other AI apps/);
+test("the link is off until the engineer turns it on, then one URL is all a client needs", async () => {
+  const off = await link();
+  assert.equal(off.enabled, false);
+  assert.equal(off.listening, false);
+  assert.equal(off.link, "http://127.0.0.1:3920/mcp", "the default link is fixed");
 
-  const on: any = await (await api("/api/mcp", { method: "POST", body: JSON.stringify({ enabled: true }) })).json();
-  assert.equal(on.enabled, true);
-  assert.match(on.token, /^oft_[0-9a-f]{48}$/);
-  assert.equal(on.url, `${h.url}/mcp`);
-  assert.match(on.snippets.claude_desktop, /mcp-stdio/);
-  assert.match(on.snippets.claude_code, /^claude mcp add openftth/);
+  // Port 0 in tests so a running app's link is never disturbed.
+  const on = await post({ enabled: true, port: 0 });
+  assert.equal(on.listening, true, on.error);
+  assert.match(on.link, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+  assert.equal(on.installs.claude_code, `claude mcp add --transport http openftth "${on.link}"`);
+  const cursor = new URL(on.installs.cursor);
+  assert.equal(cursor.searchParams.get("name"), "openftth");
+  assert.deepEqual(JSON.parse(Buffer.from(cursor.searchParams.get("config")!, "base64").toString()), { url: on.link });
+  assert.deepEqual(JSON.parse(decodeURIComponent(on.installs.vscode.replace("vscode:mcp/install?", ""))), { name: "openftth", type: "http", url: on.link });
 
-  const noToken = await fetch(`${h.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-  assert.equal(noToken.status, 401);
-  await assert.rejects(connect(TOKEN), "the app token is not the MCP token");
+  const client = await connect(on.link);
+  assert.ok((await client.listTools()).tools.some((t) => t.name === "design_automatically"));
+  await client.close();
+
+  // A web page in a browser cannot reach it.
+  const evil = await fetch(on.link, { method: "POST", headers: { origin: "https://evil.example", "content-type": "application/json" }, body: "{}" });
+  assert.equal(evil.status, 403);
+  // Nor is it on the app's own API port.
+  assert.equal((await fetch(`${h.url}/mcp`, { method: "POST" })).status, 404);
+});
+
+test("with a key required, the key travels in the link and a new key locks out the old link", async () => {
+  const plain = (await link()).link;
+  const keyed = await post({ requireKey: true });
+  assert.match(keyed.link, /\/mcp\?key=[0-9a-f]{32}$/);
+  assert.equal((await fetch(plain, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
+  const client = await connect(keyed.link);
+  assert.equal(parse(await client.callTool({ name: "status", arguments: {} })).open, false);
+  await client.close();
+  const rotated = await post({ rotate: true });
+  assert.notEqual(rotated.link, keyed.link);
+  await assert.rejects(connect(keyed.link));
+  await post({ requireKey: false });
 });
 
 test("tools, resources and prompts are listed; a project opens and its files are readable", async () => {
-  const info: any = await (await api("/api/mcp")).json();
-  const client = await connect(info.token);
+  const client = await connect((await link()).link);
   const tools = (await client.listTools()).tools.map((t) => t.name);
   for (const t of ["status", "open_project", "inspect_data", "design_automatically", "ask_crew", "check_design", "trace_fibre", "steer", "list_deliverables", "export_for_construction"]) {
     assert.ok(tools.includes(t), `${t} is offered`);
@@ -82,8 +107,6 @@ test("tools, resources and prompts are listed; a project opens and its files are
   const prompts = (await client.listPrompts()).prompts.map((p) => p.name);
   assert.deepEqual(prompts.sort(), ["design_area", "explain_costs", "review_design"]);
 
-  const closed = parse(await client.callTool({ name: "status", arguments: {} }));
-  assert.equal(closed.open, false);
   const noProject = await client.callTool({ name: "list_deliverables", arguments: {} });
   assert.equal(noProject.isError, true);
 
@@ -114,8 +137,7 @@ test("tools, resources and prompts are listed; a project opens and its files are
 });
 
 test("a risky export waits for the engineer's card in the app", async () => {
-  const info: any = await (await api("/api/mcp")).json();
-  const client = await connect(info.token);
+  const client = await connect((await link()).link);
   const call = client.callTool({ name: "export_for_construction", arguments: { why: "handover" } });
   let card: any;
   for (let i = 0; i < 50 && !card; i++) {
@@ -126,8 +148,7 @@ test("a risky export waits for the engineer's card in the app", async () => {
   assert.equal(card.folk, "external");
   assert.match(card.summary, /Another AI app asks.*handover/);
   await api(`/api/approvals/${card.id}`, { method: "POST", body: JSON.stringify({ decision: "allow" }) });
-  const out = parse(await call);
-  assert.equal(out.approval_id, card.id);
+  assert.equal(parse(await call).approval_id, card.id);
 
   const denied = client.callTool({ name: "export_for_construction", arguments: {} });
   let second: any;
@@ -142,18 +163,36 @@ test("a risky export waits for the engineer's card in the app", async () => {
   await client.close();
 });
 
-test("the stdio bridge forwards to the running harness and follows a new token", async () => {
-  const bridge = (env: Record<string, string>) =>
-    new StdioClientTransport({ command: process.execPath, args: ["--no-warnings", join(import.meta.dirname, "..", "src", "mcp-stdio.ts")], env: { ...(process.env as Record<string, string>), ...env }, stderr: "ignore" });
-  const client = new Client({ name: "desktop-app", version: "0.0.1" });
-  await client.connect(bridge({ OPENFTTH_DATA_DIR: dataDir }));
-  assert.ok((await client.listTools()).tools.some((t) => t.name === "design_automatically"));
-  assert.equal(parse(await client.callTool({ name: "status", arguments: {} })).open, true);
+test("the Claude Desktop bundle is a valid .mcpb whose bridge follows the link", async () => {
+  const { path } = (await (await api("/api/mcp/claude-bundle", { method: "POST" })).json()) as any;
+  const zip = readFileSync(path);
+  assert.equal(zip.readUInt32LE(0), 0x04034b50, "a ZIP archive");
+  const entry = (name: string): Buffer => {
+    // The name also appears inside the manifest; the entry is the one after a local header.
+    let at = zip.indexOf(Buffer.from(name));
+    while (at >= 30 && zip.readUInt32LE(at - 30) !== 0x04034b50) at = zip.indexOf(Buffer.from(name), at + 1);
+    const head = at - 30;
+    assert.ok(at >= 30, `${name} has a local header`);
+    const size = zip.readUInt32LE(head + 18);
+    return zip.subarray(at + name.length, at + name.length + size);
+  };
+  const manifest = JSON.parse(entry("manifest.json").toString("utf8"));
+  assert.equal(manifest.server.type, "node");
+  assert.equal(manifest.server.entry_point, "server/index.js");
+  assert.equal(manifest.server.mcp_config.env.OPENFTTH_DATA_DIR, dataDir);
 
-  await api("/api/mcp", { method: "POST", body: JSON.stringify({ rotate: true }) });
-  assert.equal(parse(await client.callTool({ name: "status", arguments: {} })).open, true, "the bridge reads the new token");
-
-  await api("/api/mcp", { method: "POST", body: JSON.stringify({ enabled: false }) });
-  await assert.rejects(client.callTool({ name: "status", arguments: {} }), /turn on Settings → Connect other AI apps/);
-  await client.close();
+  // Run the bundled bridge the way Claude Desktop does.
+  const dir = mkdtempSync(join(tmpdir(), "openftth-mcpb-"));
+  writeFileSync(join(dir, "index.mjs"), entry("server/index.js"));
+  const client = new Client({ name: "claude-desktop", version: "0.0.1" });
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(dir, "index.mjs")], env: { ...(process.env as Record<string, string>), OPENFTTH_DATA_DIR: dataDir }, stderr: "ignore" }));
+  try {
+    assert.equal(parse(await client.callTool({ name: "status", arguments: {} })).open, true);
+    await post({ enabled: false });
+    assert.equal((await link()).listening, false);
+    await assert.rejects(client.callTool({ name: "status", arguments: {} }), /turn it on under Connect AI apps/);
+  } finally {
+    await client.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

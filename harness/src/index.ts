@@ -11,7 +11,7 @@ import { loadCrew } from "./crew.ts";
 import { selectDriver } from "./drivers/index.ts";
 import { Engines } from "./engines.ts";
 import { EventBus } from "./events.ts";
-import { loadMcpSettings, saveMcpSettings } from "./mcp-public.ts";
+import { McpLink } from "./mcp-link.ts";
 import { ProjectService } from "./project.ts";
 import { buildServer } from "./server.ts";
 import { Store } from "./store.ts";
@@ -47,6 +47,7 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
 
   // Listen first so the real port is known before the project service needs the URL.
   const projectsRef: { current: ProjectService | null } = { current: null };
+  const mcpRef: { current: McpLink | null } = { current: null };
   const server = buildServer({
     cfg,
     bus,
@@ -56,6 +57,9 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
     crew,
     get projects() {
       return projectsRef.current!;
+    },
+    get mcp() {
+      return mcpRef.current!;
     },
     startedAt,
   });
@@ -86,9 +90,9 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
     ...(opts.engineAttachUrl ? { engineAttachUrl: opts.engineAttachUrl } : {}),
   });
 
-  // The port changes per launch: the stdio bridge other AI apps start reads it from here.
-  const mcp = loadMcpSettings(cfg.dataDir);
-  if (mcp.token) saveMcpSettings(cfg.dataDir, { ...mcp, url: `${url}/mcp` });
+  // The MCP link other AI apps add: a fixed port of its own, started when it is turned on.
+  mcpRef.current = new McpLink({ cfg: { ...cfg, port }, approvals, engines, store, crew, projects: projectsRef.current });
+  await mcpRef.current.apply();
 
   log(`listening on ${url} (data ${cfg.dataDir}, crew ${crew.name})`);
   return {
@@ -100,6 +104,7 @@ export async function startHarness(opts: StartOptions = {}): Promise<Harness> {
     engines,
     projects: projectsRef.current,
     async close() {
+      await mcpRef.current?.close();
       await projectsRef.current?.close();
       bus.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));

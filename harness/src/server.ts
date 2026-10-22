@@ -11,7 +11,7 @@ import { listRulebooks, type Crew } from "./crew.ts";
 import { findRepoRoot } from "./config.ts";
 import { join } from "node:path";
 import { inspectData, listImportProfiles, saveImportProfile } from "./engine-cli.ts";
-import { connectionInfo, handleMcpRequest, loadMcpSettings, saveMcpSettings, updateMcpSettings } from "./mcp-public.ts";
+import { updateMcpSettings, writeClaudeBundle, type McpLink } from "./mcp-link.ts";
 import type { EventBus } from "./events.ts";
 import { DISALLOWED_FOR_FOLKS, HttpError, type ProjectService } from "./project.ts";
 import type { Store } from "./store.ts";
@@ -24,6 +24,7 @@ export interface ServerDeps {
   engines: Engines;
   crew: Crew;
   projects: ProjectService;
+  mcp: McpLink;
   startedAt: number;
 }
 
@@ -187,22 +188,21 @@ export function buildServer(d: ServerDeps): Server {
     json(res, 200, id ? d.store.readRuntime(id, Number(url.searchParams.get("limit") ?? 200)) : []);
   });
 
-  // ---- public MCP server for other AI apps (its own token, off until the engineer turns it on)
-  const mcpDeps = { cfg: d.cfg, approvals: d.approvals, engines: d.engines, store: d.store, crew: d.crew, get projects() {
-    return d.projects;
-  } };
-  for (const method of ["POST", "GET", "DELETE"]) {
-    add(method, "/mcp", async (req, res) => handleMcpRequest(mcpDeps, req, res, method === "POST" ? await readJson(req) : undefined), "none");
-  }
-  add("GET", "/api/mcp", (req, res) => {
-    json(res, 200, connectionInfo(d.cfg, loadMcpSettings(d.cfg.dataDir), mcpUrl(req)));
-  });
+  // ---- the MCP link other AI apps add (a fixed local port, off until the engineer turns it on)
+  add("GET", "/api/mcp", (_req, res) => json(res, 200, d.mcp.info()));
   add("POST", "/api/mcp", async (req, res) => {
     const body = await readJson(req);
-    const s = updateMcpSettings(d.cfg.dataDir, { ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}), rotate: body.rotate === true });
-    const url = mcpUrl(req);
-    saveMcpSettings(d.cfg.dataDir, { ...s, url });
-    json(res, 200, connectionInfo(d.cfg, s, url));
+    updateMcpSettings(d.cfg.dataDir, {
+      ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+      ...(typeof body.requireKey === "boolean" ? { requireKey: body.requireKey } : {}),
+      ...(typeof body.port === "number" ? { port: body.port } : {}),
+      rotate: body.rotate === true,
+    });
+    await d.mcp.apply();
+    json(res, 200, d.mcp.info());
+  });
+  add("POST", "/api/mcp/claude-bundle", async (_req, res) => {
+    json(res, 200, { path: await writeClaudeBundle(d.cfg.dataDir, d.cfg.version) });
   });
 
   // ---- internal (comms token): permission proxy and engine ------------------------------
@@ -275,10 +275,6 @@ function isLoopback(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   const okOrigin = !origin || /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin);
   return okHost && okOrigin;
-}
-
-function mcpUrl(req: IncomingMessage): string {
-  return `http://${req.headers.host ?? "127.0.0.1"}/mcp`;
 }
 
 function bearer(req: IncomingMessage): string | null {

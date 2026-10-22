@@ -1,12 +1,13 @@
 /**
- * The stdio bridge other AI apps start (Claude Desktop, Claude Code, Cursor): an MCP server on
- * stdin/stdout that forwards every request to the running openFTTH harness. The harness picks
- * a new port each launch, so the bridge reads the current endpoint and token from
- * `<dataDir>/mcp.json` on every connection and reconnects when the app restarts.
+ * The stdio bridge inside the Claude Desktop bundle (openftth.mcpb): an MCP server on
+ * stdin/stdout that forwards every request to openFTTH's MCP link. It reads the link's port and
+ * key from `<dataDir>/mcp.json` on every connection, so a new key or a restarted app needs no
+ * reinstall. It imports nothing from the harness, so it bundles into one small script.
  *
  * Usage: node mcp-stdio.(ts|js)   (OPENFTTH_DATA_DIR overrides ~/.openftth)
  */
 
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -24,7 +25,19 @@ import {
   McpError,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadMcpSettings } from "./mcp-public.ts";
+
+/** The link and whether it is on, from the settings the app writes. */
+function readLink(dataDir: string): { enabled: boolean; url: string } {
+  let s: Record<string, unknown> = {};
+  try {
+    s = JSON.parse(readFileSync(join(dataDir, "mcp.json"), "utf8")) as Record<string, unknown>;
+  } catch {
+    // No settings yet: the link has never been turned on.
+  }
+  const port = typeof s.listeningPort === "number" ? s.listeningPort : typeof s.port === "number" && s.port > 0 ? s.port : 3920;
+  const key = s.requireKey === true && typeof s.key === "string" ? `?key=${s.key}` : "";
+  return { enabled: s.enabled === true, url: `http://127.0.0.1:${port}/mcp${key}` };
+}
 
 /** Long enough for an automatic design or an approval the engineer answers later. */
 const CALL_TIMEOUT_MS = 60 * 60 * 1000;
@@ -33,16 +46,16 @@ export function createBridge(dataDir: string): Server {
   let upstream: { client: Client; key: string } | null = null;
 
   async function connect(): Promise<Client> {
-    const s = loadMcpSettings(dataDir);
-    if (!s.enabled || !s.token || !s.url) {
-      throw new McpError(ErrorCode.InternalError, "openFTTH's MCP server is off. Open the openFTTH app and turn on Settings → Connect other AI apps.");
+    const s = readLink(dataDir);
+    if (!s.enabled) {
+      throw new McpError(ErrorCode.InternalError, "openFTTH's MCP link is off. Open openFTTH and turn it on under Connect AI apps.");
     }
-    const key = `${s.url}|${s.token}`;
+    const key = s.url;
     if (upstream?.key === key) return upstream.client;
     await upstream?.client.close().catch(() => {});
     upstream = null;
     const client = new Client({ name: "openftth-stdio-bridge", version: "0.1.0" });
-    const transport = new StreamableHTTPClientTransport(new URL(s.url), { requestInit: { headers: { authorization: `Bearer ${s.token}` } } });
+    const transport = new StreamableHTTPClientTransport(new URL(s.url));
     try {
       await client.connect(transport);
     } catch (err) {

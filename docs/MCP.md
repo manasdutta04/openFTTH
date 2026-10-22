@@ -1,51 +1,51 @@
-# Driving openFTTH from other AI apps (MCP)
+# Connecting AI apps (MCP)
 
-openFTTH is also an MCP server. Claude Desktop, Claude Code, Cursor or any MCP client can open a
-project, import data, design automatically, ask the crew, check, trace, steer and read the
-deliverables, through the same harness the app uses. The engine still makes every decision,
-and the engineer still approves every risky step in the app.
+openFTTH has an MCP server, like other desktop apps that ship one. You turn it on, and any MCP
+client can use openFTTH through **one link**:
+
+```
+http://127.0.0.1:3920/mcp
+```
+
+Claude Desktop, Claude Code, Cursor, VS Code or any other MCP client can then open a project,
+import data, design automatically, check, trace, steer, ask the crew and pull the deliverables.
+The engine still makes every decision, and the engineer still approves every risky step in the
+app.
 
 ## Turning it on
 
-In the app: **Crew → Connect other AI apps…** → *Turn on*. The window shows a ready config for
-each client with a *Copy* button. The server is off by default.
+In the app: **Connect AI apps** on the start page, in the Crew or Help menu, or the
+*MCP link* indicator in the status bar. Flip the switch on. The link is the same every time
+openFTTH starts, so an app added once keeps working.
 
-- It listens on this computer only (loopback), at `/mcp` on the harness, behind its own bearer
-  token (`oft_…`), separate from the app's token.
-- *New token* revokes the old one at once.
-- Settings live in `<dataDir>/mcp.json` (`~/.openftth/mcp.json` for the installed app).
+## Adding it to an app
 
-## Connecting
+| App | How |
+|---|---|
+| Claude Desktop | *Install*: openFTTH writes `openftth.mcpb` (an MCP Bundle) and opens it; Claude Desktop shows its install prompt |
+| Claude Code | *Copy* gives one command: `claude mcp add --transport http openftth "http://127.0.0.1:3920/mcp"` |
+| Cursor | *Open* follows Cursor's install link; Cursor asks to add the server |
+| VS Code | *Open* follows VS Code's install link (`vscode:mcp/install`); VS Code asks to add the server |
+| Anything else | paste the link where the app asks for an MCP server URL (Streamable HTTP) |
 
-**Claude Desktop and Cursor** start a small stdio bridge (`harness/src/mcp-stdio.ts`, or
-`dist/mcp-stdio.js` in a bundle) that forwards to the running app:
+The Claude Desktop bundle runs a small bridge that reads the link from openFTTH's settings
+every time it connects, so a new key or another port needs no reinstall. openFTTH must be
+running for any app to reach it.
 
-```json
-{
-  "mcpServers": {
-    "openftth": {
-      "command": "C:\path\to\node.exe",
-      "args": ["--no-warnings", "C:\path\to\openFTTH\harness\src\mcp-stdio.ts"],
-      "env": { "OPENFTTH_DATA_DIR": "C:\Users\you\.openftth" }
-    }
-  }
-}
-```
+## Who can use the link
 
-Claude Desktop reads it from `claude_desktop_config.json` (Settings → Developer → Edit config);
-Cursor from `.cursor/mcp.json`. **Claude Code**: `claude mcp add openftth --env
-OPENFTTH_DATA_DIR=… -- node --no-warnings …/mcp-stdio.ts`. The window prints all three with your
-paths filled in.
+- It answers on this computer only (127.0.0.1). Requests whose Host or Origin is not local are
+  refused, so a web page in a browser cannot drive it.
+- **Require a key** adds `?key=…` to the link: still one link to paste, and requests without it
+  are refused. *New key* locks out every app that has the old link.
+- Risky engine tools (`add_trench`, `route_outside_ducts`, `rewind_design`, `post_work_order`)
+  are not offered. `export_for_construction` is, but it opens an approval card in the app and
+  waits for the engineer. Everything an outside app does is noted in the project conversation.
+- ChatGPT and other web-based assistants connect to MCP servers over the internet; they cannot
+  reach a link on this computer.
 
-The app's harness picks a new port each launch; it writes the current endpoint to `mcp.json`
-and the bridge reads it on every connection, so these configs never go stale. The app must be
-running.
-
-**Any other client** can use streamable HTTP directly: `POST http://127.0.0.1:<port>/mcp` with
-`Authorization: Bearer <token>` (stateless; JSON responses). The port changes per launch.
-
-Web-hosted assistants (for example ChatGPT connectors) need a public HTTPS URL; openFTTH does
-not open one. The endpoint refuses requests whose Host or Origin is not loopback.
+Settings live in `<dataDir>/mcp.json` (`~/.openftth/mcp.json` for the installed app):
+`enabled`, `port` (default 3920), `requireKey`, `key`.
 
 ## Tools
 
@@ -64,14 +64,11 @@ not open one. The endpoint refuses requests whose Host or Origin is not loopback
 | `list_deliverables` | the deliverable files with their resource URIs |
 | `export_for_construction` | **risky**: opens an approval card in the app and waits for the engineer |
 
-Risky engine tools (`add_trench`, `route_outside_ducts`, `rewind_design`, `post_work_order`)
-are not offered at all. Everything an outside app does is noted in the project conversation.
-
 ## Resources and prompts
 
-- `openftth://project/status` — the project status as JSON.
-- `openftth://deliverables/{name}` — BOQ, splice schedule, validation, summary (text), map and
+- `openftth://project/status`: the project status as JSON.
+- `openftth://deliverables/{name}`: BOQ, splice schedule, validation, summary (text), map and
   GeoPackage (binary), up to 20 MB each.
-- `openftth://design/{name}` — the design layers as GeoJSON.
+- `openftth://design/{name}`: the design layers as GeoJSON.
 - Prompts: `design_area` (area path, optional extract and rulebook), `review_design`,
   `explain_costs`.

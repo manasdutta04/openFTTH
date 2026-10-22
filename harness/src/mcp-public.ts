@@ -1,13 +1,10 @@
 /**
- * The public MCP server: other AI apps (Claude Desktop, Claude Code, Cursor, any MCP client) drive
- * openFTTH through the same harness the app uses. It is off until the engineer turns it on, it
- * listens on loopback only behind its own bearer token, and it exposes a curated set of tools:
- * open a project, import data, design automatically, ask the crew, check, trace, steer and
- * read the deliverables. Risky steps still open an approval card in the app; nothing outside
- * the app can approve them.
+ * The tools other AI apps get through openFTTH's MCP link (see mcp-link.ts): open a project,
+ * import data, design automatically, ask the crew, check, trace, steer and read the
+ * deliverables. Risky steps still open an approval card in the app; nothing outside the app
+ * can approve them.
  */
 
-import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, join } from "node:path";
@@ -21,14 +18,7 @@ import { findRepoRoot } from "./config.ts";
 import { inspectData, listImportProfiles, saveImportProfile } from "./engine-cli.ts";
 import { ENGINE_CATALOG, type Engines } from "./engines.ts";
 import { STEER_TOOLS, type ProjectService } from "./project.ts";
-import { readJsonOr, writeJsonAtomic, type Store } from "./store.ts";
-
-export interface McpSettings {
-  enabled: boolean;
-  token: string;
-  /** Where the harness listens now; the stdio bridge reads it (the port changes per launch). */
-  url?: string;
-}
+import type { Store } from "./store.ts";
 
 export interface PublicMcpDeps {
   cfg: HarnessConfig;
@@ -39,76 +29,12 @@ export interface PublicMcpDeps {
   crew: Crew;
 }
 
-const settingsPath = (dataDir: string) => join(dataDir, "mcp.json");
-
-export function loadMcpSettings(dataDir: string): McpSettings {
-  const s = readJsonOr<Partial<McpSettings>>(settingsPath(dataDir), {});
-  return { enabled: s.enabled === true, token: typeof s.token === "string" && s.token ? s.token : "", ...(s.url ? { url: s.url } : {}) };
-}
-
-export function saveMcpSettings(dataDir: string, s: McpSettings): McpSettings {
-  const out = { ...s, token: s.token || newToken() };
-  writeJsonAtomic(settingsPath(dataDir), out);
-  return out;
-}
-
-function newToken(): string {
-  return `oft_${randomBytes(24).toString("hex")}`;
-}
-
-/** Turn the server on or off, or issue a new token (the old one stops working at once). */
-export function updateMcpSettings(dataDir: string, change: { enabled?: boolean; rotate?: boolean }): McpSettings {
-  const s = loadMcpSettings(dataDir);
-  if (typeof change.enabled === "boolean") s.enabled = change.enabled;
-  if (change.rotate || !s.token) s.token = newToken();
-  return saveMcpSettings(dataDir, s);
-}
-
-/** The bridge other apps start: `node mcp-stdio.(ts|js)`, next to this file. */
-export function stdioBridgePath(): string {
-  for (const name of ["mcp-stdio.ts", "mcp-stdio.js"]) {
-    const p = join(import.meta.dirname, name);
-    if (existsSync(p)) return p;
-  }
-  return join(import.meta.dirname, "mcp-stdio.js");
-}
-
-/** What the app shows under Connect other AI apps: the endpoint, the token and ready configs. */
-export function connectionInfo(cfg: HarnessConfig, s: McpSettings, url: string): Record<string, unknown> {
-  const bridge = { command: process.execPath, args: ["--no-warnings", stdioBridgePath()], env: { OPENFTTH_DATA_DIR: cfg.dataDir } };
-  return {
-    enabled: s.enabled,
-    url,
-    token: s.token,
-    stdio: bridge,
-    snippets: {
-      claude_desktop: JSON.stringify({ mcpServers: { openftth: bridge } }, null, 2),
-      cursor: JSON.stringify({ mcpServers: { openftth: bridge } }, null, 2),
-      claude_code: `claude mcp add openftth --env OPENFTTH_DATA_DIR=${quote(cfg.dataDir)} -- ${quote(process.execPath)} --no-warnings ${quote(stdioBridgePath())}`,
-      http: JSON.stringify({ url, headers: { Authorization: `Bearer ${s.token}` } }, null, 2),
-    },
-  };
-}
-
-function quote(s: string): string {
-  return /\s/.test(s) ? `"${s}"` : s;
-}
-
 /** Serve one MCP request (streamable HTTP, stateless: a fresh server per request). */
 export async function handleMcpRequest(deps: PublicMcpDeps, req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> {
-  const settings = loadMcpSettings(deps.cfg.dataDir);
-  if (!settings.enabled) {
-    reply(res, 404, { error: "The openFTTH MCP server is off. Turn it on in the app: Settings → Connect other AI apps." });
-    return;
-  }
-  const auth = req.headers.authorization ?? "";
-  if (!settings.token || auth !== `Bearer ${settings.token}`) {
-    reply(res, 401, { error: "missing or invalid bearer token" });
-    return;
-  }
   if (req.method !== "POST") {
     // Stateless: no server-initiated stream and no session to delete.
-    reply(res, 405, { jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null });
+    const text = JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null });
+    res.writeHead(405, { "content-type": "application/json", allow: "POST" }).end(text);
     return;
   }
   const server = buildPublicMcp(deps);
@@ -119,12 +45,6 @@ export async function handleMcpRequest(deps: PublicMcpDeps, req: IncomingMessage
   });
   await server.connect(transport);
   await transport.handleRequest(req, res, body);
-}
-
-function reply(res: ServerResponse, status: number, body: unknown): void {
-  const text = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(text) });
-  res.end(text);
 }
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };

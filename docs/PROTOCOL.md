@@ -33,9 +33,9 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `POST /api/import/inspect {paths}` | the layers in data files (geometry, count, CRS, columns, sample values) and the import profile the engine proposes for them, plus `roles` (each role's label and the attributes it understands). `422` with the engine's words when a file cannot be read |
 | `POST /api/import/profile {name, profile, rulebook?}` | save the profile to `<dataDir>/profiles/<name>.yaml`, read its data and return `{path, report}`; the report is the data-quality check (`level` ok, info, warning or error; `counts`; `issues`). `422` when the data cannot be read |
 | `GET /api/import/profiles` | the saved import profiles `{name, path}` |
-| `GET /api/mcp` | the public MCP server: `{enabled, url, token, stdio, snippets}` with ready configs for Claude Desktop, Claude Code, Cursor and HTTP (see [MCP.md](MCP.md)) |
-| `POST /api/mcp {enabled?, rotate?}` | turn the public MCP server on or off, or issue a new token; answers like `GET` |
-| `POST /mcp` | the public MCP endpoint (streamable HTTP, stateless) behind the MCP token, not the app token; `404` while it is off |
+| `GET /api/mcp` | the MCP link other AI apps add: `{enabled, listening, error, port, link, requireKey, installs}`; `installs` holds the Claude Code command and the Cursor and VS Code install links (see [MCP.md](MCP.md)) |
+| `POST /api/mcp {enabled?, requireKey?, rotate?, port?}` | change the link and start or stop its listener; answers like `GET` |
+| `POST /api/mcp/claude-bundle` | write `<dataDir>/openftth.mcpb` for Claude Desktop and return `{path}` |
 | `GET /api/project` | project meta, stage, head version, engine status |
 | `GET /api/project/versions` | version log (from the engine) |
 | `GET /api/project/diff?from&to` | semantic diff by element id (from the engine) |
@@ -92,3 +92,5 @@ The crew manifest carries a `tools` array per member. The harness passes `mcp__e
 entries as the allowed tools of that crew member's engine process and strips file-editing and shell
 tools from Surveyor, Planner and Checker. Risky tools are never listed, so they raise approval
 cards naturally; the engine re-checks the approval id as the last line of defence.
+
+The MCP link itself is not on this port: it listens on `127.0.0.1:3920/mcp` (streamable HTTP, stateless) while it is on, loopback only, with the key in the link when one is required.
