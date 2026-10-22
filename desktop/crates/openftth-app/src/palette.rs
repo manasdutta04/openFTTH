@@ -21,6 +21,9 @@ pub enum Command {
     NewProject,
     RevealFolder,
     About,
+    Undo,
+    Redo,
+    Tool(&'static str),
     Element(String),
 }
 
@@ -236,6 +239,30 @@ impl CommandPalette {
             open,
         );
         action("Fit the design", "F", Command::FitDesign, open);
+        action(
+            "Undo the last edit",
+            "Ctrl+Z",
+            Command::Undo,
+            open && st.can_undo(),
+        );
+        action("Redo", "Ctrl+Y", Command::Redo, open && st.can_redo());
+        action("Add a FAT", "T", Command::Tool("fat"), open);
+        action("Add a cabinet (FDH)", "H", Command::Tool("fdh"), open);
+        action("Add a chamber", "C", Command::Tool("chamber"), open);
+        action("Draw a cable", "D", Command::Tool("draw"), open);
+        action("Split a cable", "S", Command::Tool("split"), open);
+        action(
+            "Reassign a home or FAT",
+            "R",
+            Command::Tool("reassign"),
+            open,
+        );
+        action(
+            "Go to the attribute table",
+            "Ctrl+6",
+            Command::Tab(Tab::Table),
+            open,
+        );
         action(
             "Reveal project folder",
             "exports, design files",

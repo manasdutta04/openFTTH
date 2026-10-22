@@ -605,7 +605,7 @@ fn empty(ui: &mut Ui, st: &AppState, title: &str, hint: &str) {
 }
 
 /// Orders "FAT-2" before "FAT-10": digit runs compare by value, the rest by text.
-fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let chunks = |s: &str| -> Vec<(bool, String)> {
         let mut out: Vec<(bool, String)> = Vec::new();
         for ch in s.chars() {

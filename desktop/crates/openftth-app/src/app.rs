@@ -16,12 +16,14 @@ use crate::chat::{
     PROMPT_VALIDATE,
 };
 use crate::connect::ConnectWindow;
+use crate::editor::{BarAction, Editor, Tool};
 use crate::icons::{self, Icon};
 use crate::import::ImportWizard;
 use crate::inspector::{inspector, is_excluded, is_movable, InspectorAction};
 use crate::palette::{Command, CommandPalette};
 use crate::prefs::Prefs;
 use crate::state::{AppState, Tab};
+use crate::table::{table_tab, TableAction, TableState};
 use crate::tabs::{backstage_tab, boq_tab, splice_tab, versions_tab, TabState};
 use crate::theme::{self, font, Mode, Palette, Weight, R};
 use crate::twin::TwinView;
@@ -61,6 +63,8 @@ pub struct OpenFtthApp {
     saved_prefs: Prefs,
     about: bool,
     palette: CommandPalette,
+    editor: Editor,
+    table: TableState,
     engine_form: Option<EngineForm>,
     confirm_reset: bool,
     import: ImportWizard,
@@ -192,6 +196,8 @@ impl OpenFtthApp {
             saved_prefs: prefs,
             about: false,
             palette: CommandPalette::default(),
+            editor: Editor::default(),
+            table: TableState::default(),
             engine_form: None,
             confirm_reset: false,
             import: ImportWizard::new(),
@@ -562,6 +568,17 @@ project {}",
 
         ui.menu_button(Self::menu_title("Edit", &p), |ui| {
             widgets::menu_begin(ui, 260.0);
+            let free = open && !busy && !self.st.editing();
+            if menu_item(ui, &p, "Undo", Some("Ctrl+Z"), free && self.st.can_undo()) {
+                self.st.edit("undo_edit", serde_json::json!({}));
+            }
+            if menu_item(ui, &p, "Redo", Some("Ctrl+Y"), free && self.st.can_redo()) {
+                self.st.edit("redo_edit", serde_json::json!({}));
+            }
+            if menu_item(ui, &p, "Delete", Some("Del"), free && has_selection) {
+                self.delete_selection();
+            }
+            menu_separator(ui, &p);
             if menu_item(ui, &p, "Copy selected ids", Some("Ctrl+C"), has_selection) {
                 ui.ctx().copy_text(self.st.selection.join("\n"));
             }
@@ -1167,8 +1184,10 @@ project {}",
                     &reveal,
                 );
                 st.cursor = resp.cursor;
-                st.hovered = resp.hovered;
-                if let Some(pl) = placing {
+                let used = placing.is_none() && self.editor.on_map(&resp, st);
+                st.hovered = resp.hovered.clone();
+                if used {
+                } else if let Some(pl) = placing {
                     if let Some((lon, lat)) = resp.click {
                         self.steer = Some(SteerDialog::mv(&pl.uuid, &pl.name, lon, lat));
                         self.placing = None;
@@ -1179,6 +1198,16 @@ project {}",
                     st.selection.clear();
                 }
                 let map = resp.response;
+                self.editor
+                    .overlay(ui, map.rect, &self.twin, &self.st.palette);
+                let p = self.st.palette;
+                match self.editor.toolbar(ui, map.rect, &p, &self.st) {
+                    Some(BarAction::Undo) => self.st.edit("undo_edit", serde_json::json!({})),
+                    Some(BarAction::Redo) => self.st.edit("redo_edit", serde_json::json!({})),
+                    Some(BarAction::Delete) => self.delete_selection(),
+                    None => {}
+                }
+                self.editor.edit_bar(ui, map.rect, &p, &mut self.st);
                 if self.show_cursors {
                     let rect = map.rect;
                     let view = &self.twin;
@@ -1209,6 +1238,22 @@ project {}",
                         Tab::Splice => splice_tab(ui, &self.st, &mut self.tabs),
                         Tab::Versions => versions_tab(ui, &mut self.st),
                         Tab::Backstage => backstage_tab(ui, &mut self.st, &mut self.tabs),
+                        Tab::Table => {
+                            let reason = self.editor.reason.clone();
+                            match table_tab(ui, &mut self.st, &mut self.table, &reason) {
+                                Some(TableAction::Select(id)) => self.st.selection = vec![id],
+                                Some(TableAction::Zoom(id)) => {
+                                    if let Some(e) =
+                                        self.st.design.as_ref().and_then(|d| d.get(&id))
+                                    {
+                                        self.twin.focus(e);
+                                    }
+                                    self.st.selection = vec![id];
+                                    self.st.tab = Tab::Twin;
+                                }
+                                None => {}
+                            }
+                        }
                         Tab::Twin => {}
                     });
             }
@@ -1356,6 +1401,26 @@ project {}",
         }
     }
 
+    /// Delete the selected element (the first, when several are selected): one edit, undoable.
+    fn delete_selection(&mut self) {
+        let Some(id) = self.st.selection.first().cloned() else {
+            return;
+        };
+        if self.st.editing() || self.st.busy() {
+            return;
+        }
+        let reason = if self.editor.reason.trim().is_empty() {
+            "manual edit".to_string()
+        } else {
+            self.editor.reason.trim().to_string()
+        };
+        self.st.edit(
+            "delete_element",
+            serde_json::json!({ "element_uuid": id, "reason": reason }),
+        );
+        self.st.selection.clear();
+    }
+
     /// What a command palette entry does.
     fn run_command(&mut self, cmd: Command) {
         match cmd {
@@ -1376,6 +1441,21 @@ project {}",
                 }
             }
             Command::About => self.about = true,
+            Command::Undo => self.st.edit("undo_edit", serde_json::json!({})),
+            Command::Redo => self.st.edit("redo_edit", serde_json::json!({})),
+            Command::Tool(name) => {
+                let tool = match name {
+                    "fat" => Tool::AddFat,
+                    "fdh" => Tool::AddFdh,
+                    "chamber" => Tool::AddChamber,
+                    "draw" => Tool::Draw,
+                    "split" => Tool::Split,
+                    "reassign" => Tool::Reassign,
+                    _ => Tool::Select,
+                };
+                self.st.tab = Tab::Twin;
+                self.editor.set_tool(tool);
+            }
             Command::Element(id) => {
                 if let Some(e) = self.st.design.as_ref().and_then(|d| d.get(&id)) {
                     self.twin.focus(e);
@@ -1387,14 +1467,15 @@ project {}",
     }
 
     fn shortcuts(&mut self, ui: &Ui) {
-        let typing = ui.ctx().egui_wants_keyboard_input();
+        // Only a text field takes the keyboard: a clicked button or tab also holds focus.
+        let typing = ui.ctx().text_edit_focused();
         if ui.input(|i| i.modifiers.command && i.key_pressed(Key::K)) {
             self.palette.toggle();
         }
         if self.palette.open {
             return; // the palette takes the keyboard while it is open
         }
-        let (esc, ctrl, c, n1, n2, n3, n4, n5, f) = ui.input(|i| {
+        let (esc, ctrl, c, n1, n2, n3, n4, n5, n6, f) = ui.input(|i| {
             (
                 i.key_pressed(Key::Escape),
                 i.modifiers.ctrl,
@@ -1404,10 +1485,59 @@ project {}",
                 i.key_pressed(Key::Num3),
                 i.key_pressed(Key::Num4),
                 i.key_pressed(Key::Num5),
+                i.key_pressed(Key::Num6),
                 i.key_pressed(Key::F),
             )
         });
-        if esc {
+        let on_map = self.st.tab == Tab::Twin && self.st.project.is_some();
+        if on_map && !typing {
+            let (keys, del, enter, back) = ui.input(|i| {
+                (
+                    [
+                        (i.key_pressed(Key::V), Tool::Select),
+                        (i.key_pressed(Key::T), Tool::AddFat),
+                        (i.key_pressed(Key::H), Tool::AddFdh),
+                        (i.key_pressed(Key::C) && !i.modifiers.ctrl, Tool::AddChamber),
+                        (i.key_pressed(Key::D), Tool::Draw),
+                        (i.key_pressed(Key::S) && !i.modifiers.ctrl, Tool::Split),
+                        (i.key_pressed(Key::R), Tool::Reassign),
+                    ],
+                    i.key_pressed(Key::Delete),
+                    i.key_pressed(Key::Enter),
+                    i.key_pressed(Key::Backspace),
+                )
+            });
+            if !ctrl {
+                for (pressed, tool) in keys {
+                    if pressed {
+                        self.editor.set_tool(tool);
+                    }
+                }
+            }
+            if del {
+                self.delete_selection();
+            }
+            if self.editor.tool == Tool::Draw {
+                if enter {
+                    self.editor.finish_cable(&mut self.st);
+                }
+                if back {
+                    self.editor.points.pop();
+                }
+            }
+        }
+        if ctrl && !typing && self.st.project.is_some() && !self.st.editing() {
+            let (z, y) = ui.input(|i| (i.key_pressed(Key::Z), i.key_pressed(Key::Y)));
+            if z && self.st.can_undo() {
+                self.st.edit("undo_edit", serde_json::json!({}));
+            }
+            if y && self.st.can_redo() {
+                self.st.edit("redo_edit", serde_json::json!({}));
+            }
+        }
+        if esc && self.editor.tool != Tool::Select {
+            self.editor.set_tool(Tool::Select);
+        } else if esc {
             if self.placing.is_some() {
                 self.placing = None;
             } else if self.steer.is_some() {
@@ -1423,6 +1553,7 @@ project {}",
                 (n3, Tab::Splice),
                 (n4, Tab::Versions),
                 (n5, Tab::Backstage),
+                (n6, Tab::Table),
             ] {
                 if pressed {
                     self.st.tab = tab;

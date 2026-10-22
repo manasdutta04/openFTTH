@@ -171,6 +171,11 @@ impl Client {
         self.send("POST", "/api/mcp", change)
     }
 
+    /// What undo and redo would do now: `{can_undo, undo, can_redo, redo}`.
+    pub fn edit_history(&self) -> Result<Value, ClientError> {
+        self.get("/api/project/edits")
+    }
+
     /// Write the Claude Desktop bundle (`openftth.mcpb`) and return its path.
     pub fn mcp_claude_bundle(&self) -> Result<Value, ClientError> {
         self.send("POST", "/api/mcp/claude-bundle", &json!({}))

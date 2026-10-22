@@ -144,6 +144,7 @@ impl Default for Layers {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Twin,
+    Table,
     Boq,
     Splice,
     Versions,
@@ -151,8 +152,9 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Twin,
+        Tab::Table,
         Tab::Boq,
         Tab::Splice,
         Tab::Versions,
@@ -162,6 +164,7 @@ impl Tab {
     pub fn label(self) -> &'static str {
         match self {
             Tab::Twin => "Twin",
+            Tab::Table => "Table",
             Tab::Boq => "BOQ",
             Tab::Splice => "Splices",
             Tab::Versions => "Versions",
@@ -221,6 +224,11 @@ pub struct AppState {
     /// Bumped whenever another project opens; the map view refits when it changes.
     pub project_generation: u64,
     pending_open: Option<Receiver<Result<(), String>>>,
+    /// An edit on its way to the engine (edits run off the UI thread).
+    edit_rx: Option<Receiver<Result<Value, String>>>,
+    /// What undo and redo would do now, from the engine's edit stack.
+    pub edits: Option<Value>,
+    edits_rx: Option<Receiver<Option<Value>>>,
 }
 
 impl AppState {
@@ -269,6 +277,9 @@ impl AppState {
             engine: None,
             mcp: None,
             pending_open: None,
+            edit_rx: None,
+            edits: None,
+            edits_rx: None,
         };
         st.load_crew();
         st.load_engines();
@@ -412,6 +423,7 @@ impl AppState {
             Ok(_) => {
                 self.project = None;
                 self.design = None;
+                self.edits = None;
                 self.streets = None;
                 self.boq = None;
             }
@@ -449,6 +461,7 @@ impl AppState {
     fn forget_project_data(&mut self) {
         self.cursors.clear();
         self.design = None;
+        self.edits = None;
         self.streets = None;
         self.boq = None;
         self.validation = None;
@@ -537,7 +550,10 @@ impl AppState {
                     // The cursors visit what is new or has moved; data-only updates just glow.
                     self.cursors.version(&d, &added, &moved);
                     self.changed = added.into_iter().chain(moved).chain(updated).collect();
+                    // An undo or a delete can take a selected element away with it.
+                    self.selection.retain(|id| d.get(id).is_some());
                     self.design = Some(d);
+                    self.load_edits();
                 }
                 Ok(None) => {}
                 Err(e) => self.toasts.error(format!("design bundle: {e}")),
@@ -621,6 +637,7 @@ impl AppState {
     pub fn drain_frames(&mut self) {
         self.poll_open();
         self.poll_refresh();
+        self.poll_edit();
         if self.engine_refresh_due && self.refresh_rx.is_none() && !self.engine_working() {
             self.request_refresh();
         }
@@ -749,6 +766,7 @@ impl AppState {
                 self.trace = None;
                 self.explanations.clear();
                 self.request_refresh();
+                self.load_edits();
             }
             "design.stage" => self.stage = f.data["stage"].as_str().map(str::to_string),
             "folk" => {
@@ -826,6 +844,81 @@ impl AppState {
                 false
             }
         }
+    }
+
+    /// An edit is on its way to the engine.
+    pub fn editing(&self) -> bool {
+        self.edit_rx.is_some()
+    }
+
+    /// The engineer's edit on the map, sent off the UI thread: the window keeps painting while
+    /// the engine snaps, re-plans and checks. The result arrives as toasts and a new version.
+    pub fn edit(&mut self, tool: &str, args: Value) {
+        if self.edit_rx.is_some() {
+            self.toasts.info("The last edit is still being applied");
+            return;
+        }
+        let client = self.client.clone();
+        let tool = tool.to_string();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(client.steer(&tool, &args, false).map_err(|e| e.to_string()));
+        });
+        self.edit_rx = Some(rx);
+    }
+
+    fn poll_edit(&mut self) {
+        if let Some(rx) = &self.edits_rx {
+            if let Ok(v) = rx.try_recv() {
+                self.edits = v;
+                self.edits_rx = None;
+            }
+        }
+        let Some(rx) = &self.edit_rx else {
+            return;
+        };
+        let out = match rx.try_recv() {
+            Ok(o) => o,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err("the edit request was lost".into()),
+        };
+        self.edit_rx = None;
+        match out {
+            Ok(v) => {
+                self.toasts.success(s(&v["summary"]));
+                for w in v["warnings"].as_array().into_iter().flatten() {
+                    self.toasts.info(s(w));
+                }
+                if let Some(id) = v["data"]["element"].as_str() {
+                    if v["data"]["kind"].is_string() {
+                        self.selection = vec![id.to_string()];
+                    }
+                }
+                self.load_edits();
+            }
+            Err(e) => self.toasts.error(format!("Not applied: {e}")),
+        }
+    }
+
+    /// Ask the engine what undo and redo would do now, in the background.
+    pub fn load_edits(&mut self) {
+        if self.project.is_none() || self.edits_rx.is_some() || self.engine_working() {
+            return;
+        }
+        let client = self.client.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(client.edit_history().ok());
+        });
+        self.edits_rx = Some(rx);
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.edits.as_ref().is_some_and(|e| e["can_undo"] == true)
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.edits.as_ref().is_some_and(|e| e["can_redo"] == true)
     }
 
     /// Run the whole design with the engine alone: free, offline apart from the map you chose,
@@ -922,6 +1015,7 @@ impl AppState {
         }
         self.project = None;
         self.design = None;
+        self.edits = None;
         self.streets = None;
         self.boq = None;
         self.messages.clear();
@@ -943,6 +1037,7 @@ impl AppState {
         }
         self.project = None;
         self.design = None;
+        self.edits = None;
         self.streets = None;
         self.boq = None;
         self.validation = None;
