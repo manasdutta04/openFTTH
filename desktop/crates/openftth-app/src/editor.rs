@@ -1,7 +1,8 @@
 //! Editing on the map: a tool bar (select, add a FAT, cabinet or chamber, draw a cable, split
-//! it, reassign, delete, undo, redo), an edit bar with the reason that goes on the record, and
-//! the click handling that turns each into one engine edit. Every edit is an engine tool call
-//! that snaps to the street twin; nothing here decides a number.
+//! or join cables, reassign, measure, delete, undo, redo), an edit bar with the reason that goes
+//! on the record, and the click handling that turns each into one engine edit. Every edit is an
+//! engine tool call that snaps to the street twin; nothing here decides a number. Measuring
+//! only reads the map: its distances are shown, never written to the design.
 
 use egui::{pos2, vec2, Align2, Color32, CursorIcon, Pos2, Rect, Sense, Shape, Stroke, Ui};
 use openftth_core::geo::Mercator;
@@ -20,6 +21,7 @@ pub enum Tool {
     Draw,
     Split,
     Reassign,
+    Measure,
 }
 
 impl Tool {
@@ -32,6 +34,7 @@ impl Tool {
             Tool::Draw => "Draw cable",
             Tool::Split => "Split cable",
             Tool::Reassign => "Reassign",
+            Tool::Measure => "Measure",
         }
     }
 
@@ -44,6 +47,7 @@ impl Tool {
             Tool::Draw => "D",
             Tool::Split => "S",
             Tool::Reassign => "R",
+            Tool::Measure => "M",
         }
     }
 
@@ -56,6 +60,7 @@ impl Tool {
             Tool::Draw => "Click points along the route · Enter or double-click finishes · Backspace drops the last point",
             Tool::Split => "Click a cable where it should be split: a chamber is added there",
             Tool::Reassign => "Select a home or a FAT, then click the FAT or cabinet it should go to",
+            Tool::Measure => "Click points to measure in a straight line · Backspace drops the last point · nothing is written to the design",
         }
     }
 }
@@ -65,6 +70,30 @@ pub enum BarAction {
     Undo,
     Redo,
     Delete,
+    Join,
+}
+
+/// The two selected cables, when exactly two cables are selected (what Join works on).
+pub fn join_pair(st: &AppState) -> Option<(String, String)> {
+    let [a, b] = st.selection.as_slice() else {
+        return None;
+    };
+    let d = st.design.as_ref()?;
+    let cable = |id: &str| {
+        d.get(id)
+            .is_some_and(|e| ["feeder", "distribution", "drop"].contains(&e.kind()))
+    };
+    (cable(a) && cable(b)).then(|| (a.clone(), b.clone()))
+}
+
+/// Straight-line distance in metres between two lon/lat points (haversine).
+fn ground_m(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let r = 6_371_008.8;
+    let (la1, la2) = (a.1.to_radians(), b.1.to_radians());
+    let dla = la2 - la1;
+    let dlo = (b.0 - a.0).to_radians();
+    let h = (dla / 2.0).sin().powi(2) + la1.cos() * la2.cos() * (dlo / 2.0).sin().powi(2);
+    2.0 * r * h.sqrt().asin()
 }
 
 pub struct Editor {
@@ -126,13 +155,14 @@ impl Editor {
                         Tool::Draw,
                         Tool::Split,
                         Tool::Reassign,
+                        Tool::Measure,
                     ] {
                         let active = self.tool == tool;
                         let resp = tool_button(
                             ui,
                             p,
                             active,
-                            !busy || tool == Tool::Select,
+                            !busy || matches!(tool, Tool::Select | Tool::Measure),
                             |pa, r, c| glyph(pa, r, tool, c),
                         )
                         .on_hover_text(format!(
@@ -151,6 +181,12 @@ impl Editor {
                         .clicked()
                     {
                         action = Some(BarAction::Delete);
+                    }
+                    if tool_button(ui, p, false, join_pair(st).is_some() && !busy, join_glyph)
+                        .on_hover_text("Join the two selected cables (J)")
+                        .clicked()
+                    {
+                        action = Some(BarAction::Join);
                     }
                     if tool_button(ui, p, false, st.can_undo() && !busy, |pa, r, c| {
                         undo_glyph(pa, r, c, false)
@@ -214,13 +250,37 @@ impl Editor {
                             }
                         }
                         ui.add_space(6.0);
-                        ui.label(crate::widgets::text(
-                            "Reason",
-                            11.5,
-                            Weight::Medium,
-                            p.text3,
-                        ));
-                        ui.add(egui::TextEdit::singleline(&mut self.reason).desired_width(180.0));
+                        if self.tool == Tool::Measure {
+                            let total: f64 =
+                                self.points.windows(2).map(|w| ground_m(w[0], w[1])).sum();
+                            ui.label(crate::widgets::text(
+                                format!("Total {}", crate::widgets::fmt_metres(total)),
+                                12.5,
+                                Weight::Medium,
+                                p.text,
+                            ));
+                            if crate::widgets::button_enabled(
+                                ui,
+                                p,
+                                "Clear",
+                                crate::widgets::Kind::Quiet,
+                                !self.points.is_empty(),
+                            )
+                            .clicked()
+                            {
+                                self.points.clear();
+                            }
+                        } else {
+                            ui.label(crate::widgets::text(
+                                "Reason",
+                                11.5,
+                                Weight::Medium,
+                                p.text3,
+                            ));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.reason).desired_width(180.0),
+                            );
+                        }
                         if self.tool == Tool::Draw {
                             let n = self.points.len();
                             if crate::widgets::button_enabled(
@@ -286,6 +346,13 @@ impl Editor {
             self.finish_cable(st);
             return true;
         }
+        if self.tool == Tool::Measure {
+            if let Some(q) = resp.click {
+                self.points.push(q);
+                return true;
+            }
+            return false;
+        }
         let Some((lon, lat)) = resp.click else {
             return false;
         };
@@ -346,13 +413,17 @@ impl Editor {
                         .info("Select a home or a FAT first, then click where it goes"),
                 }
             }
-            Tool::Select => {}
+            Tool::Select | Tool::Measure => {}
         }
         true
     }
 
     /// The cable being drawn: its points and a rubber band to the pointer.
     pub fn overlay(&self, ui: &Ui, rect: Rect, view: &TwinView, p: &Palette) {
+        if self.tool == Tool::Measure {
+            self.measure_overlay(ui, rect, view, p);
+            return;
+        }
         if self.tool != Tool::Draw || self.points.is_empty() {
             return;
         }
@@ -381,6 +452,60 @@ impl Editor {
             }
         }
     }
+}
+
+impl Editor {
+    /// The measured line: each leg's length at its middle and the running total at the pointer.
+    fn measure_overlay(&self, ui: &Ui, rect: Rect, view: &TwinView, p: &Palette) {
+        if self.points.is_empty() {
+            return;
+        }
+        let painter = ui.painter_at(rect);
+        let mut ll = self.points.clone();
+        let hover = ui.ctx().pointer_hover_pos().filter(|q| rect.contains(*q));
+        if let Some(q) = hover {
+            ll.push(view.screen_to_lonlat(rect, q));
+        }
+        let pts: Vec<Pos2> = ll
+            .iter()
+            .map(|(lon, lat)| view.to_screen(rect, Mercator::project(*lon, *lat)))
+            .collect();
+        painter.add(Shape::line(pts.clone(), Stroke::new(2.0, p.text)));
+        let label = |at: Pos2, s: String| {
+            let galley = painter.layout_no_wrap(s, font(11.0, Weight::Medium), p.text);
+            let r = Rect::from_center_size(at, galley.size() + vec2(8.0, 4.0));
+            painter.rect_filled(r, 3.0, p.bg1);
+            painter.galley(r.min + vec2(4.0, 2.0), galley, p.text);
+        };
+        let mut total = 0.0;
+        for (i, w) in ll.windows(2).enumerate() {
+            let m = ground_m(w[0], w[1]);
+            total += m;
+            if ll.len() > 2 {
+                label(pts[i].lerp(pts[i + 1], 0.5), crate::widgets::fmt_metres(m));
+            }
+        }
+        for q in pts.iter().take(self.points.len()) {
+            painter.circle_filled(*q, 3.5, p.text);
+            painter.circle_stroke(*q, 3.5, Stroke::new(1.2, p.map_bg));
+        }
+        if ll.len() > 1 {
+            label(
+                pts[pts.len() - 1] + vec2(0.0, -16.0),
+                format!("{} total", crate::widgets::fmt_metres(total)),
+            );
+        }
+    }
+}
+
+fn join_glyph(pa: &egui::Painter, r: Rect, c: Color32) {
+    let s = Stroke::new(1.6, c);
+    let at = |x: f32, y: f32| pos2(r.left() + x * r.width(), r.top() + y * r.height());
+    pa.line_segment([at(0.0, 0.5), at(0.38, 0.5)], s);
+    pa.line_segment([at(0.62, 0.5), at(1.0, 0.5)], s);
+    pa.circle_filled(at(0.5, 0.5), 2.4, c);
+    pa.line_segment([at(0.3, 0.25), at(0.42, 0.42)], Stroke::new(1.2, c));
+    pa.line_segment([at(0.7, 0.25), at(0.58, 0.42)], Stroke::new(1.2, c));
 }
 
 fn undo_hint(st: &AppState, which: &str, fallback: &str) -> String {
@@ -485,6 +610,17 @@ fn glyph(pa: &egui::Painter, r: Rect, tool: Tool, c: Color32) {
                 [at(0.5, 0.1), at(0.5, 0.9)],
                 Stroke::new(1.2, c.gamma_multiply(0.7)),
             );
+        }
+        Tool::Measure => {
+            // A ruler laid at an angle, with ticks.
+            pa.add(Shape::closed_line(
+                vec![at(0.05, 0.7), at(0.7, 0.05), at(0.95, 0.3), at(0.3, 0.95)],
+                s,
+            ));
+            for t in [0.25f32, 0.4, 0.55] {
+                let a = at(0.05 + t, 0.7 - t);
+                pa.line_segment([a, a + vec2(3.0, 3.0)], Stroke::new(1.2, c));
+            }
         }
         Tool::Reassign => {
             pa.circle_stroke(at(0.22, 0.75), 2.6, s);

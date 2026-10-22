@@ -176,6 +176,12 @@ impl Client {
         self.get("/api/project/edits")
     }
 
+    /// The rule check of the design as it stands: `{count, by_check, items: [{check, element,
+    /// message, severity}]}`.
+    pub fn violations(&self) -> Result<Value, ClientError> {
+        self.get("/api/project/violations")
+    }
+
     /// Write the Claude Desktop bundle (`openftth.mcpb`) and return its path.
     pub fn mcp_claude_bundle(&self) -> Result<Value, ClientError> {
         self.send("POST", "/api/mcp/claude-bundle", &json!({}))

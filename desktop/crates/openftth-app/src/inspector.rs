@@ -132,6 +132,44 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
             Frame::new()
                 .inner_margin(Margin::symmetric(10, 8))
                 .show(ui, |ui| {
+                    if st.selection.len() > 1 {
+                        // Several selected (Shift-click or a Shift-drag box): what is in it, then
+                        // the first one in detail.
+                        let mut kinds: std::collections::BTreeMap<String, usize> =
+                            Default::default();
+                        if let Some(d) = st.design.as_ref() {
+                            for id in &st.selection {
+                                if let Some(x) = d.get(id) {
+                                    *kinds.entry(x.kind().to_string()).or_default() += 1;
+                                }
+                            }
+                        }
+                        ui.label(text(
+                            format!("{} selected", st.selection.len()),
+                            14.0,
+                            Weight::Semibold,
+                            p.text,
+                        ));
+                        ui.label(text(
+                            kinds
+                                .iter()
+                                .map(|(k, n)| format!("{n} {k}"))
+                                .collect::<Vec<_>>()
+                                .join(" · "),
+                            12.0,
+                            Weight::Regular,
+                            p.text2,
+                        ));
+                        ui.label(text(
+                            "Del deletes them as one edit · J joins two cables · first one below",
+                            11.5,
+                            Weight::Regular,
+                            p.text3,
+                        ));
+                        ui.add_space(8.0);
+                        crate::widgets::hairline(ui, &p);
+                        ui.add_space(8.0);
+                    }
                     ui.label(text(e.name(), 14.0, Weight::Semibold, p.text));
                     ui.horizontal(|ui| {
                         tag(
@@ -165,6 +203,12 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                                 .on_hover_text("Where this object's data comes from");
                         }
                     });
+                    if let Some(issues) = st.violations.get(&uuid) {
+                        ui.add_space(6.0);
+                        for m in issues {
+                            ui.add(egui::Label::new(text(m, 12.0, Weight::Regular, p.red)).wrap());
+                        }
+                    }
                     ui.add_space(6.0);
                     let busy = st.busy();
                     ui.horizontal_wrapped(|ui| {

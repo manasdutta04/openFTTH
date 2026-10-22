@@ -23,6 +23,7 @@ pub enum Command {
     About,
     Undo,
     Redo,
+    Join,
     Tool(&'static str),
     Element(String),
 }
@@ -256,6 +257,13 @@ impl CommandPalette {
             "R",
             Command::Tool("reassign"),
             open,
+        );
+        action("Measure a distance", "M", Command::Tool("measure"), open);
+        action(
+            "Join the two selected cables",
+            "J",
+            Command::Join,
+            open && crate::editor::join_pair(st).is_some(),
         );
         action(
             "Go to the attribute table",

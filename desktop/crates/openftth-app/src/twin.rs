@@ -25,6 +25,8 @@ pub struct TwinView {
     legend_open: bool,
     /// What was under the pointer when the context menu last opened.
     pub context: Option<MapContext>,
+    /// Where a Shift-drag selection box started.
+    boxing: Option<Pos2>,
 }
 
 impl Default for TwinView {
@@ -36,6 +38,7 @@ impl Default for TwinView {
             cache: None,
             legend_open: true,
             context: None,
+            boxing: None,
         }
     }
 }
@@ -49,6 +52,10 @@ pub struct TwinResponse {
     pub click: Option<(f64, f64)>,
     /// The map's own response, for the context menu.
     pub response: egui::Response,
+    /// What a Shift-drag box closed around (visible sites, homes and whole cables).
+    pub boxed: Option<Vec<String>>,
+    /// Shift was held: a click adds to or takes from the selection.
+    pub shift: bool,
 }
 
 /// What the right mouse button hit: a position, maybe an element, maybe a street.
@@ -339,6 +346,7 @@ impl TwinView {
         selection: &[String],
         changed: &[String],
         placing: Option<&str>,
+        issues: &HashMap<String, Vec<String>>,
         reveal: &crate::cursors::Reveal,
     ) -> TwinResponse {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -356,7 +364,12 @@ impl TwinView {
         }
         self.ensure_cache(design, streets);
 
-        if response.dragged() {
+        // Shift and drag draws a selection box; a plain drag pans.
+        let shift = ui.input(|i| i.modifiers.shift);
+        if response.drag_started() && shift {
+            self.boxing = ui.input(|i| i.pointer.press_origin());
+        }
+        if self.boxing.is_none() && response.dragged() {
             let d = response.drag_delta();
             self.center[0] -= d.x as f64 / self.scale;
             self.center[1] += d.y as f64 / self.scale;
@@ -414,6 +427,11 @@ impl TwinView {
         let elements: &[Element] = design.map(|d| d.elements.as_slice()).unwrap_or(&[]);
         let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
         let selected_set: HashSet<&str> = selection.iter().map(String::as_str).collect();
+        let issue_set: HashSet<&str> = if layers.issues {
+            issues.keys().map(String::as_str).collect()
+        } else {
+            HashSet::new()
+        };
         let uuid_of = |idx: usize| elements[idx].element_uuid.as_str();
         let mut shapes: Vec<Shape> = Vec::with_capacity(4096);
         let mut best: Option<Hit> = None;
@@ -517,6 +535,12 @@ impl TwinView {
                         continue;
                     }
                 }
+                if issue_set.contains(uuid) {
+                    shapes.push(Shape::line(
+                        pts.clone(),
+                        Stroke::new(w + 7.0, p.red.gamma_multiply(0.35)),
+                    ));
+                }
                 if selected_set.contains(uuid) {
                     shapes.push(Shape::line(
                         pts.clone(),
@@ -589,6 +613,9 @@ impl TwinView {
                 p.kind(POINT_KINDS[k])
             }
             .gamma_multiply(shown);
+            if issue_set.contains(uuid) {
+                shapes.push(Shape::circle_stroke(pos, r + 4.0, Stroke::new(2.0, p.red)));
+            }
             if selected_set.contains(uuid) {
                 shapes.push(Shape::circle_filled(
                     pos,
@@ -641,6 +668,35 @@ impl TwinView {
                 if d <= r + 6.0 {
                     consider(d - (r + 6.5), f32::INFINITY, pt.idx);
                 }
+            }
+        }
+        // The selection box, and what it closed around once the button is let go.
+        let mut boxed = None;
+        if let Some(start) = self.boxing {
+            let now = ui.input(|i| i.pointer.latest_pos()).unwrap_or(start);
+            let sel = Rect::from_two_pos(start, now);
+            shapes.push(Shape::rect_filled(sel, 0.0, p.accent.gamma_multiply(0.08)));
+            shapes.push(Shape::rect_stroke(
+                sel,
+                0.0,
+                Stroke::new(1.0, p.accent),
+                egui::StrokeKind::Middle,
+            ));
+            if !ui.input(|i| i.pointer.primary_down()) {
+                let mut ids: Vec<String> = Vec::new();
+                for pt in &cache.points {
+                    let k = pt.kind as usize;
+                    if point_on[k] && !(k == 0 && scale < 0.15) && sel.contains(tf(&pt.xy)) {
+                        ids.push(uuid_of(pt.idx).to_string());
+                    }
+                }
+                for c in &cache.cables {
+                    if cable_on[c.class as usize] && c.pts.iter().all(|q| sel.contains(tf(q))) {
+                        ids.push(uuid_of(c.idx).to_string());
+                    }
+                }
+                boxed = Some(ids);
+                self.boxing = None;
             }
         }
         // Placement: a ring under the pointer and a dashed line from where the site stands.
@@ -719,7 +775,7 @@ impl TwinView {
         if refit {
             self.refit();
         }
-        self.layer_list(ui, rect, p, layers, design);
+        self.layer_list(ui, rect, p, layers, design, issues.len());
 
         let hit_uuid = best.map(|h| elements[h.idx].element_uuid.clone());
         let hovered = if click_pos.is_none() {
@@ -756,10 +812,15 @@ impl TwinView {
                     for l in lines {
                         ui.label(text(l, 11.5, Weight::Regular, p.text2));
                     }
+                    for m in issues.get(h).into_iter().flatten().take(4) {
+                        ui.label(text(m, 11.5, Weight::Regular, p.red));
+                    }
                 });
             }
         }
-        if response.dragged() {
+        if self.boxing.is_some() {
+            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+        } else if response.dragged() {
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
         } else if hovered.is_some() && placing.is_none() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -773,11 +834,16 @@ impl TwinView {
             cursor,
             click: click_pos.map(|q| self.screen_to_lonlat(rect, q)),
             response,
+            boxed,
+            shift,
         }
     }
 
     fn scale_bar(&self, painter: &egui::Painter, rect: Rect, p: &Palette) {
-        let metres = 110.0 / self.scale;
+        // A Mercator metre is 1 / cos(latitude) ground metres; the bar shows ground metres.
+        let lat = Mercator::unproject(self.center[0], self.center[1]).1;
+        let ground = lat.to_radians().cos();
+        let metres = 110.0 / self.scale * ground;
         let nice = [
             1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0,
         ];
@@ -786,7 +852,7 @@ impl TwinView {
             .copied()
             .min_by(|a, b| (a - metres).abs().partial_cmp(&(b - metres).abs()).unwrap())
             .unwrap_or(100.0);
-        let px = (m * self.scale) as f32;
+        let px = (m / ground * self.scale) as f32;
         let origin = rect.left_bottom() + vec2(12.0, -12.0);
         let c = p.text2;
         painter.line_segment([origin, origin + vec2(px, 0.0)], Stroke::new(1.5, c));
@@ -816,8 +882,12 @@ impl TwinView {
         p: &Palette,
         layers: &mut Layers,
         design: Option<&Design>,
+        issue_count: usize,
     ) {
-        let counts = design.map(Design::counts).unwrap_or_default();
+        let mut counts = design.map(Design::counts).unwrap_or_default();
+        if issue_count > 0 {
+            counts.insert("issue".into(), issue_count);
+        }
         egui::Area::new(egui::Id::unique("twin-layers"))
             .fixed_pos(rect.right_bottom() - vec2(10.0, 10.0))
             .pivot(Align2::RIGHT_BOTTOM)
@@ -861,7 +931,7 @@ impl TwinView {
                         return;
                     }
                     ui.add_space(4.0);
-                    let rows: [(&str, &str, &mut bool); 11] = [
+                    let rows: [(&str, &str, &mut bool); 12] = [
                         ("Feeder", "feeder", &mut layers.feeder),
                         ("Distribution", "distribution", &mut layers.distribution),
                         ("Drops", "drop", &mut layers.drops),
@@ -873,6 +943,7 @@ impl TwinView {
                         ("Streets", "street", &mut layers.streets),
                         ("Existing network", "existing_duct", &mut layers.existing),
                         ("Crossings", "crossing", &mut layers.crossings),
+                        ("Rule issues", "issue", &mut layers.issues),
                     ];
                     for (label, kind, on) in rows {
                         let (r, resp) = ui
@@ -887,6 +958,7 @@ impl TwinView {
                         let c = match kind {
                             "building" => p.map_building_edge,
                             "street" => p.text3,
+                            "issue" => p.red,
                             k => p.kind(k),
                         }
                         .gamma_multiply(alpha);
@@ -905,6 +977,9 @@ impl TwinView {
                                     [sw.left_center(), sw.right_center()],
                                     Stroke::new(1.2, p.map_bg),
                                 );
+                            }
+                            "issue" => {
+                                painter.circle_stroke(sw.center(), 4.0, Stroke::new(1.8, c));
                             }
                             "existing_duct" => {
                                 painter.extend(Shape::dashed_line(

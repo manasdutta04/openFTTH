@@ -16,7 +16,7 @@ use crate::chat::{
     PROMPT_VALIDATE,
 };
 use crate::connect::ConnectWindow;
-use crate::editor::{BarAction, Editor, Tool};
+use crate::editor::{join_pair, BarAction, Editor, Tool};
 use crate::icons::{self, Icon};
 use crate::import::ImportWizard;
 use crate::inspector::{inspector, is_excluded, is_movable, InspectorAction};
@@ -577,6 +577,15 @@ project {}",
             }
             if menu_item(ui, &p, "Delete", Some("Del"), free && has_selection) {
                 self.delete_selection();
+            }
+            if menu_item(
+                ui,
+                &p,
+                "Join two cables",
+                Some("J"),
+                free && join_pair(&self.st).is_some(),
+            ) {
+                self.join_selection();
             }
             menu_separator(ui, &p);
             if menu_item(ui, &p, "Copy selected ids", Some("Ctrl+C"), has_selection) {
@@ -1181,6 +1190,7 @@ project {}",
                     &lit,
                     &st.changed,
                     placing.as_ref().map(|p| p.uuid.as_str()),
+                    &st.violations,
                     &reveal,
                 );
                 st.cursor = resp.cursor;
@@ -1193,9 +1203,26 @@ project {}",
                         self.placing = None;
                     }
                 } else if let Some(id) = resp.clicked {
-                    st.selection = vec![id];
-                } else if resp.clicked_empty {
+                    if resp.shift {
+                        // Shift-click adds to the selection, or takes the element out of it.
+                        match st.selection.iter().position(|s| *s == id) {
+                            Some(i) => {
+                                st.selection.remove(i);
+                            }
+                            None => st.selection.push(id),
+                        }
+                    } else {
+                        st.selection = vec![id];
+                    }
+                } else if resp.clicked_empty && !resp.shift {
                     st.selection.clear();
+                }
+                if let Some(ids) = resp.boxed {
+                    for id in ids {
+                        if !st.selection.contains(&id) {
+                            st.selection.push(id);
+                        }
+                    }
                 }
                 let map = resp.response;
                 self.editor
@@ -1205,6 +1232,7 @@ project {}",
                     Some(BarAction::Undo) => self.st.edit("undo_edit", serde_json::json!({})),
                     Some(BarAction::Redo) => self.st.edit("redo_edit", serde_json::json!({})),
                     Some(BarAction::Delete) => self.delete_selection(),
+                    Some(BarAction::Join) => self.join_selection(),
                     None => {}
                 }
                 self.editor.edit_bar(ui, map.rect, &p, &mut self.st);
@@ -1235,7 +1263,7 @@ project {}",
                     .inner_margin(Margin::symmetric(12, 8))
                     .show(ui, |ui| match other {
                         Tab::Boq => boq_tab(ui, &self.st),
-                        Tab::Splice => splice_tab(ui, &self.st, &mut self.tabs),
+                        Tab::Splice => splice_tab(ui, &mut self.st, &mut self.tabs),
                         Tab::Versions => versions_tab(ui, &mut self.st),
                         Tab::Backstage => backstage_tab(ui, &mut self.st, &mut self.tabs),
                         Tab::Table => {
@@ -1403,22 +1431,49 @@ project {}",
 
     /// Delete the selected element (the first, when several are selected): one edit, undoable.
     fn delete_selection(&mut self) {
-        let Some(id) = self.st.selection.first().cloned() else {
+        if self.st.selection.is_empty() || self.st.editing() || self.st.busy() {
             return;
-        };
+        }
+        let reason = self.edit_reason();
+        if let [id] = self.st.selection.as_slice() {
+            let args = serde_json::json!({ "element_uuid": id, "reason": reason });
+            self.st.edit("delete_element", args);
+        } else {
+            // Several at once are one edit, so one undo brings them all back.
+            let args = serde_json::json!({ "element_uuids": self.st.selection, "reason": reason });
+            self.st.edit("delete_elements", args);
+        }
+        self.st.selection.clear();
+    }
+
+    /// Join the two selected cables into one.
+    fn join_selection(&mut self) {
         if self.st.editing() || self.st.busy() {
             return;
         }
-        let reason = if self.editor.reason.trim().is_empty() {
+        match join_pair(&self.st) {
+            Some((a, b)) => {
+                let args = serde_json::json!({
+                    "first_uuid": a,
+                    "second_uuid": b,
+                    "reason": self.edit_reason(),
+                });
+                self.st.edit("join_cables", args);
+            }
+            None => self
+                .st
+                .toasts
+                .info("Select two cables that meet (Shift-click the second) to join them"),
+        }
+    }
+
+    fn edit_reason(&self) -> String {
+        let r = self.editor.reason.trim();
+        if r.is_empty() {
             "manual edit".to_string()
         } else {
-            self.editor.reason.trim().to_string()
-        };
-        self.st.edit(
-            "delete_element",
-            serde_json::json!({ "element_uuid": id, "reason": reason }),
-        );
-        self.st.selection.clear();
+            r.to_string()
+        }
     }
 
     /// What a command palette entry does.
@@ -1442,6 +1497,7 @@ project {}",
             }
             Command::About => self.about = true,
             Command::Undo => self.st.edit("undo_edit", serde_json::json!({})),
+            Command::Join => self.join_selection(),
             Command::Redo => self.st.edit("redo_edit", serde_json::json!({})),
             Command::Tool(name) => {
                 let tool = match name {
@@ -1451,6 +1507,7 @@ project {}",
                     "draw" => Tool::Draw,
                     "split" => Tool::Split,
                     "reassign" => Tool::Reassign,
+                    "measure" => Tool::Measure,
                     _ => Tool::Select,
                 };
                 self.st.tab = Tab::Twin;
@@ -1491,7 +1548,7 @@ project {}",
         });
         let on_map = self.st.tab == Tab::Twin && self.st.project.is_some();
         if on_map && !typing {
-            let (keys, del, enter, back) = ui.input(|i| {
+            let (keys, del, enter, back, join) = ui.input(|i| {
                 (
                     [
                         (i.key_pressed(Key::V), Tool::Select),
@@ -1501,10 +1558,12 @@ project {}",
                         (i.key_pressed(Key::D), Tool::Draw),
                         (i.key_pressed(Key::S) && !i.modifiers.ctrl, Tool::Split),
                         (i.key_pressed(Key::R), Tool::Reassign),
+                        (i.key_pressed(Key::M), Tool::Measure),
                     ],
                     i.key_pressed(Key::Delete),
                     i.key_pressed(Key::Enter),
                     i.key_pressed(Key::Backspace),
+                    i.key_pressed(Key::J) && !i.modifiers.ctrl,
                 )
             });
             if !ctrl {
@@ -1517,13 +1576,14 @@ project {}",
             if del {
                 self.delete_selection();
             }
-            if self.editor.tool == Tool::Draw {
-                if enter {
-                    self.editor.finish_cable(&mut self.st);
-                }
-                if back {
-                    self.editor.points.pop();
-                }
+            if join {
+                self.join_selection();
+            }
+            if enter && self.editor.tool == Tool::Draw {
+                self.editor.finish_cable(&mut self.st);
+            }
+            if back && matches!(self.editor.tool, Tool::Draw | Tool::Measure) {
+                self.editor.points.pop();
             }
         }
         if ctrl && !typing && self.st.project.is_some() && !self.st.editing() {

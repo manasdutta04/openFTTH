@@ -121,6 +121,8 @@ pub struct Layers {
     pub existing: bool,
     /// Bores under motorways, railways, rivers and unmapped obstacles.
     pub crossings: bool,
+    /// Rings on the elements that break a rule.
+    pub issues: bool,
 }
 
 impl Default for Layers {
@@ -137,6 +139,7 @@ impl Default for Layers {
             chambers: true,
             existing: true,
             crossings: true,
+            issues: true,
         }
     }
 }
@@ -229,6 +232,11 @@ pub struct AppState {
     /// What undo and redo would do now, from the engine's edit stack.
     pub edits: Option<Value>,
     edits_rx: Option<Receiver<Option<Value>>>,
+    /// The rule check per element (messages), for the map's markers.
+    pub violations: HashMap<String, Vec<String>>,
+    violations_rx: Option<Receiver<Option<Value>>>,
+    /// The design changed: undo state and rule markers are reloaded once the engine is idle.
+    checks_stale: bool,
 }
 
 impl AppState {
@@ -280,6 +288,9 @@ impl AppState {
             edit_rx: None,
             edits: None,
             edits_rx: None,
+            violations: HashMap::new(),
+            violations_rx: None,
+            checks_stale: false,
         };
         st.load_crew();
         st.load_engines();
@@ -416,6 +427,7 @@ impl AppState {
                     }
                 }
                 self.reload_design();
+                self.checks_stale = true;
                 self.reload_messages();
                 self.refresh_versions();
                 self.refresh_backstage();
@@ -424,6 +436,7 @@ impl AppState {
                 self.project = None;
                 self.design = None;
                 self.edits = None;
+                self.violations.clear();
                 self.streets = None;
                 self.boq = None;
             }
@@ -462,6 +475,7 @@ impl AppState {
         self.cursors.clear();
         self.design = None;
         self.edits = None;
+        self.violations.clear();
         self.streets = None;
         self.boq = None;
         self.validation = None;
@@ -553,7 +567,7 @@ impl AppState {
                     // An undo or a delete can take a selected element away with it.
                     self.selection.retain(|id| d.get(id).is_some());
                     self.design = Some(d);
-                    self.load_edits();
+                    self.checks_stale = true;
                 }
                 Ok(None) => {}
                 Err(e) => self.toasts.error(format!("design bundle: {e}")),
@@ -645,7 +659,11 @@ impl AppState {
             self.apply(f);
         }
         let cutoff = Instant::now() - std::time::Duration::from_secs(20);
-        self.chips.retain(|c| c.at > cutoff || c.state == "started");
+        // A tool that never reported back (a crashed run) must not look busy forever: no engine
+        // step takes ten minutes.
+        let stuck = Instant::now() - std::time::Duration::from_secs(600);
+        self.chips
+            .retain(|c| c.at > cutoff || (c.state == "started" && c.at > stuck));
     }
 
     fn apply(&mut self, f: Frame) {
@@ -868,6 +886,28 @@ impl AppState {
     }
 
     fn poll_edit(&mut self) {
+        // Reads on their own threads: during a crew run they wait their turn at the engine.
+        if self.checks_stale && self.project.is_some() {
+            self.checks_stale = false;
+            self.load_edits();
+            self.load_violations();
+        }
+        if let Some(rx) = &self.violations_rx {
+            if let Ok(v) = rx.try_recv() {
+                self.violations_rx = None;
+                if let Some(v) = v {
+                    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+                    for item in v["items"].as_array().into_iter().flatten() {
+                        if let Some(id) = item["element"].as_str().filter(|id| !id.is_empty()) {
+                            map.entry(id.to_string())
+                                .or_default()
+                                .push(s(&item["message"]));
+                        }
+                    }
+                    self.violations = map;
+                }
+            }
+        }
         if let Some(rx) = &self.edits_rx {
             if let Ok(v) = rx.try_recv() {
                 self.edits = v;
@@ -902,7 +942,7 @@ impl AppState {
 
     /// Ask the engine what undo and redo would do now, in the background.
     pub fn load_edits(&mut self) {
-        if self.project.is_none() || self.edits_rx.is_some() || self.engine_working() {
+        if self.project.is_none() || self.edits_rx.is_some() {
             return;
         }
         let client = self.client.clone();
@@ -911,6 +951,19 @@ impl AppState {
             let _ = tx.send(client.edit_history().ok());
         });
         self.edits_rx = Some(rx);
+    }
+
+    /// Ask the engine which elements break a rule, in the background.
+    pub fn load_violations(&mut self) {
+        if self.project.is_none() || self.violations_rx.is_some() {
+            return;
+        }
+        let client = self.client.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(client.violations().ok());
+        });
+        self.violations_rx = Some(rx);
     }
 
     pub fn can_undo(&self) -> bool {
@@ -1016,6 +1069,7 @@ impl AppState {
         self.project = None;
         self.design = None;
         self.edits = None;
+        self.violations.clear();
         self.streets = None;
         self.boq = None;
         self.messages.clear();
@@ -1038,6 +1092,7 @@ impl AppState {
         self.project = None;
         self.design = None;
         self.edits = None;
+        self.violations.clear();
         self.streets = None;
         self.boq = None;
         self.validation = None;

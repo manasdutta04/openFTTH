@@ -17,6 +17,9 @@ use crate::widgets::{
 #[derive(Default)]
 pub struct TabState {
     pub splice_filter: String,
+    /// The splice row open for editing, and what the engineer has typed into it.
+    pub splice_sel: Option<String>,
+    pub splice_form: SpliceForm,
     pub backstage_filter: String,
 }
 
@@ -243,7 +246,28 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
 
 // ---- Splices ----------------------------------------------------------------------------------
 
-pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
+/// The splice being edited in the Splices tab, as the engineer types it.
+#[derive(Default)]
+pub struct SpliceForm {
+    pub for_id: String,
+    pub kind: String,
+    pub source: String,
+    pub dest: String,
+    pub tray: String,
+    pub notes: String,
+    pub reason: String,
+}
+
+/// A fibre counted from 1 across tubes, as `edit_splice` takes it: the engine numbers twelve
+/// fibres to a tube.
+fn local_fibre(c: &serde_json::Map<String, Value>, side: &str) -> Option<i64> {
+    c.get(&format!("{side}_cable_uuid"))?.as_str()?;
+    let tube = c.get(&format!("{side}_tube"))?.as_i64()?;
+    let fibre = c.get(&format!("{side}_fiber"))?.as_i64()?;
+    Some((tube - 1) * 12 + fibre)
+}
+
+pub fn splice_tab(ui: &mut Ui, st: &mut AppState, tabs: &mut TabState) {
     let p = st.palette;
     let Some(d) = &st.design else {
         empty(
@@ -284,6 +308,12 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
             Weight::Medium,
             p.text,
         ));
+        ui.label(text(
+            "· click a row to change it",
+            11.5,
+            Weight::Regular,
+            p.text3,
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             search_field(ui, &p, &mut tabs.splice_filter, 220.0);
         });
@@ -291,6 +321,7 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
     ui.add_space(4.0);
     let filter = tabs.splice_filter.trim().to_lowercase();
     struct Row {
+        uuid: String,
         closure: String,
         kind: String,
         from: String,
@@ -323,26 +354,167 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
             .to_string()
         }
     };
+    let closure_of = |c: &serde_json::Map<String, Value>| {
+        let pid = c
+            .get("splice_point_uuid")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        points
+            .get(pid)
+            .and_then(|pt| pt.get("element_uuid"))
+            .and_then(|v| v.as_str())
+            .map(name_of)
+            .unwrap_or_else(|| short_id(pid).to_string())
+    };
+
+    // The row being edited: its current values, and the form under the header.
+    let mut send: Option<Value> = None;
+    let mut nothing = false;
+    let selected = tabs
+        .splice_sel
+        .as_deref()
+        .and_then(|id| conns.iter().find(|c| s(&c["uuid"]) == id));
+    if let Some(c) = selected {
+        let id = s(&c["uuid"]);
+        let f = &mut tabs.splice_form;
+        if f.for_id != id {
+            *f = SpliceForm {
+                for_id: id.clone(),
+                kind: s(&c["connection_type"]),
+                source: local_fibre(c, "source")
+                    .map(|n| n.to_string())
+                    .unwrap_or_default(),
+                dest: local_fibre(c, "dest")
+                    .map(|n| n.to_string())
+                    .unwrap_or_default(),
+                tray: c
+                    .get("tray_ref")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .into(),
+                notes: c.get("notes").and_then(|v| v.as_str()).unwrap_or("").into(),
+                reason: "splice edit".into(),
+            };
+        }
+        let splitter = s(&c["connection_type"]) == "splitter";
+        let mut close = false;
+        crate::widgets::float_frame(&p).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(text(closure_of(c), 12.5, Weight::Semibold, p.text));
+                ui.label(mono_text(
+                    format!("{}  →  {}", side(c, "source"), side(c, "dest")),
+                    11.5,
+                    p.text2,
+                ));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if button(ui, &p, "Close", Kind::Quiet).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if !splitter {
+                    ui.label(text("Type", 11.5, Weight::Medium, p.text3));
+                    for k in ["splice", "patch"] {
+                        let on = f.kind == k;
+                        if ui
+                            .selectable_label(
+                                on,
+                                text(k, 12.0, Weight::Medium, if on { p.accent } else { p.text2 }),
+                            )
+                            .clicked()
+                        {
+                            f.kind = k.to_string();
+                        }
+                    }
+                    ui.add_space(8.0);
+                }
+                for (label, value, on) in [
+                    (
+                        "From fibre",
+                        &mut f.source,
+                        local_fibre(c, "source").is_some(),
+                    ),
+                    ("To fibre", &mut f.dest, local_fibre(c, "dest").is_some()),
+                ] {
+                    if on {
+                        ui.label(text(label, 11.5, Weight::Medium, p.text3));
+                        ui.add(egui::TextEdit::singleline(value).desired_width(44.0));
+                    }
+                }
+                ui.label(text("Tray", 11.5, Weight::Medium, p.text3));
+                ui.add(egui::TextEdit::singleline(&mut f.tray).desired_width(60.0));
+                ui.label(text("Note", 11.5, Weight::Medium, p.text3));
+                ui.add(egui::TextEdit::singleline(&mut f.notes).desired_width(160.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label(text("Reason", 11.5, Weight::Medium, p.text3));
+                ui.add(egui::TextEdit::singleline(&mut f.reason).desired_width(220.0));
+                let busy = st.busy() || st.editing();
+                let reason = if f.reason.trim().is_empty() {
+                    "splice edit".to_string()
+                } else {
+                    f.reason.trim().to_string()
+                };
+                if crate::widgets::button_enabled(ui, &p, "Apply", Kind::Prominent, !busy).clicked()
+                {
+                    let mut args = serde_json::json!({ "connection_uuid": id, "reason": reason });
+                    if !splitter && f.kind != s(&c["connection_type"]) {
+                        args["connection_type"] = Value::from(f.kind.clone());
+                    }
+                    for (key, value, now) in [
+                        ("source_fiber", &f.source, local_fibre(c, "source")),
+                        ("dest_fiber", &f.dest, local_fibre(c, "dest")),
+                    ] {
+                        if let (Ok(n), Some(now)) = (value.trim().parse::<i64>(), now) {
+                            if n != now {
+                                args[key] = Value::from(n);
+                            }
+                        }
+                    }
+                    let current =
+                        |k: &str| c.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if f.tray.trim() != current("tray_ref") {
+                        args["tray_ref"] = Value::from(f.tray.trim());
+                    }
+                    if f.notes.trim() != current("notes") {
+                        args["notes"] = Value::from(f.notes.trim());
+                    }
+                    if args.as_object().map(|o| o.len()).unwrap_or(0) > 2 {
+                        send = Some(args);
+                    } else {
+                        nothing = true;
+                    }
+                }
+                if crate::widgets::button_enabled(ui, &p, "Remove", Kind::Danger, !busy)
+                    .on_hover_text("Cut this connection (undo brings it back)")
+                    .clicked()
+                {
+                    send = Some(serde_json::json!({
+                        "connection_uuid": id,
+                        "reason": reason,
+                        "remove": true,
+                    }));
+                    close = true;
+                }
+            });
+        });
+        if close {
+            tabs.splice_sel = None;
+        }
+        ui.add_space(6.0);
+    }
+
     let mut rows: Vec<Row> = conns
         .iter()
-        .map(|c| {
-            let pid = c
-                .get("splice_point_uuid")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let closure = points
-                .get(pid)
-                .and_then(|pt| pt.get("element_uuid"))
-                .and_then(|v| v.as_str())
-                .map(name_of)
-                .unwrap_or_else(|| short_id(pid).to_string());
-            Row {
-                closure,
-                kind: s(&c["connection_type"]),
-                from: side(c, "source"),
-                to: side(c, "dest"),
-                loss: c.get("loss_db").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            }
+        .map(|c| Row {
+            uuid: s(&c["uuid"]),
+            closure: closure_of(c),
+            kind: s(&c["connection_type"]),
+            from: side(c, "source"),
+            to: side(c, "dest"),
+            loss: c.get("loss_db").and_then(|v| v.as_f64()).unwrap_or(0.0),
         })
         .filter(|r| {
             filter.is_empty()
@@ -359,11 +531,13 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
     });
     // The table scrolls itself, so only the rows in view are laid out: every row is listed.
     let shown = rows.len();
+    let mut picked: Option<String> = None;
     TableBuilder::new(ui)
         .id_salt("splices")
         .vscroll(true)
         .auto_shrink([false, false])
         .striped(false)
+        .sense(Sense::click())
         .column(Column::auto().at_least(120.0))
         .column(Column::auto().at_least(64.0))
         .column(Column::remainder().at_least(200.0))
@@ -377,6 +551,7 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
         .body(|body| {
             body.rows(20.0, shown, |mut row| {
                 let r = &rows[row.index()];
+                row.set_selected(tabs.splice_sel.as_deref() == Some(r.uuid.as_str()));
                 row.col(|ui| {
                     ui.label(text(&r.closure, 12.0, Weight::Regular, p.text));
                 });
@@ -397,8 +572,20 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
                 row.col(|ui| {
                     ui.label(mono_text(format!("{:.1}", r.loss), 11.5, p.text3));
                 });
+                if row.response().clicked() {
+                    picked = Some(r.uuid.clone());
+                }
             });
         });
+    if let Some(id) = picked {
+        tabs.splice_sel = Some(id);
+    }
+    if nothing {
+        st.toasts.info("Nothing changed in this splice");
+    }
+    if let Some(args) = send {
+        st.edit("edit_splice", args);
+    }
 }
 
 // ---- Versions ---------------------------------------------------------------------------------

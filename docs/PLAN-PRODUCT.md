@@ -35,13 +35,16 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
 - Engine edit tools (all versioned, `source: user`, re-validate): `add_site(kind, lon, lat)`, `delete_element`, `draw_cable(kind, via points snapped to graph)`, `split_cable`, `join_cables`, `reassign_home(home, fat)`, `set_attribute(element, key, value)` within schema, `edit_splice(row)`; undo/redo = version stepping (`rewind_design` stays risky only for posted versions).
 - App tool palette on the map (select, move, draw cable, add site, split, measure), snapping to streets/sites, keyboard shortcuts, multi-select, box select, attribute table per layer with inline edit, search by id/name/address, undo/redo (Ctrl+Z/Y), live validation markers on the map.
 - Gate: an engineer builds a small network entirely by hand, validates it and posts it.
-  *Done:* engine tools `add_site`, `delete_element`, `draw_cable`, `split_cable`, `reassign`,
-  `set_attribute`, `move_site`, `undo_edit`, `redo_edit` (each needs a reason, is pinned so the
-  solvers keep it, and reports the rule violations after it). The app has a tool bar on the map
-  (V select, T FAT, H cabinet, C chamber, D draw, S split, R reassign), a drawing preview, Del,
-  Ctrl+Z/Y, Edit-menu and Ctrl+K entries, and a Table tab per layer with sorting, filter and
-  inline edit. Still to do: `join_cables`, `edit_splice`, measure, box and multi-select,
-  violation markers drawn on the map, and the full by-hand gate through to posting.
+  *Done:* engine tools `add_site`, `delete_element`, `delete_elements`, `draw_cable`,
+  `split_cable` (fibres spliced straight through at the new chamber), `join_cables` (refuses a
+  joint that crosses fibres), `edit_splice` (re-patch, splice/patch with the rulebook's loss,
+  tray, note, remove), `reassign`, `set_attribute`, `move_site`, `undo_edit`, `redo_edit`,
+  `list_violations`; each edit needs a reason, pins what it places and reports the rule
+  violations after it. The app has a tool bar on the map (V select, T FAT, H cabinet,
+  C chamber, D draw, S split, R reassign, M measure, J join), Shift-click and Shift-drag box
+  selection, Del for one or many, Ctrl+Z/Y, rule-issue rings on the map with their messages,
+  a Table tab per layer with inline edit, and an edit strip in the Splices tab. Still to do:
+  the full by-hand gate through to posting a work order.
 
 ### P4 — Plan sheets, reports and exchange (engine `deliver/`, app)
 - Plan sheets: atlas of A3/A1 pages over the area (or per block), operator symbology from the operator pack, legend, scale bar, north arrow, title block from work order, label placement without collisions; PDF and DXF (own writers: DXF R12/R2000 text format, PDF via matplotlib backend already present).
