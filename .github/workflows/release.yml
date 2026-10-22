@@ -1,0 +1,71 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching desktop/Cargo.toml's workspace version) to build the Windows
+# installer and attach it, with its SHA-256, to a draft GitHub Release for review.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path desktop/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne "${{ github.ref_name }}") { throw "tag ${{ github.ref_name }} does not match version $v in desktop/Cargo.toml" }
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: harness/pnpm-lock.yaml
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+
+      - name: Tests
+        shell: pwsh
+        run: |
+          cd engine; uv sync --frozen; uv run pytest -q; cd ..
+          cd harness; pnpm install --frozen-lockfile; pnpm test; cd ..
+          cd desktop; cargo test --workspace; cd ..
+
+      - name: Stage the app and build the installer
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }
+          ./tools/package-windows.ps1 -Installer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openFTTH-windows
+          path: |
+            dist/openFTTH-Setup-*.exe
+            dist/openFTTH-Setup-*.exe.sha256
+          if-no-files-found: error
+
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/openFTTH-Setup-*.exe
+            dist/openFTTH-Setup-*.exe.sha256

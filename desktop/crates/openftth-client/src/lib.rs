@@ -354,3 +354,27 @@ impl Client {
         })
     }
 }
+
+/// The newest release on GitHub: `(tag, page url)`. A named, explicit network call: the app only
+/// makes it when the engineer asks to check for updates.
+pub fn latest_release(repo: &str) -> Result<(String, String), ClientError> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let res = agent
+        .get(format!(
+            "https://api.github.com/repos/{repo}/releases/latest"
+        ))
+        .header("accept", "application/vnd.github+json")
+        .header("user-agent", "openFTTH")
+        .call()?;
+    let v = finish(res)?;
+    let tag = v["tag_name"].as_str().unwrap_or_default().to_string();
+    let url = v["html_url"].as_str().unwrap_or_default().to_string();
+    if tag.is_empty() {
+        return Err(ClientError::Api(404, "no release published yet".into()));
+    }
+    Ok((tag, url))
+}

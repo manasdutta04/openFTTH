@@ -44,9 +44,28 @@ for the roadmap and [docs/DEMO.md](docs/DEMO.md) for the current gate demo.
 | `macos/` | Swift package for the Mac app (later). |
 | `docs/` | Plan, protocol, rulebook and design-model documentation. |
 
-## Install the desktop app (Windows, free)
+## Install (Windows, free)
 
-Everything openFTTH needs is free. With Node.js 23.6 or newer, Rust and uv installed:
+Download `openFTTH-Setup-<version>.exe` from the
+[latest release](https://github.com/manasdutta04/openFTTH/releases/latest) and run it. It
+installs for your user only (no administrator rights) and brings its own Node and Python, so
+nothing else is needed. Check the download against the `.sha256` file next to it. The installer
+is not code-signed yet, so Windows SmartScreen may warn "unknown publisher": choose
+**More info → Run anyway**. Your projects and settings live in `%USERPROFILE%\.openftth` and
+survive upgrades and uninstalls (the uninstaller asks).
+
+**Bring your own AI, or none.** **Design automatically** designs a whole area with the engine
+alone: no AI, account or key. For the crew, pick an engine in the composer's engine menu:
+the Claude CLI or Codex CLI (your own subscription), an OpenAI-compatible API or OpenRouter
+(your own key), or a local model through [Ollama](https://ollama.com) (free). Help → Check for
+updates looks for a newer release only when you ask.
+
+To build the installer yourself: `tools\package-windows.ps1 -Installer` (Rust, Node 24 + pnpm,
+uv and [Inno Setup 6](https://jrsoftware.org/isinfo.php), all free).
+
+## Run from a checkout (developers)
+
+With Node.js 23.6 or newer, Rust and uv installed:
 
 ```powershell
 .\tools\install-desktop.ps1

@@ -118,6 +118,9 @@ export function findRepoRoot(): string {
  * PATH, which an app started from the Start menu or a desktop shortcut usually lacks.
  */
 function defaultEngineCommand(engineCwd: string): string[] {
+  // The installed app ships its own Python with the engine in it (engine/python).
+  const bundled = join(engineCwd, "python", process.platform === "win32" ? "python.exe" : "bin/python3");
+  if (existsSync(bundled)) return [bundled, "-m", "openftth_engine"];
   const exe = process.platform === "win32"
     ? join(engineCwd, ".venv", "Scripts", "openftth-engine.exe")
     : join(engineCwd, ".venv", "bin", "openftth-engine");

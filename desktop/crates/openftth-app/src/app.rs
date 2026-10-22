@@ -753,8 +753,11 @@ project {}",
             }
             if menu_item(ui, &p, "Keyboard shortcuts", None, true) {
                 self.st.toasts.info(
-                    "Ctrl+K command palette · Ctrl+1…5 tabs · F fit design · Esc clear selection · Enter send · Shift+Enter new line",
+                    "Ctrl+K palette · Ctrl+1…6 tabs · E Auto/Manual · V T H C P D S R M tools · Del · J join · Ctrl+Z/Y · F fit · Esc",
                 );
+            }
+            if menu_item(ui, &p, "Check for updates", None, true) {
+                self.st.check_updates();
             }
             if menu_item(ui, &p, "Connect AI apps…", None, true) {
                 self.connect.show_window(&self.st);

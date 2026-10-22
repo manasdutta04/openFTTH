@@ -23,7 +23,7 @@ impl Sidecar {
         let mut bytes = [0u8; 24];
         rand::rng().fill_bytes(&mut bytes);
         let token = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let node = env::var("OPENFTTH_NODE").unwrap_or_else(|_| "node".into());
+        let node = env::var("OPENFTTH_NODE").unwrap_or_else(|_| bundled_node());
         let mut child = Command::new(&node)
             .arg("--no-warnings")
             .arg(&script)
@@ -61,6 +61,16 @@ impl Drop for Sidecar {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The installed app ships Node next to itself (`<exe dir>/node/node.exe`); a checkout uses PATH.
+fn bundled_node() -> String {
+    env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("node").join("node.exe")))
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "node".into())
 }
 
 /// Bundled layout: `<exe dir>/harness/dist/index.js`. Checkout layout: `<repo>/harness/src/index.ts`.

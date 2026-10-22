@@ -1016,6 +1016,32 @@ impl AppState {
         self.notice_rx = Some(rx);
     }
 
+    /// Ask GitHub for the newest release (only when the engineer asks) and open its page when it
+    /// is newer than this build.
+    pub fn check_updates(&mut self) {
+        if self.notice_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mine = env!("CARGO_PKG_VERSION");
+            let out = match openftth_client::latest_release(crate::RELEASES_REPO) {
+                Ok((tag, url)) => {
+                    let theirs = tag.trim_start_matches('v');
+                    if newer(theirs, mine) {
+                        crate::connect::open_external(&url);
+                        Ok(format!("openFTTH {theirs} is out (you have {mine}): its page is open in your browser"))
+                    } else {
+                        Ok(format!("openFTTH {mine} is the newest release"))
+                    }
+                }
+                Err(e) => Err(format!("Could not check for updates: {e}")),
+            };
+            let _ = tx.send(out);
+        });
+        self.notice_rx = Some(rx);
+    }
+
     /// Ask the engine which elements break a rule, in the background.
     pub fn load_violations(&mut self) {
         if self.project.is_none() || self.violations_rx.is_some() {
@@ -1437,4 +1463,28 @@ fn changed_between(old: Option<&Design>, new: &Design) -> (Vec<String>, Vec<Stri
         }
     }
     (added, moved, updated)
+}
+
+/// Whether version `a` (like "0.2.1") is newer than `b`; non-numeric parts count as 0.
+fn newer(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> {
+        v.split(['.', '-'])
+            .take(3)
+            .map(|x| x.parse().unwrap_or(0))
+            .collect()
+    };
+    parts(a) > parts(b)
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::newer;
+
+    #[test]
+    fn versions_compare_by_number() {
+        assert!(newer("0.10.0", "0.9.3"));
+        assert!(newer("1.0.0", "0.9.9"));
+        assert!(!newer("0.1.0", "0.1.0"));
+        assert!(!newer("0.1.0", "0.2.0"));
+    }
 }

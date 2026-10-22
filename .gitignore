@@ -30,3 +30,6 @@ fixtures/**/*.gpkg
 Thumbs.db
 .vscode/
 .idea/
+
+# Packaged app and installer
+/dist/

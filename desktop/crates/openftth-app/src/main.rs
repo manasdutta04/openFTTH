@@ -22,6 +22,9 @@ mod twin;
 mod welcome;
 mod widgets;
 
+/// Where releases are published ("Check for updates" asks its GitHub API).
+pub const RELEASES_REPO: &str = "manasdutta04/openFTTH";
+
 use std::env;
 
 use anyhow::{Context, Result};
