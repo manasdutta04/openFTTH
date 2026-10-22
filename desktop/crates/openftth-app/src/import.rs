@@ -453,29 +453,52 @@ fn layer_card(ui: &mut Ui, p: &Palette, i: usize, l: &mut Layer, roles: &[Role])
                 .map(|r| r.fields.clone())
                 .unwrap_or_default();
             let table = l.geometry == "None" || !l.x.is_empty();
-            ui.horizontal_wrapped(|ui| {
-                if table {
-                    changed |= column_pick(ui, p, ("x", i), "x", &mut l.x, &l.columns);
-                    changed |= column_pick(ui, p, ("y", i), "y", &mut l.y, &l.columns);
-                }
-                if l.crs.is_none() {
-                    ui.label(text("CRS", 11.5, Weight::Medium, p.text2));
-                    changed |= ui
-                        .add(
-                            egui::TextEdit::singleline(&mut l.bind_crs)
-                                .hint_text("EPSG:31370")
-                                .desired_width(96.0),
-                        )
-                        .changed();
-                }
-                for f in &fields {
-                    let mut v = l.map.get(f).cloned().unwrap_or_default();
-                    if column_pick(ui, p, (f.as_str(), i), f, &mut v, &l.columns) {
-                        l.map.insert(f.clone(), v);
-                        changed = true;
+            if l.crs.is_none() && l.bind_crs.trim().is_empty() {
+                ui.label(text(
+                    "Type the coordinate system these coordinates are in, for example EPSG:31370 (Belgian Lambert 72) or EPSG:4326 (longitude/latitude).",
+                    11.5,
+                    Weight::Regular,
+                    p.amber,
+                ));
+            }
+            // Label and picker pairs, three to a row, so every label stays beside its picker.
+            egui::Grid::new(("import-cols", i))
+                .num_columns(6)
+                .spacing(vec2(8.0, 6.0))
+                .show(ui, |ui| {
+                    let mut n = 0;
+                    let mut next = |ui: &mut Ui| {
+                        n += 1;
+                        if n % 3 == 0 {
+                            ui.end_row();
+                        }
+                    };
+                    if table {
+                        changed |= column_pick(ui, p, ("x", i), "x", &mut l.x, &l.columns);
+                        next(ui);
+                        changed |= column_pick(ui, p, ("y", i), "y", &mut l.y, &l.columns);
+                        next(ui);
                     }
-                }
-            });
+                    if l.crs.is_none() {
+                        ui.label(text("CRS", 11.5, Weight::Medium, p.text2));
+                        changed |= ui
+                            .add(
+                                egui::TextEdit::singleline(&mut l.bind_crs)
+                                    .hint_text("EPSG:…")
+                                    .desired_width(110.0),
+                            )
+                            .changed();
+                        next(ui);
+                    }
+                    for f in &fields {
+                        let mut v = l.map.get(f).cloned().unwrap_or_default();
+                        if column_pick(ui, p, (f.as_str(), i), f, &mut v, &l.columns) {
+                            l.map.insert(f.clone(), v);
+                            changed = true;
+                        }
+                        next(ui);
+                    }
+                });
         });
     changed
 }
@@ -489,7 +512,7 @@ fn column_pick(
     columns: &[String],
 ) -> bool {
     let mut changed = false;
-    ui.label(text(label, 11.5, Weight::Medium, p.text2));
+    ui.label(text(label.replace('_', " "), 11.5, Weight::Medium, p.text2));
     egui::ComboBox::from_id_salt(("import-col", salt.0, salt.1))
         .selected_text(if value.is_empty() {
             "—"
@@ -503,9 +526,31 @@ fn column_pick(
                 changed |= ui.selectable_value(value, c.clone(), c).changed();
             }
         });
-    ui.add_space(6.0);
     changed
 }
+
+/// What a count in the quality report is called, in report order: (key, one, many).
+const COUNT_NAMES: [(&str, &str, &str); 11] = [
+    ("homes", "home", "homes"),
+    ("units", "unit", "units"),
+    ("addresses", "address", "addresses"),
+    ("streets", "street segment", "street segments"),
+    ("buildings", "building", "buildings"),
+    ("existing_ducts", "existing duct", "existing ducts"),
+    ("poles", "pole", "poles"),
+    ("manholes", "manhole", "manholes"),
+    ("no_dig_zones", "no-dig zone", "no-dig zones"),
+    (
+        "osm_streets",
+        "OpenStreetMap street",
+        "OpenStreetMap streets",
+    ),
+    (
+        "osm_buildings",
+        "OpenStreetMap building",
+        "OpenStreetMap buildings",
+    ),
+];
 
 /// The data-quality report: counts, then each finding with its level.
 fn report_view(ui: &mut Ui, p: &Palette, r: &Value) {
@@ -529,13 +574,16 @@ fn report_view(ui: &mut Ui, p: &Palette, r: &Value) {
     });
     if let Some(counts) = r["counts"].as_object() {
         ui.horizontal_wrapped(|ui| {
-            for (k, v) in counts {
-                let n = v
-                    .as_i64()
-                    .map(widgets::fmt_int)
-                    .unwrap_or_else(|| v.to_string());
+            for (key, one, many) in COUNT_NAMES {
+                let Some(n) = counts.get(key).and_then(Value::as_i64) else {
+                    continue;
+                };
+                if n == 0 && !matches!(key, "homes" | "units") {
+                    continue;
+                }
+                let name = if n == 1 { one } else { many };
                 ui.label(text(
-                    format!("{} {}", n, k.replace('_', " ")),
+                    format!("{} {name}", widgets::fmt_int(n)),
                     11.5,
                     Weight::Regular,
                     p.text2,

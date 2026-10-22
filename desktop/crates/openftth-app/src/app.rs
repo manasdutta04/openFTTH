@@ -23,7 +23,7 @@ use crate::state::{AppState, Tab};
 use crate::tabs::{backstage_tab, boq_tab, splice_tab, versions_tab, TabState};
 use crate::theme::{self, font, Mode, Palette, Weight, R};
 use crate::twin::TwinView;
-use crate::welcome::{welcome, OpenForm};
+use crate::welcome::{welcome, OpenForm, WelcomeAction};
 use crate::widgets::{
     self, menu_check, menu_item, menu_separator, mono_text, pulse_dot, tag, text,
 };
@@ -662,8 +662,8 @@ project {}",
                 self.st.interrupt();
             }
             menu_separator(ui, &p);
-            if menu_item(ui, &p, "Connect other AI apps…", None, true) {
-                self.connect.show_window(&self.st.client);
+            if menu_item(ui, &p, "Connect AI apps…", None, true) {
+                self.connect.show_window(&self.st);
             }
         })
         .response
@@ -675,6 +675,9 @@ project {}",
                 self.st.toasts.info(
                     "Ctrl+1…5 tabs · F fit design · Esc clear selection · Enter send · Shift+Enter new line",
                 );
+            }
+            if menu_item(ui, &p, "Connect AI apps…", None, true) {
+                self.connect.show_window(&self.st);
             }
             if menu_item(ui, &p, "About openFTTH", None, true) {
                 self.about = true;
@@ -712,7 +715,7 @@ project {}",
                 });
                 ui.add_space(6.0);
                 ui.label(text(
-                    "Fibre access network design with a crew of agents and deterministic solvers. The crew never writes numbers into the design; solvers do, and record why.",
+                    "Fibre access network design with a crew of agents and deterministic solvers. The crew never writes numbers into the design; solvers do, and record why. It reads your own GIS data in any format and CRS, and other AI apps can use it through its MCP link.",
                     12.0,
                     Weight::Regular,
                     p.text2,
@@ -966,7 +969,7 @@ project {}",
 
     // ---- body -------------------------------------------------------------------------------
 
-    fn status_bar(&self, ui: &mut Ui) {
+    fn status_bar(&mut self, ui: &mut Ui) {
         let p = self.st.palette;
         ui.horizontal(|ui| {
             ui.set_height(16.0);
@@ -1014,6 +1017,10 @@ project {}",
                 ));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if mcp_chip(ui, &p, self.st.mcp.as_ref()).clicked() {
+                    self.connect.show_window(&self.st);
+                }
+                ui.add_space(6.0);
                 if cfg!(debug_assertions) {
                     ui.label(mono_text(format!("{:.1} ms", self.frame_ms), 11.0, p.text3))
                         .on_hover_text("Frame CPU time (debug builds only)");
@@ -1417,7 +1424,11 @@ impl eframe::App for OpenFtthApp {
         if self.st.project.is_none() {
             egui::CentralPanel::default()
                 .frame(Frame::new().fill(p.bg1))
-                .show(ui, |ui| welcome(ui, &mut self.st, &mut self.form));
+                .show(ui, |ui| match welcome(ui, &mut self.st, &mut self.form) {
+                    Some(WelcomeAction::Import) => self.import.open = true,
+                    Some(WelcomeAction::Connect) => self.connect.show_window(&self.st),
+                    None => {}
+                });
         } else {
             if self.show_crew {
                 egui::Panel::left("crew")
@@ -1470,7 +1481,7 @@ impl eframe::App for OpenFtthApp {
         self.engine_window(ui.ctx());
         self.reset_window(ui.ctx());
         self.import.show(ui.ctx(), &mut self.st);
-        self.connect.show(ui.ctx(), &self.st);
+        self.connect.show(ui.ctx(), &mut self.st);
         self.steer_window(ui.ctx());
         self.st.toasts.show(ui.ctx(), &p);
         self.resize_zones(ui.ctx());
@@ -1516,6 +1527,38 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<usi
         }
     }
     Ok(n)
+}
+
+/// The MCP link in the status bar: whether AI apps can reach openFTTH; a click opens Connect.
+fn mcp_chip(ui: &mut Ui, p: &Palette, mcp: Option<&serde_json::Value>) -> egui::Response {
+    let listening = mcp.is_some_and(|m| m["listening"] == true);
+    let label = if listening {
+        "MCP link on"
+    } else {
+        "MCP link off"
+    };
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.to_string(), font(11.0, Weight::Medium), p.text3);
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 22.0, 16.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect.expand(2.0), 3.0, p.bg3);
+    }
+    ui.painter().circle_filled(
+        pos2(rect.left() + 6.0, rect.center().y),
+        3.0,
+        if listening { p.green } else { p.text3 },
+    );
+    ui.painter().galley(
+        pos2(rect.left() + 14.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        if listening { p.text2 } else { p.text3 },
+    );
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(match mcp.and_then(|m| m["link"].as_str()) {
+            Some(l) if listening => format!("AI apps reach openFTTH at {l}"),
+            _ => "Let Claude, Cursor or VS Code use openFTTH".to_string(),
+        })
 }
 
 fn reveal(dir: &str) {

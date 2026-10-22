@@ -32,8 +32,15 @@ impl OpenForm {
     }
 }
 
-pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) {
+/// What the start page asks the app to open.
+pub enum WelcomeAction {
+    Import,
+    Connect,
+}
+
+pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) -> Option<WelcomeAction> {
     let p = st.palette;
+    let mut action: Option<WelcomeAction> = None;
     let mut open: Option<(String, Option<String>, String)> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -68,7 +75,7 @@ pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) {
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 ui.set_width(col_w);
-                                start_column(ui, st, form, &mut open)
+                                start_column(ui, st, form, &mut open, &mut action)
                             },
                         );
                         ui.allocate_ui_with_layout(
@@ -76,7 +83,7 @@ pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) {
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 ui.set_width(col_w);
-                                recent_column(ui, st, &mut open)
+                                recent_column(ui, st, &mut open, &mut action)
                             },
                         );
                     });
@@ -86,6 +93,7 @@ pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) {
     if let Some((area, osm, rulebook)) = open {
         st.open_project(&area, osm.as_deref(), &rulebook);
     }
+    action
 }
 
 fn start_column(
@@ -93,9 +101,23 @@ fn start_column(
     st: &AppState,
     form: &mut OpenForm,
     open: &mut Option<(String, Option<String>, String)>,
+    action: &mut Option<WelcomeAction>,
 ) {
     let p = st.palette;
     ui.label(caps("Start", p.text3));
+    ui.add_space(6.0);
+    if link_row(
+        ui,
+        st,
+        Icon::Plus,
+        "Import your own data",
+        "",
+        "address register, streets, existing ducts: any GIS format and CRS",
+    ) {
+        *action = Some(WelcomeAction::Import);
+    }
+    ui.add_space(14.0);
+    ui.label(caps("Or start from OpenStreetMap", p.text3));
     ui.add_space(6.0);
     if link_row(
         ui,
@@ -175,8 +197,15 @@ fn start_column(
     });
 }
 
-fn recent_column(ui: &mut Ui, st: &AppState, open: &mut Option<(String, Option<String>, String)>) {
+fn recent_column(
+    ui: &mut Ui,
+    st: &AppState,
+    open: &mut Option<(String, Option<String>, String)>,
+    action: &mut Option<WelcomeAction>,
+) {
     let p = st.palette;
+    connect_block(ui, st, action);
+    ui.add_space(18.0);
     ui.label(caps("Recent", p.text3));
     ui.add_space(6.0);
     if st.recents.is_empty() {
@@ -228,6 +257,28 @@ fn recent_column(ui: &mut Ui, st: &AppState, open: &mut Option<(String, Option<S
         {
             *open = Some((r.area_path.clone(), r.osm_path.clone(), r.rulebook.clone()));
         }
+    }
+}
+
+/// Whether AI apps can reach openFTTH, and the way in to connect them.
+fn connect_block(ui: &mut Ui, st: &AppState, action: &mut Option<WelcomeAction>) {
+    let p = st.palette;
+    ui.label(caps("AI apps", p.text3));
+    ui.add_space(6.0);
+    let listening = st.mcp.as_ref().is_some_and(|m| m["listening"] == true);
+    let link = st
+        .mcp
+        .as_ref()
+        .and_then(|m| m["link"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let hint = if listening {
+        format!("on · {link}")
+    } else {
+        "use openFTTH from Claude, Cursor or VS Code through one link".to_string()
+    };
+    if link_row(ui, st, Icon::Link, "Connect AI apps", "", &hint) {
+        *action = Some(WelcomeAction::Connect);
     }
 }
 

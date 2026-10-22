@@ -30,6 +30,7 @@ pub enum Icon {
     Restore,
     ArrowUp,
     Mic,
+    Link,
 }
 
 pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
@@ -74,6 +75,24 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 .collect();
             pen(arc, w2);
             pen(vec![p(8.0, 12.2), p(8.0, 14.6)], w2);
+        }
+        Icon::Link => {
+            // Two chain links on the diagonal: stadium outlines that overlap in the middle.
+            let stadium = |a: (f32, f32), b: (f32, f32), r: f32| -> Vec<Pos2> {
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let ang = dy.atan2(dx);
+                let half = std::f32::consts::FRAC_PI_2;
+                let mut pts = Vec::new();
+                for (c, start) in [(b, ang - half), (a, ang + half)] {
+                    for i in 0..=10 {
+                        let t = start + std::f32::consts::PI * i as f32 / 10.0;
+                        pts.push(p(c.0 + r * t.cos(), c.1 + r * t.sin()));
+                    }
+                }
+                pts
+            };
+            closed(stadium((4.2, 11.8), (7.6, 8.4), 2.5));
+            closed(stadium((8.4, 7.6), (11.8, 4.2), 2.5));
         }
         Icon::Plus => {
             line(vec![p(8.0, 3.0), p(8.0, 13.0)]);

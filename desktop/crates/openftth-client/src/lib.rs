@@ -159,18 +159,21 @@ impl Client {
         )
     }
 
-    /// The public MCP server's settings and ready-made configs for other AI apps.
+    /// The MCP link other AI apps add: `{enabled, listening, error, port, link, requireKey,
+    /// installs}`.
     pub fn mcp_info(&self) -> Result<Value, ClientError> {
         self.get("/api/mcp")
     }
 
-    /// Turn the public MCP server on or off, or issue a new token.
-    pub fn set_mcp(&self, enabled: Option<bool>, rotate: bool) -> Result<Value, ClientError> {
-        let mut body = json!({ "rotate": rotate });
-        if let Some(on) = enabled {
-            body["enabled"] = json!(on);
-        }
-        self.send("POST", "/api/mcp", &body)
+    /// Change the MCP link: any of `enabled`, `requireKey`, `rotate` (a new key). Answers like
+    /// `mcp_info`.
+    pub fn set_mcp(&self, change: &Value) -> Result<Value, ClientError> {
+        self.send("POST", "/api/mcp", change)
+    }
+
+    /// Write the Claude Desktop bundle (`openftth.mcpb`) and return its path.
+    pub fn mcp_claude_bundle(&self) -> Result<Value, ClientError> {
+        self.send("POST", "/api/mcp/claude-bundle", &json!({}))
     }
 
     pub fn close_project(&self) -> Result<Value, ClientError> {

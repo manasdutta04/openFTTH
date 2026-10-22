@@ -21,8 +21,9 @@ plans and the bill of quantities.
   street: each is an engine tool call with the reason on record, the routes are planned
   again and the Checker looks again. Every deliverable saves out of File → Export.
 - **Local first.** Everything runs on your machine. Cloud models are optional.
-- **Open to other AI apps.** Claude Desktop, Claude Code, Cursor or any MCP client can open
-  projects, design, ask the crew and pull the deliverables ([docs/MCP.md](docs/MCP.md)).
+- **Open to other AI apps.** Turn on openFTTH's MCP link (`http://127.0.0.1:3920/mcp`) and
+  Claude Desktop, Claude Code, Cursor, VS Code or any MCP client can open projects, design,
+  ask the crew and pull the deliverables, with one-click installs ([docs/MCP.md](docs/MCP.md)).
 
 ## Status
 

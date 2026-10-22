@@ -207,6 +207,8 @@ pub struct AppState {
     pub last_version_summary: Option<String>,
     pub engines: Vec<EngineInfo>,
     pub engine: Option<EngineCurrent>,
+    /// The MCP link other AI apps add (`GET /api/mcp`), when the harness has answered.
+    pub mcp: Option<Value>,
     /// The version posted as the network of record, if any.
     pub network_of_record: Option<String>,
     /// The open work order (`{id, title, …}`), if any.
@@ -262,12 +264,14 @@ impl AppState {
             engine_refresh_due: false,
             engines: Vec::new(),
             engine: None,
+            mcp: None,
             pending_open: None,
         };
         st.load_crew();
         st.load_engines();
         st.load_rulebooks();
         st.load_recents();
+        st.mcp = st.client.mcp_info().ok();
         st.refresh_project();
         st
     }
