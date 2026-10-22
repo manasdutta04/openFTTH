@@ -58,7 +58,16 @@
           "work_order_status",
           "set_lifecycle",
           "trace_fibre",
-          "homes_behind"
+          "homes_behind",
+          "add_site",
+          "delete_element",
+          "draw_cable",
+          "split_cable",
+          "set_attribute",
+          "reassign",
+          "undo_edit",
+          "redo_edit",
+          "edit_history"
         ],
         "color": "blue"
       },

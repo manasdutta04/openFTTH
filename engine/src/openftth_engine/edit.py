@@ -1,0 +1,796 @@
+"""The engineer's own edits: add a site, draw a cable, split it, delete, set an attribute,
+reassign a home or a FAT, and undo or redo any of them.
+
+Every edit is a tool call with a reason on record, snapped to the street twin, and one version;
+nothing here invents a number the engineer did not give or the engine did not compute. Sites
+the engineer places are pinned, so a later solver run keeps them; cables and chambers the
+engineer draws are kept by the routing solvers too. Each result carries the rule check of the
+design as it now stands, so the app can mark what the edit broke.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import networkx as nx
+
+from . import pipeline as _pipeline
+from .interchange import Feature
+from .pipeline import (
+    Session,
+    _commit,
+    _label,
+    _merge,
+    _rejected,
+    _rerun,
+    _to_metric,
+    _twin,
+    _wgs,
+    assign_pon,
+)
+from .results import Decision, ToolResult
+from .validate import run_all_checks
+
+#: Tools whose versions undo and redo step through: they only change the design file.
+UNDOABLE = (
+    "add_site",
+    "delete_element",
+    "draw_cable",
+    "split_cable",
+    "set_attribute",
+    "reassign",
+    "move_site",
+)
+
+SITE_KINDS = ("fat", "fdh", "chamber", "pop")
+CABLE_KINDS = ("feeder", "distribution", "drop")
+DELETABLE = ("fat", "fdh", "chamber", "pop", "feeder", "distribution", "drop", "crossing")
+
+#: What set_attribute may change, per kind, and how the value is checked.
+EDITABLE: dict[str, tuple[str, ...]] = {
+    "*": ("name", "status", "notes"),
+    "fat": ("port_capacity",),
+    "fdh": ("port_capacity",),
+    "chamber": ("manhole_type",),
+    "feeder": ("fiber_count", "cable_count", "slack_m"),
+    "distribution": ("fiber_count", "cable_count", "slack_m"),
+    "drop": ("fiber_count",),
+}
+FIELD_WORDS = {
+    "port_capacity": "ports",
+    "fiber_count": "fibres",
+    "cable_count": "cables",
+    "slack_m": "slack (m)",
+    "manhole_type": "chamber type",
+}
+STATUSES = ("planned", "approved", "in_construction", "as_built", "in_service", "retired")
+
+
+def _reason(tool: str, reason: str) -> str | None:
+    return (reason or "").strip() or None
+
+
+def _checked(s: Session, result: ToolResult) -> ToolResult:
+    """Attach the rule check of the design as it now stands (not committed as its own step)."""
+    violations, stats = run_all_checks(s.design, s.rules)
+    by_rule: dict[str, int] = {}
+    for v in violations:
+        by_rule[v.check] = by_rule.get(v.check, 0) + 1
+    result.data["violations"] = by_rule
+    result.data["violating"] = sorted({v.element for v in violations if v.element})[:200]
+    if violations:
+        result.warnings.append(
+            f"{len(violations)} rule violation(s) now: "
+            + ", ".join(f"{k} {n}" for k, n in sorted(by_rule.items()))
+        )
+    return result
+
+
+def _record_edit(s: Session, result: ToolResult, started: tuple[str | None, Any]) -> ToolResult:
+    """Commit an edit and push it on the undo stack."""
+    before_version, before_design = started
+    return _push(s, _commit(s, result, before_design), before_version)
+
+
+def _push(s: Session, out: ToolResult, before_version: str | None) -> ToolResult:
+    """Put a committed edit on the undo stack; a new edit clears what could be redone."""
+    meta = s.project.meta
+    if out.version and out.version != before_version:
+        stack = list(meta.get("edit_stack") or [])
+        stack.append(
+            {
+                "before": before_version,
+                "after": out.version,
+                "tool": out.tool,
+                "summary": out.summary,
+            }
+        )
+        meta["edit_stack"] = stack[-100:]
+        meta["redo_stack"] = []
+        s.project._write_meta()
+    return out
+
+
+def _begin(s: Session) -> tuple[str | None, Any]:
+    """The version and the design before an edit, for its diff and its undo."""
+    s.project.set_stage("solve")
+    return s.project.head(), s.design.copy()
+
+
+def _snap(s: Session, lon: float, lat: float) -> tuple[int, float]:
+    twin = _twin(s)
+    p = _to_metric(twin, lon, lat)
+    node, d = twin.nearest_node(p.x, p.y)
+    return int(node), float(d)
+
+
+def _next_name(s: Session, kind: str, prefix: str, width: int) -> str:
+    used = {str(f.props.get("name", "")) for f in s.design.by_kind(kind)}
+    n = 1
+    while f"{prefix}{n:0{width}d}" in used:
+        n += 1
+    return f"{prefix}{n:0{width}d}"
+
+
+# ---- sites ------------------------------------------------------------------------------------
+
+
+def add_site(s: Session, kind: str, lon: float, lat: float, reason: str) -> ToolResult:
+    """Place a FAT, an FDH cabinet, a chamber or a POP at the street node nearest the point.
+    The site is pinned: a later clustering or routing run keeps it where the engineer put it."""
+    why = _reason("add_site", reason)
+    if not why:
+        return _rejected("add_site", "a reason is required; every manual edit records why")
+    if kind not in SITE_KINDS:
+        return _rejected("add_site", f"a site is one of {', '.join(SITE_KINDS)}, not {kind}")
+    started = _begin(s)
+    twin = _twin(s)
+    node, snap = _snap(s, lon, lat)
+    if any(int(f.openftth.get("node", -1)) == node for f in s.design.by_kind(kind)):
+        return _rejected("add_site", f"a {kind} already stands on that street node")
+    r = s.rules
+    point = _wgs(twin, twin.node_point(node))
+    pin = {"placed_by": "engineer", "placed_reason": why, "node": node}
+    if kind == "fat":
+        name = _next_name(s, "fat", "FAT-", 3)
+        f = Feature(
+            element_uuid=s.uid("tb", f"fat:manual:{node}"),
+            element_type="tb",
+            placement="outdoor",
+            geometry=point,
+            props={"name": name, "port_capacity": r.fat.max_homes, "status": "planned"},
+            openftth={"kind": "fat", "units": 0, **pin},
+        )
+    elif kind == "fdh":
+        cap = max(r.fdh.capacities)
+        name = _next_name(s, "fdh", "FDH-", 2)
+        f = Feature(
+            element_uuid=s.uid("otb", f"fdh:manual:{node}"),
+            element_type="otb",
+            placement="outdoor",
+            geometry=point,
+            props={"name": name, "port_capacity": cap, "status": "planned"},
+            openftth={"kind": "fdh", "units": 0, "capacity": cap, "fats": 0, **pin},
+        )
+    elif kind == "chamber":
+        f = Feature(
+            element_uuid=s.uid("manhole", f"chamber:manual:{node}"),
+            element_type="manhole",
+            geometry=point,
+            props={
+                "manhole_id": f"CH-{node}",
+                "manhole_type": "small",
+                "dimensions_cm": r.chambers.types["small"],
+                "status": "planned",
+            },
+            openftth={"kind": "chamber", **pin},
+        )
+        name = f"CH-{node}"
+    else:
+        name = _next_name(s, "pop", "POP-", 1)
+        f = Feature(
+            element_uuid=s.uid("odf", f"pop:manual:{node}"),
+            element_type="odf",
+            placement="indoor",
+            geometry=point,
+            props={"name": name, "site_name": name},
+            openftth={"kind": "pop", **pin},
+        )
+    s.design.add(f)
+    result = ToolResult(
+        tool="add_site",
+        summary=f"{name} added at street node {node}",
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="add_site",
+                element=f.element_uuid,
+                reason=f"{name} placed by the engineer: {why}. Snapped {snap:.0f} m to the nearest street node; pinned, so solver runs keep it.",
+                values={"node": node, "snap_m": round(snap, 1)},
+                source="user",
+            )
+        ],
+        data={"element": f.element_uuid, "kind": kind, "node": node},
+    )
+    if kind in ("fat", "fdh"):
+        result.warnings.append(
+            f"{name} serves nothing yet: reassign homes or FATs to it, or run clustering again (it is pinned)"
+        )
+    return _record_edit(s, _checked(s, result), started)
+
+
+def delete_element(s: Session, element_uuid: str, reason: str) -> ToolResult:
+    """Take a site or a cable out of the design. A FAT or a cabinet that still serves something
+    is refused: reassign what it serves first, so nothing is left without a connection."""
+    why = _reason("delete_element", reason)
+    if not why:
+        return _rejected("delete_element", "a reason is required; every manual edit records why")
+    if element_uuid not in s.design:
+        return _rejected("delete_element", f"no element {element_uuid} in the design")
+    f = s.design.get(element_uuid)
+    kind = f.kind or ""
+    if kind not in DELETABLE:
+        return _rejected("delete_element", f"a {kind} cannot be deleted by hand")
+    name = _label(f)
+    if kind == "fat":
+        served = [h for h in s.design.by_kind("home") if h.openftth.get("fat_id") == element_uuid]
+        if served:
+            return _rejected(
+                "delete_element", f"{name} still serves {len(served)} home(s); reassign them first"
+            )
+    if kind == "fdh":
+        served = [x for x in s.design.by_kind("fat") if x.openftth.get("fdh_id") == element_uuid]
+        if served:
+            return _rejected(
+                "delete_element", f"{name} still feeds {len(served)} FAT(s); reassign them first"
+            )
+    if kind == "pop" and len(s.design.by_kind("pop")) == 1:
+        return _rejected("delete_element", "the design needs a POP; move it instead")
+    started = _begin(s)
+    s.design.remove(element_uuid)
+    # Fibres that ran through it are cut: their connections go with it.
+    conns = s.design.tables.get("fiber_connection") or []
+    keep = [
+        c
+        for c in conns
+        if element_uuid
+        not in (
+            c.get("source_element_uuid"),
+            c.get("dest_element_uuid"),
+            c.get("source_cable_uuid"),
+            c.get("dest_cable_uuid"),
+        )
+    ]
+    cut = len(conns) - len(keep)
+    if cut:
+        s.design.set_table("fiber_connection", keep)
+    result = ToolResult(
+        tool="delete_element",
+        summary=f"{name} deleted"
+        + (f"; {cut} fibre connection(s) through it removed" if cut else ""),
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="delete_element",
+                element=element_uuid,
+                reason=f"{name} deleted by the engineer: {why}.",
+                values={"kind": kind, "connections_removed": cut},
+                source="user",
+            )
+        ],
+        data={"element": element_uuid, "kind": kind},
+    )
+    if kind in CABLE_KINDS and f.openftth.get("drawn_by") != "engineer":
+        result.warnings.append(
+            f"{name} was routed by the engine: routing it again brings it back; forbid the street or move a site to change the route for good"
+        )
+    return _record_edit(s, _checked(s, result), started)
+
+
+# ---- cables -----------------------------------------------------------------------------------
+
+
+def _cable_feature(
+    s: Session,
+    uuid: str,
+    kind: str,
+    nodes: list[int],
+    name: str,
+    fiber_count: int,
+    extra: dict[str, Any],
+) -> Feature:
+    twin = _twin(s)
+    G = twin.graph
+    edges = {
+        f"{min(u, v)}-{max(u, v)}": (
+            f"crossing:{G[u][v]['crossing']}" if G[u][v].get("crossing") else G[u][v]["surface"],
+            round(G[u][v]["length_m"], 2),
+        )
+        for u, v in zip(nodes[:-1], nodes[1:], strict=False)
+    }
+    length = sum(G[u][v]["length_m"] for u, v in zip(nodes[:-1], nodes[1:], strict=False))
+    surfaces: dict[str, float] = {}
+    for u, v in zip(nodes[:-1], nodes[1:], strict=False):
+        surfaces[G[u][v]["surface"]] = surfaces.get(G[u][v]["surface"], 0.0) + G[u][v]["length_m"]
+    slack = 0.0 if kind == "drop" else s.rules.slack.per_closure_m
+    return Feature(
+        element_uuid=uuid,
+        element_type="cable.underground",
+        geometry=_wgs(twin, twin.path_line(nodes)),
+        props={
+            "cable_type": kind,
+            "fiber_count": fiber_count,
+            "cable_count": 1,
+            "from_label": f"N{nodes[0]}",
+            "to_label": f"N{nodes[-1]}",
+            "length_m": round(length, 1),
+            "slack_m": slack,
+            "total_length_m": round(length + slack, 1),
+            "status": "planned",
+            "name": name,
+        },
+        openftth={
+            "kind": kind,
+            "edges": edges,
+            "surfaces": {k: round(v, 1) for k, v in surfaces.items()},
+            "trench_cost": round(
+                sum(G[u][v]["cost"] for u, v in zip(nodes[:-1], nodes[1:], strict=False)), 2
+            ),
+            **extra,
+        },
+    )
+
+
+def draw_cable(
+    s: Session,
+    kind: str,
+    points: list[list[float]],
+    reason: str,
+    fiber_count: int | None = None,
+) -> ToolResult:
+    """Draw a feeder, distribution or drop cable through the given [lon, lat] points. Each point
+    snaps to its street node and the cable follows the cheapest street path between them; it is
+    kept by later routing runs."""
+    why = _reason("draw_cable", reason)
+    if not why:
+        return _rejected("draw_cable", "a reason is required; every manual edit records why")
+    if kind not in CABLE_KINDS:
+        return _rejected("draw_cable", f"a cable is one of {', '.join(CABLE_KINDS)}, not {kind}")
+    if not points or len(points) < 2:
+        return _rejected("draw_cable", "a cable needs at least two points")
+    r = s.rules
+    ladder = {"feeder": r.fibers.feeder, "distribution": r.fibers.distribution}.get(kind)
+    if fiber_count is not None and ladder and fiber_count not in ladder:
+        return _rejected(
+            "draw_cable",
+            f"{fiber_count} fibres is not on the {kind} ladder ({', '.join(map(str, ladder))})",
+        )
+    started = _begin(s)
+    twin = _twin(s)
+    snapped = [_snap(s, float(lon), float(lat)) for lon, lat in points]
+    stops = [n for n, _ in snapped]
+    nodes: list[int] = [stops[0]]
+    for a, b in zip(stops[:-1], stops[1:], strict=False):
+        if a == b:
+            continue
+        try:
+            leg = nx.shortest_path(twin.graph, a, b, weight="cost")
+        except nx.NetworkXNoPath:
+            return _rejected("draw_cable", f"no street path between street nodes {a} and {b}")
+        nodes.extend(leg[1:])
+    if len(nodes) < 2:
+        return _rejected("draw_cable", "the points all snap to the same street node")
+    fibers = fiber_count or (min(ladder) if ladder else r.fibers.drop)
+    prefix = {"feeder": "FDR-M", "distribution": "DST-M", "drop": "DRP-M"}[kind]
+    name = _next_name(s, kind, prefix, 3)
+    uuid = s.uid("cable.underground", f"{kind}:manual:{'-'.join(map(str, nodes))}")
+    f = _cable_feature(
+        s,
+        uuid,
+        kind,
+        nodes,
+        name,
+        fibers,
+        {"drawn_by": "engineer", "placed_reason": why, "downstream_units": 0},
+    )
+    s.design.add(f)
+    worst = max(d for _, d in snapped)
+    result = ToolResult(
+        tool="draw_cable",
+        summary=f"{name}: {kind} cable, {fibers}F, {f.props['length_m']:.0f} m along the streets",
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="draw_cable",
+                element=uuid,
+                reason=f"{name} drawn by the engineer: {why}. It follows the cheapest street path through {len(points)} point(s), each snapped to its street node (at most {worst:.0f} m).",
+                values={
+                    "length_m": f.props["length_m"],
+                    "fiber_count": fibers,
+                    "nodes": len(nodes),
+                },
+                source="user",
+            )
+        ],
+        data={"element": uuid, "kind": kind, "length_m": f.props["length_m"]},
+    )
+    return _record_edit(s, _checked(s, result), started)
+
+
+def split_cable(s: Session, element_uuid: str, lon: float, lat: float, reason: str) -> ToolResult:
+    """Split a cable in two at the street node nearest the point, with a chamber there when none
+    stands yet (a splice needs one)."""
+    why = _reason("split_cable", reason)
+    if not why:
+        return _rejected("split_cable", "a reason is required; every manual edit records why")
+    if element_uuid not in s.design:
+        return _rejected("split_cable", f"no element {element_uuid} in the design")
+    f = s.design.get(element_uuid)
+    kind = f.kind or ""
+    if kind not in CABLE_KINDS:
+        return _rejected("split_cable", f"only a cable can be split, not a {kind}")
+    twin = _twin(s)
+    line = f.geometry
+    nodes = []
+    for lon_, lat_ in line.coords:
+        p = _to_metric(twin, lon_, lat_)
+        nodes.append(int(twin.nearest_node(p.x, p.y)[0]))
+    node, _d = _snap(s, lon, lat)
+    if node not in nodes[1:-1]:
+        # The nearest node on the cable itself, by straight distance from the point.
+        target = _to_metric(twin, lon, lat)
+        inner = nodes[1:-1]
+        if not inner:
+            return _rejected("split_cable", "the cable has no inner street node to split at")
+        node = min(inner, key=lambda n: twin.node_point(n).distance(target))
+    i = nodes.index(node)
+    if i == 0 or i == len(nodes) - 1:
+        return _rejected("split_cable", "split at an inner point of the cable, not at its end")
+    started = _begin(s)
+    name = _label(f)
+    extra = {
+        k: v for k, v in f.openftth.items() if k not in ("edges", "surfaces", "trench_cost", "kind")
+    }
+    extra["drawn_by"] = "engineer"
+    first = _cable_feature(
+        s,
+        element_uuid,
+        kind,
+        nodes[: i + 1],
+        f"{name}-A",
+        int(f.props.get("fiber_count", 1)),
+        extra,
+    )
+    second_id = s.uid("cable.underground", f"split:{element_uuid}:{node}")
+    second = _cable_feature(
+        s, second_id, kind, nodes[i:], f"{name}-B", int(f.props.get("fiber_count", 1)), extra
+    )
+    for part in (first, second):
+        part.props["cable_count"] = f.props.get("cable_count", 1)
+    s.design.add(first)
+    s.design.add(second)
+    chamber_note = ""
+    if not any(int(c.openftth.get("node", -1)) == node for c in s.design.by_kind("chamber")):
+        r = s.rules
+        s.design.add(
+            Feature(
+                element_uuid=s.uid("manhole", f"chamber:manual:{node}"),
+                element_type="manhole",
+                geometry=_wgs(twin, twin.node_point(node)),
+                props={
+                    "manhole_id": f"CH-{node}",
+                    "manhole_type": "small",
+                    "dimensions_cm": r.chambers.types["small"],
+                    "status": "planned",
+                },
+                openftth={
+                    "kind": "chamber",
+                    "node": node,
+                    "placed_by": "engineer",
+                    "placed_reason": why,
+                },
+            )
+        )
+        chamber_note = f"; chamber CH-{node} added for the splice"
+    result = ToolResult(
+        tool="split_cable",
+        summary=f"{name} split at street node {node} into {name}-A and {name}-B{chamber_note}",
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="split_cable",
+                element=element_uuid,
+                reason=f"{name} split by the engineer: {why}.",
+                values={"node": node, "parts": [element_uuid, second_id]},
+                source="user",
+            )
+        ],
+        data={"element": element_uuid, "parts": [element_uuid, second_id], "node": node},
+    )
+    return _record_edit(s, _checked(s, result), started)
+
+
+# ---- attributes and assignments ---------------------------------------------------------------
+
+
+def set_attribute(s: Session, element_uuid: str, key: str, value: Any, reason: str) -> ToolResult:
+    """Change one attribute the engineer owns: a name, a status, a note, a cable's fibre or cable
+    count, a cabinet's or FAT's port capacity, a chamber's type."""
+    why = _reason("set_attribute", reason)
+    if not why:
+        return _rejected("set_attribute", "a reason is required; every manual edit records why")
+    if element_uuid not in s.design:
+        return _rejected("set_attribute", f"no element {element_uuid} in the design")
+    f = s.design.get(element_uuid)
+    kind = f.kind or ""
+    allowed = EDITABLE["*"] + EDITABLE.get(kind, ())
+    if key not in allowed:
+        return _rejected(
+            "set_attribute", f"{key} is not editable on a {kind}; editable: {', '.join(allowed)}"
+        )
+    r = s.rules
+    v: Any = value
+    if key in ("fiber_count", "cable_count", "port_capacity"):
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            return _rejected("set_attribute", f"{key} takes a whole number")
+        if v <= 0:
+            return _rejected("set_attribute", f"{key} must be positive")
+        ladder = {"feeder": r.fibers.feeder, "distribution": r.fibers.distribution}.get(kind)
+        if key == "fiber_count" and ladder and v not in ladder:
+            return _rejected(
+                "set_attribute",
+                f"{v} fibres is not on the {kind} ladder ({', '.join(map(str, ladder))})",
+            )
+        if key == "port_capacity" and kind == "fdh" and v not in r.fdh.capacities:
+            return _rejected(
+                "set_attribute",
+                f"an FDH comes in {', '.join(map(str, r.fdh.capacities))} ports",
+            )
+    elif key == "slack_m":
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return _rejected("set_attribute", "slack_m takes a number of metres")
+        if v < 0:
+            return _rejected("set_attribute", "slack_m cannot be negative")
+    elif key == "status":
+        if value not in STATUSES:
+            return _rejected("set_attribute", f"status is one of {', '.join(STATUSES)}")
+    elif key == "manhole_type":
+        if value not in r.chambers.types:
+            return _rejected(
+                "set_attribute", f"a chamber is one of {', '.join(sorted(r.chambers.types))}"
+            )
+    else:
+        v = str(value).strip()
+        if key == "name" and not v:
+            return _rejected("set_attribute", "a name cannot be empty")
+    old = f.props.get(key)
+    if old == v:
+        return _rejected("set_attribute", f"{key} is already {v}")
+    started = _begin(s)
+    f.props[key] = v
+    if key == "manhole_type":
+        f.props["dimensions_cm"] = r.chambers.types[v]
+    if key == "slack_m":
+        f.props["total_length_m"] = round(float(f.props.get("length_m", 0.0)) + v, 1)
+    if key == "port_capacity" and kind == "fdh":
+        f.openftth["capacity"] = v
+    f.openftth.setdefault("edited", {})[key] = why
+    result = ToolResult(
+        tool="set_attribute",
+        summary=f"{_label(f)}: {FIELD_WORDS.get(key, key)} {old} → {v}",
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="set_attribute",
+                element=element_uuid,
+                reason=f"{key} of {_label(f)} set to {v} by the engineer (was {old}): {why}.",
+                values={"key": key, "old": old, "new": v},
+                source="user",
+            )
+        ],
+        data={"element": element_uuid, "key": key, "old": old, "new": v},
+    )
+    return _record_edit(s, _checked(s, result), started)
+
+
+def reassign(s: Session, element_uuid: str, to_uuid: str, reason: str) -> ToolResult:
+    """Give a home to another FAT, or a FAT to another cabinet; the PONs, routes, sizes and
+    fibres that depend on it are worked out again, as one version."""
+    why = _reason("reassign", reason)
+    if not why:
+        return _rejected("reassign", "a reason is required; every manual edit records why")
+    for u in (element_uuid, to_uuid):
+        if u not in s.design:
+            return _rejected("reassign", f"no element {u} in the design")
+    f, to = s.design.get(element_uuid), s.design.get(to_uuid)
+    pair = (f.kind, to.kind)
+    if pair not in (("home", "fat"), ("fat", "fdh")):
+        return _rejected("reassign", "reassign a home to a FAT, or a FAT to an FDH cabinet")
+    started = _begin(s)
+    units = int(f.openftth.get("units", 1))
+    if pair == ("home", "fat"):
+        old = f.openftth.get("fat_id")
+        if old == to_uuid:
+            return _rejected("reassign", f"{_label(f)} is already on {_label(to)}")
+        if old and old in s.design:
+            prev = s.design.get(old)
+            prev.openftth["units"] = max(0, int(prev.openftth.get("units", 0)) - units)
+        to.openftth["units"] = int(to.openftth.get("units", 0)) + units
+        f.openftth["fat_id"] = to_uuid
+        f.openftth["fat_ids"] = [to_uuid]
+        f.openftth["fdh_id"] = to.openftth.get("fdh_id")
+        if to.openftth.get("pop_id"):
+            f.openftth["pop_id"] = to.openftth["pop_id"]
+    else:
+        old = f.openftth.get("fdh_id")
+        if old == to_uuid:
+            return _rejected("reassign", f"{_label(f)} is already on {_label(to)}")
+        if old and old in s.design:
+            prev = s.design.get(old)
+            prev.openftth["units"] = max(0, int(prev.openftth.get("units", 0)) - units)
+            prev.openftth["fats"] = max(0, int(prev.openftth.get("fats", 0)) - 1)
+        to.openftth["units"] = int(to.openftth.get("units", 0)) + units
+        to.openftth["fats"] = int(to.openftth.get("fats", 0)) + 1
+        f.openftth["fdh_id"] = to_uuid
+        for h in s.design.by_kind("home"):
+            if h.openftth.get("fat_id") == element_uuid:
+                h.openftth["fdh_id"] = to_uuid
+    warnings: list[str] = []
+    if to.kind == "fat":
+        cap = int(to.props.get("port_capacity", 0) or 0)
+        if cap and int(to.openftth["units"]) > cap:
+            warnings.append(
+                f"{_label(to)} now serves {to.openftth['units']} units over its {cap} ports"
+            )
+    # Everything downstream of the assignment is worked out again, recorded with this edit.
+    s.deferred = []
+    try:
+        assign_pon(s)
+    finally:
+        pre, s.deferred = s.deferred, None
+    sub = pre + _rerun(s)
+    result = _merge(
+        ToolResult(
+            tool="reassign",
+            summary=f"{_label(f)} moved from {_label(s.design.get(old)) if old and old in s.design else 'nothing'} to {_label(to)}",
+            decisions=[
+                Decision(
+                    stage="solve",
+                    tool="reassign",
+                    element=element_uuid,
+                    reason=f"{_label(f)} reassigned to {_label(to)} by the engineer: {why}.",
+                    values={"from": old, "to": to_uuid, "units": units},
+                    source="user",
+                )
+            ],
+            warnings=warnings,
+            data={"element": element_uuid, "to": to_uuid},
+        ),
+        sub,
+    )
+    return _record_edit(s, _checked(s, result), started)
+
+
+def move_site(s: Session, element_uuid: str, lon: float, lat: float, reason: str) -> ToolResult:
+    """The engine's move_site, on the undo stack like every other edit."""
+    before_version = s.project.head()
+    out = _pipeline.move_site(s, element_uuid, lon, lat, reason)
+    if out.summary.startswith("rejected"):
+        return out
+    return _push(s, _checked(s, out), before_version)
+
+
+# ---- undo and redo ----------------------------------------------------------------------------
+
+
+def _restore(s: Session, version: str) -> None:
+    s.design = s.project.design_at(version)
+    s.trees = {}
+    pops = s.design.by_kind("pop")
+    if pops:
+        s.cache["pop_node"] = int(pops[0].openftth["node"])
+
+
+def undo_edit(s: Session) -> ToolResult:
+    """Step back over the engineer's last edit. Only when the design has not changed since,
+    so a solver run in between is never silently thrown away."""
+    meta = s.project.meta
+    stack = list(meta.get("edit_stack") or [])
+    if not stack:
+        return _rejected("undo_edit", "nothing to undo")
+    top = stack[-1]
+    if s.project.head() != top["after"]:
+        return _rejected(
+            "undo_edit",
+            "the design changed since that edit; go back through Versions instead",
+        )
+    if not top.get("before"):
+        return _rejected("undo_edit", "that edit was the first version; there is nothing before it")
+    before = s.design.copy()
+    s.project.set_stage("solve")
+    _restore(s, top["before"])
+    result = ToolResult(
+        tool="undo_edit",
+        summary=f"Undone: {top['summary']}",
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="undo_edit",
+                reason=f"The engineer undid their edit ({top['tool']}: {top['summary']}).",
+                values={"undone": top["after"], "back_to": top["before"]},
+                source="user",
+            )
+        ],
+        data={"undone": top},
+    )
+    out = _commit(s, _checked(s, result), before)
+    stack.pop()
+    # The undo commits a new version with the design of `before`: the edit below now ends there,
+    # so the next undo can step over it too.
+    if stack and stack[-1]["after"] == top["before"]:
+        stack[-1] = {**stack[-1], "after": out.version}
+    redo = list(meta.get("redo_stack") or [])
+    redo.append({**top, "undo": out.version, "undo_from": top["after"]})
+    meta["edit_stack"] = stack
+    meta["redo_stack"] = redo[-100:]
+    s.project._write_meta()
+    return out
+
+
+def redo_edit(s: Session) -> ToolResult:
+    """Apply again the edit undone last, while nothing else has changed since the undo."""
+    meta = s.project.meta
+    redo = list(meta.get("redo_stack") or [])
+    if not redo:
+        return _rejected("redo_edit", "nothing to redo")
+    top = redo[-1]
+    if s.project.head() != top.get("undo"):
+        return _rejected("redo_edit", "the design changed since the undo; nothing to redo")
+    before = s.design.copy()
+    s.project.set_stage("solve")
+    _restore(s, top["after"])
+    result = ToolResult(
+        tool="redo_edit",
+        summary=f"Redone: {top['summary']}",
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="redo_edit",
+                reason=f"The engineer redid their edit ({top['tool']}: {top['summary']}).",
+                values={"redone": top["after"]},
+                source="user",
+            )
+        ],
+        data={"redone": top},
+    )
+    out = _commit(s, _checked(s, result), before)
+    redo.pop()
+    # The redo brings back the design the next redo was undone from.
+    if redo and redo[-1].get("undo") == top.get("undo_from"):
+        redo[-1] = {**redo[-1], "undo": out.version}
+    stack = list(meta.get("edit_stack") or [])
+    stack.append(
+        {k: v for k, v in top.items() if k not in ("undo", "undo_from")} | {"after": out.version}
+    )
+    meta["edit_stack"] = stack
+    meta["redo_stack"] = redo
+    s.project._write_meta()
+    return out
+
+
+def edit_history(s: Session) -> dict[str, Any]:
+    """What undo and redo would do now."""
+    meta = s.project.meta
+    stack = list(meta.get("edit_stack") or [])
+    redo = list(meta.get("redo_stack") or [])
+    head = s.project.head()
+    return {
+        "can_undo": bool(stack) and stack[-1]["after"] == head and bool(stack[-1].get("before")),
+        "undo": stack[-1] if stack else None,
+        "can_redo": bool(redo) and redo[-1].get("undo") == head,
+        "redo": redo[-1] if redo else None,
+    }

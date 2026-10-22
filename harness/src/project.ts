@@ -69,6 +69,9 @@ export const DISALLOWED_FOR_FOLKS = [
  * digging on a street. The app calls them through `steer()`; no crew member has them.
  */
 export const STEER_TOOLS = ["move_site", "exclude_building", "forbid_street"] as const;
+/** The engineer's editing tools on the map. Each result carries its own rule check, so no
+ *  crew turn (which may cost money) follows them. */
+export const EDIT_TOOLS = ["add_site", "delete_element", "draw_cable", "split_cable", "set_attribute", "reassign", "undo_edit", "redo_edit"] as const;
 export type SteerTool = (typeof STEER_TOOLS)[number];
 
 /** The engine's tool result, as every tool returns it. */
@@ -365,7 +368,10 @@ export class ProjectService {
    * the engine's own words and leaves no trace in the room.
    */
   async steer(tool: string, args: Record<string, unknown>, revalidate: boolean): Promise<SteerResult> {
-    if (!(STEER_TOOLS as readonly string[]).includes(tool)) throw new HttpError(400, `${tool} is not one of the steering tools (${STEER_TOOLS.join(", ")})`);
+    const editing = (EDIT_TOOLS as readonly string[]).includes(tool);
+    if (!editing && !(STEER_TOOLS as readonly string[]).includes(tool)) {
+      throw new HttpError(400, `${tool} is not one of the steering or editing tools (${[...STEER_TOOLS, ...EDIT_TOOLS].join(", ")})`);
+    }
     const room = this.room;
     if (!room) throw new HttpError(409, "no project open");
     if (room.busy) throw new HttpError(409, "the crew is working; stop the turn or wait for it to finish");
@@ -384,8 +390,13 @@ export class ProjectService {
     room.steerMessage(`${out.summary}${reason ? ` — ${reason}` : ""}`, { tool, args, version: out.version, reran, warnings: out.warnings ?? [] });
     if (out.version) this.d.bus.emit("design.version", { version: out.version, tool, summary: out.summary, changes: out.changes ?? null });
     await room.refreshStage();
-    if (revalidate) void room.userTurn(`@Checker ${checkerPrompt(tool, out, reason)}`);
+    if (revalidate && !editing) void room.userTurn(`@Checker ${checkerPrompt(tool, out, reason)}`);
     return out;
+  }
+
+  /** What undo and redo would do now (the engine keeps the edit stack). */
+  async editHistory(): Promise<unknown> {
+    return this.requireEngine().call("edit_history");
   }
 
   /** Every project folder under the data dir, newest first. */

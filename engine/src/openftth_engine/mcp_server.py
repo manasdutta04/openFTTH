@@ -16,7 +16,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from . import pipeline
+from . import edit, pipeline
 from .results import ToolResult
 from .rules import Rulebook, list_presets, load_rulebook
 
@@ -366,7 +366,68 @@ def move_site(element_uuid: str, lon: float, lat: float, reason: str) -> dict[st
     """Move the POP, an FDH or an outdoor FAT to a new position; the point snaps to the street
     graph and every route downstream is planned and sized again, as one version. Records the
     engineer's reason."""
-    return _out(pipeline.move_site(_s(), element_uuid, lon, lat, reason))
+    return _out(edit.move_site(_s(), element_uuid, lon, lat, reason))
+
+
+@mcp.tool()
+def add_site(kind: str, lon: float, lat: float, reason: str) -> dict[str, Any]:
+    """Place a FAT, FDH cabinet, chamber or POP (kind fat|fdh|chamber|pop) at the street node
+    nearest the point; pinned so solver runs keep it. Records the engineer's reason."""
+    return _out(edit.add_site(_s(), kind, lon, lat, reason))
+
+
+@mcp.tool()
+def delete_element(element_uuid: str, reason: str) -> dict[str, Any]:
+    """Delete a site or a cable. A FAT or cabinet that still serves something is refused until
+    what it serves is reassigned."""
+    return _out(edit.delete_element(_s(), element_uuid, reason))
+
+
+@mcp.tool()
+def draw_cable(
+    kind: str, points: list[list[float]], reason: str, fiber_count: int | None = None
+) -> dict[str, Any]:
+    """Draw a feeder, distribution or drop cable through [lon, lat] points; it follows the
+    cheapest street path between them and routing runs keep it."""
+    return _out(edit.draw_cable(_s(), kind, points, reason, fiber_count))
+
+
+@mcp.tool()
+def split_cable(element_uuid: str, lon: float, lat: float, reason: str) -> dict[str, Any]:
+    """Split a cable in two at the street node nearest the point (a chamber is added there)."""
+    return _out(edit.split_cable(_s(), element_uuid, lon, lat, reason))
+
+
+@mcp.tool()
+def set_attribute(element_uuid: str, key: str, value: Any, reason: str) -> dict[str, Any]:
+    """Change an attribute the engineer owns: name, status, notes, fiber_count, cable_count,
+    slack_m, port_capacity or manhole_type, checked against the rulebook."""
+    return _out(edit.set_attribute(_s(), element_uuid, key, value, reason))
+
+
+@mcp.tool()
+def reassign(element_uuid: str, to_uuid: str, reason: str) -> dict[str, Any]:
+    """Give a home to another FAT or a FAT to another cabinet; PONs, routes, sizes and fibres
+    are worked out again as one version."""
+    return _out(edit.reassign(_s(), element_uuid, to_uuid, reason))
+
+
+@mcp.tool()
+def undo_edit() -> dict[str, Any]:
+    """Undo the engineer's last edit, if nothing has changed since."""
+    return _out(edit.undo_edit(_s()))
+
+
+@mcp.tool()
+def redo_edit() -> dict[str, Any]:
+    """Redo the edit undone last, if nothing has changed since the undo."""
+    return _out(edit.redo_edit(_s()))
+
+
+@mcp.tool()
+def edit_history() -> dict[str, Any]:
+    """What undo and redo would do now."""
+    return edit.edit_history(_s())
 
 
 @mcp.tool()

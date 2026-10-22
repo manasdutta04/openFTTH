@@ -143,6 +143,7 @@ export function buildServer(d: ServerDeps): Server {
   add("POST", "/api/project/autodesign", (_req, res) => {
     json(res, 202, { accepted: true, ...d.projects.autodesign() });
   });
+  add("GET", "/api/project/edits", async (_req, res) => json(res, 200, await d.projects.editHistory()));
   add("POST", "/api/project/steer", async (req, res) => {
     const body = await readJson(req);
     if (typeof body.tool !== "string") throw new HttpError(400, "tool is required");

@@ -112,6 +112,9 @@ TOOL_SOURCE = {
     "move_site": "user",
     "exclude_building": "user",
     "forbid_street": "user",
+    "add_site": "user",
+    "draw_cable": "user",
+    "split_cable": "user",
 }
 
 
@@ -156,6 +159,14 @@ def _stamp(s: Session, tool: str, before: Design | None) -> None:
         else:
             prov = {"source": TOOL_SOURCE.get(tool, "solver"), "created_by": tool}
         f.openftth.setdefault("provenance", prov)
+
+
+def _clear_solved(s: Session, kind: str) -> None:
+    """Remove what a solver made of `kind` before it makes it again; what the engineer drew
+    (cables, chambers) stays."""
+    for f in s.design.by_kind(kind):
+        if f.openftth.get("drawn_by") != "engineer" and f.openftth.get("placed_by") != "engineer":
+            s.design.remove(f.element_uuid)
 
 
 def _commit(s: Session, result: ToolResult, before: Design | None = None) -> ToolResult:
@@ -1146,7 +1157,7 @@ def route_feeder(s: Session) -> ToolResult:
     multi = len(pops) > 1
     for key in [k for k in s.trees if k.startswith("feeder")]:
         del s.trees[key]
-    s.design.remove_where(kind="feeder")
+    _clear_solved(s, "feeder")
     n = 0
     length = 0.0
     unreachable = 0
@@ -1217,7 +1228,7 @@ def route_distribution(s: Session) -> ToolResult:
     twin = _twin(s)
     r = s.rules
     before = s.design.copy()
-    s.design.remove_where(kind="distribution")
+    _clear_solved(s, "distribution")
     total = 0.0
     n = 0
     grafted = 0
@@ -1426,7 +1437,7 @@ def route_drops(s: Session) -> ToolResult:
     r = s.rules
     before = s.design.copy()
     repaired = _recover_home_links(s)
-    s.design.remove_where(kind="drop")
+    _clear_solved(s, "drop")
     fats = {f.element_uuid: f for f in s.design.by_kind("fat")}
     total = 0.0
     n = 0
@@ -1545,7 +1556,7 @@ def place_chambers(s: Session) -> ToolResult:
     twin = _twin(s)
     r = s.rules
     before = s.design.copy()
-    s.design.remove_where(kind="chamber")
+    _clear_solved(s, "chamber")
     fdh_nodes = {int(f.openftth["node"]) for f in s.design.by_kind("fdh")}
     fat_nodes = {int(f.openftth["node"]) for f in s.design.by_kind("fat")}
     pop_nodes = {int(p.openftth["node"]) for p in s.design.by_kind("pop")}

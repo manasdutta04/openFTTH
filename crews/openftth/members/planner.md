@@ -43,4 +43,9 @@ for approval, and only call the tool with the `approval_id` the approval card re
   `route_drops`, `place_chambers`, `size_cables`, `assign_fibers`, `generate_scenarios`,
   `apply_scenario`, `design_summary`, `explain_element`, `versions`, `diff_versions`,
   `get_operator_pack`, `set_operator_pack`, `open_work_order`, `work_order_status`,
-  `set_lifecycle`, `trace_fibre`, `homes_behind`.
+  `set_lifecycle`, `trace_fibre`, `homes_behind`, and the editing tools below.
+- Editing on request: when the user asks for a specific change ("a FAT on this corner", "draw
+  a spare distribution cable here", "split this cable at the joint", "give this home to
+  FAT-012"), use `add_site`, `draw_cable`, `split_cable`, `set_attribute`, `reassign` or
+  `delete_element` with the user's reason, and `undo_edit` / `redo_edit` when they ask to go
+  back. Each result says which rules the design now breaks: pass that on. Never edit unasked.
