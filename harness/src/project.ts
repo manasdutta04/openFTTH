@@ -276,17 +276,20 @@ export class ProjectService {
             }
           }
           this.d.bus.emit("tool.activity", { folk: null, tool: step.tool, state: "started", id: `auto-${i}` });
+          this.runtime(meta.id, "tool.started", { tool, input: args, automatic: true });
           let out: Record<string, unknown>;
           try {
             out = (await engine.call<Record<string, unknown>>(tool, args)) ?? {};
           } catch (err) {
             room.note(`${step.label} failed: ${(err as Error).message}`, "error");
+            this.runtime(meta.id, "error", { tool, message: (err as Error).message, automatic: true });
             this.d.bus.emit("tool.activity", { folk: null, tool: step.tool, state: "failed", id: `auto-${i}` });
             return;
           }
           const summary = typeof out.summary === "string" ? out.summary : `${step.tool} done`;
           const failed = summary.startsWith("rejected") || typeof out.error === "string";
           this.d.bus.emit("tool.activity", { folk: null, tool: step.tool, state: failed ? "failed" : "done", id: `auto-${i}`, summary });
+          this.runtime(meta.id, "tool.done", { tool, isError: failed, summary, automatic: true });
           room.note(summary, "tool", { tool: step.tool, isError: failed, step: i + 1, steps: total, automatic: true });
           if (typeof out.version === "string" && out.version) {
             this.d.bus.emit("design.version", { version: out.version, tool: step.tool, summary, changes: out.changes ?? null });
@@ -306,6 +309,14 @@ export class ProjectService {
         this.automating = false;
       });
     return { steps: total };
+  }
+
+  /** A Backstage line for work done by the engine itself (the automatic design, the
+   *  engineer's own changes), like the crew's tool calls. */
+  private runtime(project: string, event: string, detail: unknown): void {
+    const ev = { at: Date.now(), folk: "engine", event, detail };
+    this.d.store.appendRuntime(project, ev);
+    this.d.bus.emit("runtime", ev);
   }
 
   /** Resolves when the automatic design that is running (if any) has stopped. */

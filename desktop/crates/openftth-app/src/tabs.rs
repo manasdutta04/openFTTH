@@ -10,7 +10,7 @@ use crate::icons::Icon;
 use crate::state::{s, AppState};
 use crate::theme::Weight;
 use crate::widgets::{
-    button, button_ex, caps, dot, fmt_metres, fmt_money, hairline, metric, mono_text,
+    button, button_ex, caps, dot, fmt_int, fmt_metres, fmt_money, hairline, metric, mono_text,
     relative_time, short_id, tag, text, truncate, Kind,
 };
 
@@ -192,15 +192,19 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
                         body.rows(22.0, rows.len(), |mut row| {
                             let r = &rows[row.index()];
                             row.col(|ui| {
-                                let l =
-                                    ui.label(text(s(&r["item"]), 12.5, Weight::Regular, p.text));
+                                let l = ui.label(text(
+                                    s(&r["item"]).replace('_', " "),
+                                    12.5,
+                                    Weight::Regular,
+                                    p.text,
+                                ));
                                 if let Some(note) = r["note"].as_str() {
                                     l.on_hover_text(note);
                                 }
                             });
                             row.col(|ui| {
                                 ui.label(mono_text(
-                                    format!("{:.0}", r["qty"].as_f64().unwrap_or(0.0)),
+                                    fmt_int(r["qty"].as_f64().unwrap_or(0.0).round() as i64),
                                     12.0,
                                     p.text,
                                 ));
@@ -210,7 +214,7 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
                             });
                             row.col(|ui| {
                                 ui.label(mono_text(
-                                    format!("{:.2}", r["unit_cost"].as_f64().unwrap_or(0.0)),
+                                    unit_price(r["unit_cost"].as_f64().unwrap_or(0.0)),
                                     12.0,
                                     p.text2,
                                 ));
@@ -353,58 +357,47 @@ pub fn splice_tab(ui: &mut Ui, st: &AppState, tabs: &mut TabState) {
             .then_with(|| a.kind.cmp(&b.kind))
             .then_with(|| natural_cmp(&a.from, &b.from))
     });
-    let shown = rows.len().min(2000);
-    if rows.len() > shown {
-        ui.label(text(
-            format!("First {shown} of {} rows. Narrow the filter.", rows.len()),
-            11.0,
-            Weight::Regular,
-            p.text3,
-        ));
-    }
-    egui::ScrollArea::vertical()
-        .id_salt("splices-scroll")
+    // The table scrolls itself, so only the rows in view are laid out: every row is listed.
+    let shown = rows.len();
+    TableBuilder::new(ui)
+        .id_salt("splices")
+        .vscroll(true)
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            TableBuilder::new(ui)
-                .id_salt("splices")
-                .vscroll(false)
-                .striped(false)
-                .column(Column::auto().at_least(120.0))
-                .column(Column::auto().at_least(64.0))
-                .column(Column::remainder().at_least(200.0))
-                .column(Column::remainder().at_least(200.0))
-                .column(Column::auto().at_least(56.0))
-                .header(20.0, |mut h| {
-                    for t in ["Closure", "Type", "From", "To", "Loss dB"] {
-                        h.col(|ui| header_cell(ui, &p, t));
-                    }
-                })
-                .body(|body| {
-                    body.rows(20.0, shown, |mut row| {
-                        let r = &rows[row.index()];
-                        row.col(|ui| {
-                            ui.label(text(&r.closure, 12.0, Weight::Regular, p.text));
-                        });
-                        row.col(|ui| {
-                            let fg = match r.kind.as_str() {
-                                "splitter" => p.kind("fdh"),
-                                "patch" => p.text,
-                                _ => p.text2,
-                            };
-                            tag(ui, &r.kind, fg, p.bg3);
-                        });
-                        row.col(|ui| {
-                            ui.label(mono_text(&r.from, 11.5, p.text2));
-                        });
-                        row.col(|ui| {
-                            ui.label(mono_text(&r.to, 11.5, p.text2));
-                        });
-                        row.col(|ui| {
-                            ui.label(mono_text(format!("{:.1}", r.loss), 11.5, p.text3));
-                        });
-                    });
+        .striped(false)
+        .column(Column::auto().at_least(120.0))
+        .column(Column::auto().at_least(64.0))
+        .column(Column::remainder().at_least(200.0))
+        .column(Column::remainder().at_least(200.0))
+        .column(Column::auto().at_least(56.0))
+        .header(20.0, |mut h| {
+            for t in ["Closure", "Type", "From", "To", "Loss dB"] {
+                h.col(|ui| header_cell(ui, &p, t));
+            }
+        })
+        .body(|body| {
+            body.rows(20.0, shown, |mut row| {
+                let r = &rows[row.index()];
+                row.col(|ui| {
+                    ui.label(text(&r.closure, 12.0, Weight::Regular, p.text));
                 });
+                row.col(|ui| {
+                    let fg = match r.kind.as_str() {
+                        "splitter" => p.kind("fdh"),
+                        "patch" => p.text,
+                        _ => p.text2,
+                    };
+                    tag(ui, &r.kind, fg, p.bg3);
+                });
+                row.col(|ui| {
+                    ui.label(mono_text(&r.from, 11.5, p.text2));
+                });
+                row.col(|ui| {
+                    ui.label(mono_text(&r.to, 11.5, p.text2));
+                });
+                row.col(|ui| {
+                    ui.label(mono_text(format!("{:.1}", r.loss), 11.5, p.text3));
+                });
+            });
         });
 }
 
@@ -567,12 +560,36 @@ pub fn backstage_tab(ui: &mut Ui, st: &mut AppState, tabs: &mut TabState) {
                         p.text2,
                     ));
                     ui.label(text(&event, 11.5, Weight::Regular, c));
-                    let detail = e["detail"].to_string();
-                    ui.add(
-                        egui::Label::new(mono_text(truncate(&detail, 140), 11.0, p.text3))
-                            .truncate(),
-                    )
-                    .on_hover_text(detail);
+                    let raw = e["detail"].to_string();
+                    let d = &e["detail"];
+                    // Say it as a sentence: the tool and what it did, or the error; the raw
+                    // record stays one hover away.
+                    let tool = d["tool"].as_str().map(|t| t.replace('_', " "));
+                    let said = match (event.as_str(), tool) {
+                        ("tool.started", Some(t)) => Some((t, String::new())),
+                        ("tool.done", Some(t)) => {
+                            Some((t, d["summary"].as_str().unwrap_or_default().to_string()))
+                        }
+                        ("error", t) => Some((
+                            t.unwrap_or_default(),
+                            d["message"].as_str().unwrap_or_default().to_string(),
+                        )),
+                        _ => None,
+                    };
+                    let resp = match said {
+                        Some((t, what)) => {
+                            ui.label(text(t, 12.0, Weight::Medium, p.text));
+                            ui.add(
+                                egui::Label::new(text(what, 12.0, Weight::Regular, p.text2))
+                                    .truncate(),
+                            )
+                        }
+                        None => ui.add(
+                            egui::Label::new(mono_text(truncate(&raw, 140), 11.0, p.text3))
+                                .truncate(),
+                        ),
+                    };
+                    resp.on_hover_text(raw);
                 });
             }
         });
@@ -623,5 +640,14 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
         None => String::new(),
+    }
+}
+
+/// A unit price: whole numbers with thousands separators, cents only below 100.
+fn unit_price(v: f64) -> String {
+    if v >= 100.0 {
+        fmt_int(v.round() as i64)
+    } else {
+        format!("{v:.2}")
     }
 }

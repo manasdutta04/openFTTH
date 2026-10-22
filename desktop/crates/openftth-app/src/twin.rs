@@ -14,13 +14,15 @@ use openftth_core::{Bounds, Design, Element, Geometry, Mercator, StreetLayer};
 use crate::icons::{self, Icon};
 use crate::state::Layers;
 use crate::theme::{font, mono, Palette, Weight};
-use crate::widgets::{caps, float_frame, icon_button_sized, text};
+use crate::widgets::{float_frame, icon_button_sized, text};
 
 pub struct TwinView {
     center: [f64; 2],
     scale: f64,
     fitted: bool,
     cache: Option<GeomCache>,
+    /// The layers legend is open (its header folds it away to keep the map clear).
+    legend_open: bool,
     /// What was under the pointer when the context menu last opened.
     pub context: Option<MapContext>,
 }
@@ -32,6 +34,7 @@ impl Default for TwinView {
             scale: 1.0,
             fitted: false,
             cache: None,
+            legend_open: true,
             context: None,
         }
     }
@@ -807,7 +810,7 @@ impl TwinView {
     }
 
     fn layer_list(
-        &self,
+        &mut self,
         ui: &mut Ui,
         rect: Rect,
         p: &Palette,
@@ -823,10 +826,40 @@ impl TwinView {
                 float_frame(p).show(ui, |ui| {
                     ui.set_width(150.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    ui.horizontal(|ui| {
-                        ui.add_space(2.0);
-                        ui.label(caps("Layers", p.text3));
-                    });
+                    let (hr, head) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::click());
+                    let painter = ui.painter();
+                    painter.text(
+                        pos2(hr.left() + 2.0, hr.center().y),
+                        Align2::LEFT_CENTER,
+                        "LAYERS",
+                        font(10.5, Weight::Semibold),
+                        if head.hovered() { p.text2 } else { p.text3 },
+                    );
+                    icons::paint(
+                        painter,
+                        icons::square(pos2(hr.right() - 8.0, hr.center().y), 12.0),
+                        if self.legend_open {
+                            icons::Icon::ChevronDown
+                        } else {
+                            icons::Icon::ChevronRight
+                        },
+                        p.text3,
+                    );
+                    if head
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text(if self.legend_open {
+                            "Fold the legend away"
+                        } else {
+                            "Show the legend"
+                        })
+                        .clicked()
+                    {
+                        self.legend_open = !self.legend_open;
+                    }
+                    if !self.legend_open {
+                        return;
+                    }
                     ui.add_space(4.0);
                     let rows: [(&str, &str, &mut bool); 11] = [
                         ("Feeder", "feeder", &mut layers.feeder),
@@ -969,7 +1002,14 @@ fn hover_summary(e: &Element) -> Vec<String> {
                 out.push(format!("{u} / {c} units"));
             }
             if let Some(n) = get_i(o, "pons") {
-                out.push(format!("{n} PONs"));
+                if o.get("p2p").and_then(|v| v.as_bool()) == Some(true) {
+                    out.push(format!("{n} dedicated fibres, no splitters"));
+                } else {
+                    out.push(format!("{n} PONs"));
+                }
+            }
+            if let Some(n) = get_i(o, "splitters") {
+                out.push(format!("{n} FAT splitter(s)"));
             }
         }
         "feeder" | "distribution" => {

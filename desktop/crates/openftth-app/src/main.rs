@@ -10,6 +10,8 @@ mod icons;
 mod import;
 mod inspector;
 mod markdown;
+mod palette;
+mod prefs;
 mod state;
 mod supervisor;
 mod tabs;

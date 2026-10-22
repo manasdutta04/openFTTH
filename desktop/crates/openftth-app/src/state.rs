@@ -291,6 +291,9 @@ impl AppState {
         if key == "external" {
             return "Another AI app".into();
         }
+        if key == "engine" {
+            return "openFTTH engine".into();
+        }
         self.crew
             .iter()
             .find(|m| m.key == key)

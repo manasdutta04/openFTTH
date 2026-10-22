@@ -1005,7 +1005,7 @@ fn engine_chip(ui: &mut Ui, st: &mut AppState) -> Option<ChatAction> {
         .id(ui.make_persistent_id("engine-chip-menu"))
         .layout(egui::Layout::top_down(egui::Align::Min))
         .show(|ui| {
-            widgets::menu_begin(ui, 300.0);
+            widgets::menu_begin(ui, 380.0);
             ui.label(caps("Crew engine", p.text3));
             ui.add_space(2.0);
             let engines = st.engines.clone();

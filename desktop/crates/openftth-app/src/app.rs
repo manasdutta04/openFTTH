@@ -19,6 +19,8 @@ use crate::connect::ConnectWindow;
 use crate::icons::{self, Icon};
 use crate::import::ImportWizard;
 use crate::inspector::{inspector, is_excluded, is_movable, InspectorAction};
+use crate::palette::{Command, CommandPalette};
+use crate::prefs::Prefs;
 use crate::state::{AppState, Tab};
 use crate::tabs::{backstage_tab, boq_tab, splice_tab, versions_tab, TabState};
 use crate::theme::{self, font, Mode, Palette, Weight, R};
@@ -55,7 +57,10 @@ pub struct OpenFtthApp {
     show_crew: bool,
     show_cursors: bool,
     follow_crew: bool,
+    /// The preferences as last written, so they are saved only when they change.
+    saved_prefs: Prefs,
     about: bool,
+    palette: CommandPalette,
     engine_form: Option<EngineForm>,
     confirm_reset: bool,
     import: ImportWizard,
@@ -172,18 +177,21 @@ impl OpenFtthApp {
         });
         let st = AppState::new(client);
         let fixture = repo_root().map(|r| r.join("fixtures").join("gent"));
+        let prefs = Prefs::load();
         Self {
             st,
             composer: Composer::default(),
             tabs: TabState::default(),
             twin: TwinView::default(),
             form: OpenForm::new(fixture),
-            mode: Mode::Dark,
+            mode: if prefs.dark { Mode::Dark } else { Mode::Light },
             applied_mode: None,
-            show_crew: true,
-            show_cursors: true,
-            follow_crew: false,
+            show_crew: prefs.show_crew,
+            show_cursors: prefs.show_cursors,
+            follow_crew: prefs.follow_crew,
+            saved_prefs: prefs,
             about: false,
+            palette: CommandPalette::default(),
             engine_form: None,
             confirm_reset: false,
             import: ImportWizard::new(),
@@ -672,9 +680,12 @@ project {}",
 
         ui.menu_button(Self::menu_title("Help", &p), |ui| {
             widgets::menu_begin(ui, 220.0);
+            if menu_item(ui, &p, "Command palette", Some("Ctrl+K"), true) {
+                self.palette.toggle();
+            }
             if menu_item(ui, &p, "Keyboard shortcuts", None, true) {
                 self.st.toasts.info(
-                    "Ctrl+1…5 tabs · F fit design · Esc clear selection · Enter send · Shift+Enter new line",
+                    "Ctrl+K command palette · Ctrl+1…5 tabs · F fit design · Esc clear selection · Enter send · Shift+Enter new line",
                 );
             }
             if menu_item(ui, &p, "Connect AI apps…", None, true) {
@@ -1345,8 +1356,44 @@ project {}",
         }
     }
 
+    /// What a command palette entry does.
+    fn run_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::DesignAutomatically => self.st.autodesign(),
+            Command::ImportData => self.import.open = true,
+            Command::ConnectAiApps => self.connect.show_window(&self.st),
+            Command::Tab(t) => self.st.tab = t,
+            Command::FitDesign => {
+                self.st.tab = Tab::Twin;
+                self.twin.refit();
+            }
+            Command::ThemeDark => self.mode = Mode::Dark,
+            Command::ThemeLight => self.mode = Mode::Light,
+            Command::CloseProject | Command::NewProject => self.st.close_project(),
+            Command::RevealFolder => {
+                if let Some(pr) = &self.st.project {
+                    reveal(&pr.dir.display().to_string());
+                }
+            }
+            Command::About => self.about = true,
+            Command::Element(id) => {
+                if let Some(e) = self.st.design.as_ref().and_then(|d| d.get(&id)) {
+                    self.twin.focus(e);
+                }
+                self.st.selection = vec![id];
+                self.st.tab = Tab::Twin;
+            }
+        }
+    }
+
     fn shortcuts(&mut self, ui: &Ui) {
         let typing = ui.ctx().egui_wants_keyboard_input();
+        if ui.input(|i| i.modifiers.command && i.key_pressed(Key::K)) {
+            self.palette.toggle();
+        }
+        if self.palette.open {
+            return; // the palette takes the keyboard while it is open
+        }
         let (esc, ctrl, c, n1, n2, n3, n4, n5, f) = ui.input(|i| {
             (
                 i.key_pressed(Key::Escape),
@@ -1483,6 +1530,19 @@ impl eframe::App for OpenFtthApp {
         self.reset_window(ui.ctx());
         self.import.show(ui.ctx(), &mut self.st);
         self.connect.show(ui.ctx(), &mut self.st);
+        if let Some(cmd) = self.palette.show(ui.ctx(), &self.st) {
+            self.run_command(cmd);
+        }
+        let now = Prefs {
+            dark: self.mode == Mode::Dark,
+            show_crew: self.show_crew,
+            show_cursors: self.show_cursors,
+            follow_crew: self.follow_crew,
+        };
+        if now != self.saved_prefs {
+            now.save();
+            self.saved_prefs = now;
+        }
         self.steer_window(ui.ctx());
         self.st.toasts.show(ui.ctx(), &p);
         self.resize_zones(ui.ctx());

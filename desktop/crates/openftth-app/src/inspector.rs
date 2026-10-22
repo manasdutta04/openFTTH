@@ -212,8 +212,16 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                     });
 
                     section(ui, &p, "Attributes");
+                    let currency = st
+                        .boq
+                        .as_ref()
+                        .and_then(|b| b["currency"].as_str())
+                        .unwrap_or("EUR")
+                        .to_string();
                     for (k, v) in e.props.iter().filter(|(k, _)| *k != "name") {
-                        kv(ui, &p, &k.replace('_', " "), &s(v));
+                        if let Some((label, value)) = pretty(k, v, &e.props, &currency) {
+                            kv(ui, &p, &label, &value);
+                        }
                     }
                     let skip = [
                         "kind", "edges", "surfaces", "node", "building", "fat_ids", "mdu",
@@ -236,9 +244,16 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
                             {
                                 st.element_name(id)
                             }
-                            other => s(other),
+                            other => {
+                                if let Some((label, value)) =
+                                    pretty(k, other, &e.openftth, &currency)
+                                {
+                                    kv(ui, &p, &label, &value);
+                                }
+                                continue;
+                            }
                         };
-                        kv(ui, &p, &k.replace('_', " "), &value);
+                        kv(ui, &p, &label_of(k), &value);
                     }
 
                     let links: Vec<(&str, String)> = ["fat_id", "fdh_id", "home"]
@@ -336,4 +351,97 @@ pub fn inspector(ui: &mut Ui, st: &mut AppState) -> Option<InspectorAction> {
         st.selection.clear();
     }
     action
+}
+
+/// A field name as the engineer reads it: "distribution_path_m" → "Distribution path".
+fn label_of(key: &str) -> String {
+    let known = match key {
+        "pon_id" => Some("PON"),
+        "pop_id" => Some("POP"),
+        "port_capacity" => Some("Ports"),
+        "reserve_capacity" => Some("Spare ports"),
+        "total_connections" => Some("Connected"),
+        "distribution_est_m" => Some("Planned length"),
+        "distribution_path_m" => Some("Distribution path"),
+        "feeder_path_m" => Some("Feeder path"),
+        "path_to_pop_m" => Some("Path to the POP"),
+        "odn_loss_db" => Some("ODN loss"),
+        "fiber_count" => Some("Fibres per cable"),
+        "cable_count" => Some("Cables"),
+        "fibers_used" => Some("Fibres used"),
+        "downstream_units" => Some("Units downstream"),
+        "offset_m" => Some("Home to street"),
+        "splices_on_path" => Some("Splices on the path"),
+        "manhole_type" => Some("Chamber type"),
+        "dimensions_cm" => Some("Size (cm)"),
+        "splitter_port" => Some("Splitter port"),
+        "fat_splitter" => Some("FAT splitter"),
+        "splitters" => Some("FAT splitters"),
+        "pons" => Some("PONs"),
+        "detour_m" => Some("Going round"),
+        "detour_cost" => Some("Going round costs"),
+        "barrier" => Some("Under"),
+        _ => None,
+    };
+    if let Some(k) = known {
+        return k.to_string();
+    }
+    let base = key
+        .trim_end_matches("_m")
+        .trim_end_matches("_db")
+        .trim_end_matches("_pct")
+        .replace('_', " ")
+        .replace("fiber", "fibre");
+    let mut chars = base.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => base,
+    }
+}
+
+/// A field and its value with the unit its name implies; `None` for the half of a pair shown
+/// with its other half (fibre start and end read as one range).
+fn pretty(
+    key: &str,
+    v: &serde_json::Value,
+    all: &serde_json::Map<String, serde_json::Value>,
+    currency: &str,
+) -> Option<(String, String)> {
+    if key == "fiber_end" && all.contains_key("fiber_start") {
+        return None;
+    }
+    if key == "fiber_start" {
+        let lo = v.as_i64()?;
+        return Some(match all.get("fiber_end").and_then(|x| x.as_i64()) {
+            Some(hi) if hi > lo => ("Fibres".into(), format!("{lo}–{hi}")),
+            _ => ("Fibre".into(), lo.to_string()),
+        });
+    }
+    let label = label_of(key);
+    let value = match v {
+        serde_json::Value::Bool(b) => (if *b { "yes" } else { "no" }).to_string(),
+        serde_json::Value::Number(n) => {
+            let x = n.as_f64().unwrap_or_default();
+            if key.ends_with("_m") {
+                crate::widgets::fmt_metres(x)
+            } else if key.ends_with("_db") {
+                format!("{x:.2} dB")
+            } else if key.ends_with("_pct") {
+                format!("{x:.0}%")
+            } else if key.contains("cost") {
+                crate::widgets::fmt_money(x, currency)
+            } else if n.is_i64() || n.is_u64() || x.fract() == 0.0 {
+                crate::widgets::fmt_int(x as i64)
+            } else {
+                format!("{x:.2}")
+            }
+        }
+        serde_json::Value::String(text) if key == "barrier" => match text.as_str() {
+            "water" => "a river or canal".to_string(),
+            "unmapped" => "an obstacle the map does not show".to_string(),
+            other => format!("the {other}"),
+        },
+        other => s(other),
+    };
+    Some((label, value))
 }

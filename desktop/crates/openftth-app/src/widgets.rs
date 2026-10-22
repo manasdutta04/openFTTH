@@ -550,8 +550,9 @@ pub fn menu_row_mark(
     detail: &str,
     current: bool,
 ) -> bool {
-    let w = ui.available_width().clamp(220.0, 360.0);
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 28.0), egui::Sense::click());
+    // Two lines: the name, and under it what it costs and whether it is ready, in full.
+    let w = ui.available_width().clamp(260.0, 420.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 40.0), egui::Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, R as f32, p.accent_soft);
     }
@@ -559,52 +560,67 @@ pub fn menu_row_mark(
         ui.painter(),
         egui::Rect::from_center_size(
             egui::pos2(rect.left() + 18.0, rect.center().y),
-            egui::vec2(16.0, 16.0),
+            egui::vec2(18.0, 18.0),
         ),
         kind,
         p,
     );
+    let right_edge = if current {
+        icons::paint(
+            ui.painter(),
+            icons::square(egui::pos2(rect.right() - 16.0, rect.center().y), 12.0),
+            Icon::Check,
+            p.accent,
+        );
+        rect.right() - 30.0
+    } else {
+        rect.right() - 10.0
+    };
+    let x = rect.left() + 36.0;
     ui.painter().text(
-        egui::pos2(rect.left() + 34.0, rect.center().y),
+        egui::pos2(x, rect.top() + 13.0),
         egui::Align2::LEFT_CENTER,
         label,
         font(
             12.5,
             if current {
-                Weight::Medium
+                Weight::Semibold
             } else {
-                Weight::Regular
+                Weight::Medium
             },
         ),
         p.text,
     );
-    let label_w = ui
-        .painter()
-        .layout_no_wrap(label.to_string(), font(12.5, Weight::Regular), p.text)
-        .size()
-        .x;
-    let right = rect.right() - 10.0;
-    let mut right_edge = right;
-    if current {
-        icons::paint(
-            ui.painter(),
-            icons::square(egui::pos2(right - 6.0, rect.center().y), 12.0),
-            Icon::Check,
-            p.text,
-        );
-        right_edge = right - 18.0;
-    }
-    let room = right_edge - (rect.left() + 34.0 + label_w + 12.0);
-    if room > 40.0 {
-        ui.painter().text(
-            egui::pos2(right_edge, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            truncate(detail, (room / 6.0) as usize),
-            font(11.0, Weight::Regular),
-            p.text3,
+    let mut shown = detail.to_string();
+    let fits = |t: &str| {
+        ui.painter()
+            .layout_no_wrap(t.to_string(), font(11.0, Weight::Regular), p.text3)
+            .size()
+            .x
+            <= right_edge - x
+    };
+    while !fits(&shown) && shown.chars().count() > 4 {
+        let keep = shown.chars().count() - 2;
+        shown = format!(
+            "{}…",
+            shown
+                .chars()
+                .take(keep)
+                .collect::<String>()
+                .trim_end_matches('…')
         );
     }
-    let clicked = resp.on_hover_cursor(CursorIcon::PointingHand).clicked();
+    ui.painter().text(
+        egui::pos2(x, rect.bottom() - 12.0),
+        egui::Align2::LEFT_CENTER,
+        shown,
+        font(11.0, Weight::Regular),
+        p.text3,
+    );
+    let clicked = resp
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(detail)
+        .clicked();
     if clicked {
         ui.close();
     }

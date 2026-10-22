@@ -105,6 +105,12 @@ impl Element {
         if let Some(n) = self.props.get("name").and_then(Value::as_str) {
             return n.to_string();
         }
+        // Chambers and poles carry their id under their own key.
+        for key in ["manhole_id", "pole_id"] {
+            if let Some(n) = self.props.get(key).and_then(Value::as_str) {
+                return n.to_string();
+            }
+        }
         let from = self.props.get("from_label").and_then(Value::as_str);
         let to = self.props.get("to_label").and_then(Value::as_str);
         match (from, to) {
@@ -214,15 +220,28 @@ impl Design {
         self.elements.iter().find(|e| e.element_uuid == uuid)
     }
 
-    /// Bounds in Web Mercator metres over every element except the service area polygon.
+    /// Bounds in Web Mercator metres over the designed network and the homes: what the engineer
+    /// works on. The existing network the design reuses can run kilometres beyond the area, so it
+    /// only counts when there is nothing else; the service area polygon is the last resort.
     pub fn bounds(&self) -> Bounds {
-        let mut b = Bounds::empty();
-        for e in self.elements.iter().filter(|e| e.kind() != "service_area") {
-            for [lon, lat] in e.geometry.coords() {
-                b.include(Mercator::project(lon, lat));
+        let over = |keep: &dyn Fn(&str) -> bool| {
+            let mut b = Bounds::empty();
+            for e in self.elements.iter().filter(|e| keep(e.kind())) {
+                for [lon, lat] in e.geometry.coords() {
+                    b.include(Mercator::project(lon, lat));
+                }
             }
+            b
+        };
+        let designed = over(&|k| k != "service_area" && !k.starts_with("existing_"));
+        if !designed.is_empty() {
+            return designed;
         }
-        b
+        let with_existing = over(&|k| k != "service_area");
+        if !with_existing.is_empty() {
+            return with_existing;
+        }
+        over(&|k| k == "service_area")
     }
 
     pub fn counts(&self) -> BTreeMap<String, usize> {

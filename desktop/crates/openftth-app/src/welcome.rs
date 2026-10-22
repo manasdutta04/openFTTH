@@ -1,5 +1,5 @@
-//! Before a project is open: an editor-style start page. Start actions on the left, recent
-//! projects on the right.
+//! Before a project is open: the start page. Three ways in as cards (your own data,
+//! OpenStreetMap, other AI apps), then the OpenStreetMap form beside the recent projects.
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +38,59 @@ pub enum WelcomeAction {
     Connect,
 }
 
+/// One way in: an icon, a title, what it does, and a status line at the bottom.
+fn start_card(
+    ui: &mut Ui,
+    st: &AppState,
+    w: f32,
+    icon: Icon,
+    title: &str,
+    body: &str,
+    status: (&str, egui::Color32),
+) -> egui::Response {
+    let p = st.palette;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 132.0), Sense::click());
+    let hovered = resp.hovered();
+    let painter = ui.painter();
+    painter.rect_filled(rect, 10.0, if hovered { p.bg3 } else { p.bg2 });
+    painter.rect_stroke(
+        rect,
+        10.0,
+        egui::Stroke::new(1.0, if hovered { p.accent } else { p.line }),
+        egui::StrokeKind::Inside,
+    );
+    let badge = Rect::from_min_size(rect.min + vec2(16.0, 16.0), vec2(30.0, 30.0));
+    painter.rect_filled(badge, 8.0, p.accent_soft);
+    icons::paint(painter, icons::square(badge.center(), 16.0), icon, p.accent);
+    painter.text(
+        pos2(rect.left() + 58.0, rect.top() + 31.0),
+        Align2::LEFT_CENTER,
+        title,
+        font(14.0, Weight::Semibold),
+        p.text,
+    );
+    let galley = painter.layout(
+        body.to_string(),
+        font(12.0, Weight::Regular),
+        p.text2,
+        w - 32.0,
+    );
+    painter.galley(pos2(rect.left() + 16.0, rect.top() + 56.0), galley, p.text2);
+    painter.circle_filled(
+        pos2(rect.left() + 20.0, rect.bottom() - 18.0),
+        3.0,
+        status.1,
+    );
+    painter.text(
+        pos2(rect.left() + 30.0, rect.bottom() - 18.0),
+        Align2::LEFT_CENTER,
+        status.0,
+        font(11.5, Weight::Medium),
+        p.text3,
+    );
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
 pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) -> Option<WelcomeAction> {
     let p = st.palette;
     let mut action: Option<WelcomeAction> = None;
@@ -63,7 +116,66 @@ pub fn welcome(ui: &mut Ui, st: &mut AppState, form: &mut OpenForm) -> Option<We
                             ));
                         });
                     });
-                    ui.add_space(28.0);
+                    ui.add_space(26.0);
+                    let card_gap = 14.0;
+                    let card_w = ((ui.available_width() - 2.0 * card_gap) / 3.0).max(200.0);
+                    let listening = st.mcp.as_ref().is_some_and(|m| m["listening"] == true);
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = card_gap;
+                        if start_card(
+                            ui,
+                            st,
+                            card_w,
+                            Icon::Plus,
+                            "Import your own data",
+                            "Address register, streets, existing ducts, poles and no-dig zones, in any GIS format and CRS.",
+                            ("GeoPackage · Shapefile · CSV · DXF · KML", p.text3),
+                        )
+                        .clicked()
+                        {
+                            action = Some(WelcomeAction::Import);
+                        }
+                        if start_card(
+                            ui,
+                            st,
+                            card_w,
+                            Icon::Folder,
+                            "Start from OpenStreetMap",
+                            "A design area and a map extract: streets and buildings come from the extract.",
+                            if form.area.trim().is_empty() {
+                                ("choose the area below", p.text3)
+                            } else {
+                                ("area chosen · open it below", p.green)
+                            },
+                        )
+                        .clicked()
+                        {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Area polygon", &["geojson", "json", "gpkg", "shp", "kml"])
+                                .pick_file()
+                            {
+                                form.area = path.display().to_string();
+                            }
+                        }
+                        if start_card(
+                            ui,
+                            st,
+                            card_w,
+                            Icon::Link,
+                            "Connect AI apps",
+                            "Claude, Cursor or VS Code design, check and export through one local MCP link.",
+                            if listening {
+                                ("MCP link on", p.green)
+                            } else {
+                                ("MCP link off", p.text3)
+                            },
+                        )
+                        .clicked()
+                        {
+                            action = Some(WelcomeAction::Connect);
+                        }
+                    });
+                    ui.add_space(30.0);
                     // Two columns of fixed width, so a row's click area never reaches into the
                     // other column (a Recent click used to land on "Choose the design area").
                     let gap = 32.0;
@@ -104,20 +216,8 @@ fn start_column(
     action: &mut Option<WelcomeAction>,
 ) {
     let p = st.palette;
-    ui.label(caps("Start", p.text3));
-    ui.add_space(6.0);
-    if link_row(
-        ui,
-        st,
-        Icon::Plus,
-        "Import your own data",
-        "",
-        "address register, streets, existing ducts: any GIS format and CRS",
-    ) {
-        *action = Some(WelcomeAction::Import);
-    }
-    ui.add_space(14.0);
-    ui.label(caps("Or start from OpenStreetMap", p.text3));
+    let _ = action;
+    ui.label(caps("New from OpenStreetMap", p.text3));
     ui.add_space(6.0);
     if link_row(
         ui,
@@ -204,8 +304,7 @@ fn recent_column(
     action: &mut Option<WelcomeAction>,
 ) {
     let p = st.palette;
-    connect_block(ui, st, action);
-    ui.add_space(18.0);
+    let _ = action;
     ui.label(caps("Recent", p.text3));
     ui.add_space(6.0);
     if st.recents.is_empty() {
@@ -222,17 +321,34 @@ fn recent_column(
             ui.painter().rect_filled(rect, R as f32, p.bg2);
         }
         let painter = ui.painter();
+        let imported = r.area_path.ends_with(".yaml") || r.area_path.ends_with(".yml");
+        icons::paint(
+            painter,
+            icons::square(pos2(rect.left() + 14.0, rect.top() + 12.0), 13.0),
+            if imported { Icon::Plus } else { Icon::Folder },
+            p.text3,
+        );
         painter.text(
-            pos2(rect.left() + 8.0, rect.top() + 12.0),
+            pos2(rect.left() + 28.0, rect.top() + 12.0),
             Align2::LEFT_CENTER,
             file_stem(&r.area_path),
             font(13.0, Weight::Medium),
             p.text,
         );
         painter.text(
-            pos2(rect.left() + 8.0, rect.bottom() - 11.0),
+            pos2(rect.left() + 28.0, rect.bottom() - 11.0),
             Align2::LEFT_CENTER,
-            shorten_path(&r.area_path, 52),
+            if imported {
+                "imported data".to_string()
+            } else {
+                format!(
+                    "OpenStreetMap · {}",
+                    r.osm_path
+                        .as_deref()
+                        .map(file_stem)
+                        .unwrap_or_else(|| "no extract".into())
+                )
+            },
             font(11.5, Weight::Regular),
             p.text3,
         );
@@ -257,28 +373,6 @@ fn recent_column(
         {
             *open = Some((r.area_path.clone(), r.osm_path.clone(), r.rulebook.clone()));
         }
-    }
-}
-
-/// Whether AI apps can reach openFTTH, and the way in to connect them.
-fn connect_block(ui: &mut Ui, st: &AppState, action: &mut Option<WelcomeAction>) {
-    let p = st.palette;
-    ui.label(caps("AI apps", p.text3));
-    ui.add_space(6.0);
-    let listening = st.mcp.as_ref().is_some_and(|m| m["listening"] == true);
-    let link = st
-        .mcp
-        .as_ref()
-        .and_then(|m| m["link"].as_str())
-        .unwrap_or_default()
-        .to_string();
-    let hint = if listening {
-        format!("on · {link}")
-    } else {
-        "use openFTTH from Claude, Cursor or VS Code through one link".to_string()
-    };
-    if link_row(ui, st, Icon::Link, "Connect AI apps", "", &hint) {
-        *action = Some(WelcomeAction::Connect);
     }
 }
 
