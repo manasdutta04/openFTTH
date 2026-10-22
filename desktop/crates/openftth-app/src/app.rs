@@ -15,6 +15,7 @@ use crate::chat::{
     chat_panel, ChatAction, Composer, PROMPT_BOQ, PROMPT_DELIVER, PROMPT_DESIGN, PROMPT_SCENARIOS,
     PROMPT_VALIDATE,
 };
+use crate::connect::ConnectWindow;
 use crate::icons::{self, Icon};
 use crate::import::ImportWizard;
 use crate::inspector::{inspector, is_excluded, is_movable, InspectorAction};
@@ -58,6 +59,7 @@ pub struct OpenFtthApp {
     engine_form: Option<EngineForm>,
     confirm_reset: bool,
     import: ImportWizard,
+    connect: ConnectWindow,
     frame_ms: f32,
     /// The site the engineer is choosing a new position for (click on the map).
     placing: Option<Placing>,
@@ -185,6 +187,7 @@ impl OpenFtthApp {
             engine_form: None,
             confirm_reset: false,
             import: ImportWizard::new(),
+            connect: ConnectWindow::new(),
             frame_ms: 0.0,
             placing: None,
             steer: None,
@@ -657,6 +660,10 @@ project {}",
             menu_separator(ui, &p);
             if menu_item(ui, &p, "Stop the current turn", None, busy) {
                 self.st.interrupt();
+            }
+            menu_separator(ui, &p);
+            if menu_item(ui, &p, "Connect other AI apps…", None, true) {
+                self.connect.show_window(&self.st.client);
             }
         })
         .response
@@ -1463,6 +1470,7 @@ impl eframe::App for OpenFtthApp {
         self.engine_window(ui.ctx());
         self.reset_window(ui.ctx());
         self.import.show(ui.ctx(), &mut self.st);
+        self.connect.show(ui.ctx(), &self.st);
         self.steer_window(ui.ctx());
         self.st.toasts.show(ui.ctx(), &p);
         self.resize_zones(ui.ctx());

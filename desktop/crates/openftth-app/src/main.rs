@@ -3,6 +3,7 @@
 
 mod app;
 mod chat;
+mod connect;
 mod cursors;
 mod dictate;
 mod icons;

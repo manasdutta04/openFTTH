@@ -159,6 +159,20 @@ impl Client {
         )
     }
 
+    /// The public MCP server's settings and ready-made configs for other AI apps.
+    pub fn mcp_info(&self) -> Result<Value, ClientError> {
+        self.get("/api/mcp")
+    }
+
+    /// Turn the public MCP server on or off, or issue a new token.
+    pub fn set_mcp(&self, enabled: Option<bool>, rotate: bool) -> Result<Value, ClientError> {
+        let mut body = json!({ "rotate": rotate });
+        if let Some(on) = enabled {
+            body["enabled"] = json!(on);
+        }
+        self.send("POST", "/api/mcp", &body)
+    }
+
     pub fn close_project(&self) -> Result<Value, ClientError> {
         self.send("DELETE", "/api/project", &Value::Null)
     }

@@ -281,6 +281,9 @@ impl AppState {
     }
 
     pub fn folk_name(&self, key: &str) -> String {
+        if key == "external" {
+            return "Another AI app".into();
+        }
         self.crew
             .iter()
             .find(|m| m.key == key)

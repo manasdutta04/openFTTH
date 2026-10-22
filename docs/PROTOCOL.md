@@ -33,6 +33,9 @@ openftth-app (Rust)  ──HTTP+SSE──►  harness (Node 24)  ──MCP (stre
 | `POST /api/import/inspect {paths}` | the layers in data files (geometry, count, CRS, columns, sample values) and the import profile the engine proposes for them, plus `roles` (each role's label and the attributes it understands). `422` with the engine's words when a file cannot be read |
 | `POST /api/import/profile {name, profile, rulebook?}` | save the profile to `<dataDir>/profiles/<name>.yaml`, read its data and return `{path, report}`; the report is the data-quality check (`level` ok, info, warning or error; `counts`; `issues`). `422` when the data cannot be read |
 | `GET /api/import/profiles` | the saved import profiles `{name, path}` |
+| `GET /api/mcp` | the public MCP server: `{enabled, url, token, stdio, snippets}` with ready configs for Claude Desktop, Claude Code, Cursor and HTTP (see [MCP.md](MCP.md)) |
+| `POST /api/mcp {enabled?, rotate?}` | turn the public MCP server on or off, or issue a new token; answers like `GET` |
+| `POST /mcp` | the public MCP endpoint (streamable HTTP, stateless) behind the MCP token, not the app token; `404` while it is off |
 | `GET /api/project` | project meta, stage, head version, engine status |
 | `GET /api/project/versions` | version log (from the engine) |
 | `GET /api/project/diff?from&to` | semantic diff by element id (from the engine) |
