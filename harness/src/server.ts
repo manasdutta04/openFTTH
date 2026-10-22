@@ -10,6 +10,8 @@ import type { Engines } from "./engines.ts";
 import { listRulebooks, type Crew } from "./crew.ts";
 import { findRepoRoot } from "./config.ts";
 import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { runEngineJson } from "./engine-cli.ts";
 import type { EventBus } from "./events.ts";
 import { DISALLOWED_FOR_FOLKS, HttpError, type ProjectService } from "./project.ts";
 import type { Store } from "./store.ts";
@@ -86,11 +88,44 @@ export function buildServer(d: ServerDeps): Server {
   // ---- project ----------------------------------------------------------------------------
   add("POST", "/api/project", async (req, res) => {
     const body = await readJson(req);
-    if (typeof body.area_path !== "string") throw new HttpError(400, "area_path is required");
-    const meta = await d.projects.open({ area_path: body.area_path, osm_path: body.osm_path, rulebook: body.rulebook, id: body.id });
+    if (typeof body.area_path !== "string" && typeof body.profile_path !== "string") throw new HttpError(400, "area_path or profile_path is required");
+    const meta = await d.projects.open({ area_path: body.area_path, osm_path: body.osm_path, profile_path: body.profile_path, rulebook: body.rulebook, id: body.id });
     json(res, 201, meta);
   });
   add("GET", "/api/project", async (_req, res) => json(res, 200, await d.projects.status()));
+
+  // ---- import: look inside data files and check a profile before any project exists ----------
+  add("POST", "/api/import/inspect", async (req, res) => {
+    const body = await readJson(req);
+    const paths = Array.isArray(body.paths) ? body.paths.filter((p: unknown) => typeof p === "string") : [];
+    if (!paths.length) throw new HttpError(400, "paths is required");
+    try {
+      json(res, 200, await runEngineJson(d.cfg.engine, ["inspect", "--json", ...paths]));
+    } catch (err) {
+      throw new HttpError(422, (err as Error).message);
+    }
+  });
+  add("POST", "/api/import/profile", async (req, res) => {
+    const body = await readJson(req);
+    if (!body.profile || typeof body.profile !== "object") throw new HttpError(400, "profile is required");
+    const name = String(body.name ?? (body.profile as { name?: string }).name ?? "import").replace(/[^\w.-]+/g, "-").slice(0, 60) || "import";
+    const dir = join(d.cfg.dataDir, "profiles");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${name}.yaml`);
+    // JSON is valid YAML: the engine reads this file as it is.
+    writeFileSync(path, JSON.stringify({ ...body.profile, name }, null, 2) + "\n", "utf8");
+    try {
+      const report = await runEngineJson(d.cfg.engine, ["profile-check", path, "--json", "--rulebook", String(body.rulebook ?? d.cfg.engine.rulebook)], 300_000);
+      json(res, 200, { path, report });
+    } catch (err) {
+      throw new HttpError(422, (err as Error).message);
+    }
+  });
+  add("GET", "/api/import/profiles", (_req, res) => {
+    const dir = join(d.cfg.dataDir, "profiles");
+    const names = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort() : [];
+    json(res, 200, names.map((f) => ({ name: f.replace(/\.yaml$/, ""), path: join(dir, f) })));
+  });
   add("DELETE", "/api/project", async (req, res) => {
     const purge = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("purge");
     if (purge === "1" || purge === "true") await d.projects.purge();

@@ -17,7 +17,12 @@
           "list_assumptions",
           "get_rulebook",
           "versions",
-          "work_order_status"
+          "work_order_status",
+          "list_layers",
+          "propose_import",
+          "import_data",
+          "check_inputs",
+          "fetch_osm"
         ],
         "color": "green"
       },
@@ -73,7 +78,8 @@
           "get_operator_pack",
           "work_order_status",
           "trace_fibre",
-          "homes_behind"
+          "homes_behind",
+          "check_inputs"
         ],
         "color": "orange"
       },

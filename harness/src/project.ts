@@ -17,8 +17,11 @@ import type { Approvals } from "./approvals.ts";
 import type { Engines } from "./engines.ts";
 
 export interface OpenProjectInput {
-  area_path: string;
+  /** The design area polygon (classic start), or omitted when `profile_path` is given. */
+  area_path?: string;
   osm_path?: string;
+  /** An import profile naming all the project's data sources (made by the import wizard). */
+  profile_path?: string;
   rulebook?: string;
   id?: string;
 }
@@ -28,6 +31,8 @@ export interface ProjectMeta {
   dir: string;
   areaPath: string;
   osmPath: string | null;
+  /** The import profile the project's data comes from, when it was opened from one. */
+  profilePath?: string | null;
   rulebook: string;
   createdAt: number;
   approvedVersions: string[];
@@ -103,7 +108,13 @@ export class ProjectService {
   }
 
   async open(input: OpenProjectInput): Promise<ProjectMeta> {
-    const areaPath = resolve(input.area_path);
+    // A project reopened from Recent names its profile as its area: the profile is the area.
+    const fromArea = input.area_path && /\.ya?ml$/i.test(input.area_path) ? input.area_path : undefined;
+    const profileArg = input.profile_path ?? fromArea;
+    const profilePath = profileArg ? resolve(profileArg) : null;
+    if (profilePath && !existsSync(profilePath)) throw new HttpError(400, `import profile not found: ${profilePath}`);
+    if (!profilePath && !input.area_path) throw new HttpError(400, "give an area_path or a profile_path");
+    const areaPath = profilePath ?? resolve(input.area_path!);
     if (!existsSync(areaPath)) throw new HttpError(400, `area file not found: ${areaPath}`);
     const osmPath = input.osm_path ? resolve(input.osm_path) : null;
     if (osmPath && !existsSync(osmPath)) throw new HttpError(400, `osm file not found: ${osmPath}`);
@@ -117,6 +128,7 @@ export class ProjectService {
     const meta: ProjectMeta = existing ?? { id, dir, areaPath, osmPath, rulebook, createdAt: Date.now(), approvedVersions: [] };
     meta.areaPath = areaPath;
     meta.osmPath = osmPath;
+    meta.profilePath = profilePath;
     meta.rulebook = rulebook;
     writeJsonAtomic(metaPath, meta);
 
@@ -173,7 +185,7 @@ export class ProjectService {
         folkKey: member.key,
         folkName: member.name,
         projectId: id,
-        systemPrompt: systemPrompt(this.d.crew, member, this.memory.read(member.key), settings.kind, { areaPath: meta.areaPath, osmPath: meta.osmPath, rulebook: meta.rulebook }),
+        systemPrompt: systemPrompt(this.d.crew, member, this.memory.read(member.key), settings.kind, { areaPath: meta.areaPath, osmPath: meta.osmPath, profilePath: meta.profilePath ?? null, rulebook: meta.rulebook }),
         allowedTools: member.tools.map((t) => `mcp__engine__${t}`),
         disallowedTools: DISALLOWED_FOR_FOLKS,
         engineTools: member.tools,
@@ -240,7 +252,9 @@ export class ProjectService {
     const room = this.room;
     const engine = this.requireEngine();
     if (!room) throw new HttpError(409, "no project open");
-    if (!meta.osmPath) throw new HttpError(400, "choose a map extract (.osm) for this project first");
+    if (!meta.osmPath && !meta.profilePath) {
+      throw new HttpError(400, "choose a map extract (.osm) or import the project's data (File → Import data) first");
+    }
     if (this.automating || room.busy) throw new HttpError(409, "the crew is working; wait for the turn to finish");
     this.automating = true;
     const started = Date.now();
@@ -250,11 +264,20 @@ export class ProjectService {
         room.note(`Automatic design started: ${total} engine steps, no AI involved.`, "text", { automatic: true });
         let last: Record<string, unknown> | null = null;
         for (const [i, step] of AUTODESIGN_STEPS.entries()) {
-          const args = step.tool === "import_osm" ? { area_path: meta.areaPath, osm_path: meta.osmPath } : {};
+          let tool = step.tool;
+          let args: Record<string, unknown> = {};
+          if (step.tool === "import_osm") {
+            if (meta.profilePath) {
+              tool = "import_data";
+              args = { profile_path: meta.profilePath };
+            } else {
+              args = { area_path: meta.areaPath, osm_path: meta.osmPath };
+            }
+          }
           this.d.bus.emit("tool.activity", { folk: null, tool: step.tool, state: "started", id: `auto-${i}` });
           let out: Record<string, unknown>;
           try {
-            out = (await engine.call<Record<string, unknown>>(step.tool, args)) ?? {};
+            out = (await engine.call<Record<string, unknown>>(tool, args)) ?? {};
           } catch (err) {
             room.note(`${step.label} failed: ${(err as Error).message}`, "error");
             this.d.bus.emit("tool.activity", { folk: null, tool: step.tool, state: "failed", id: `auto-${i}` });
@@ -392,7 +415,8 @@ export function projectId(areaPath: string, rulebook: string): string {
  * explanations and changes.
  */
 export const AUTODESIGN_STEPS: Array<{ tool: string; label: string }> = [
-  { tool: "import_osm", label: "Import the area and map" },
+  { tool: "import_osm", label: "Import the project's data" },
+  { tool: "check_inputs", label: "Check the data" },
   { tool: "build_twin", label: "Build the street twin" },
   { tool: "set_pop", label: "Place the POP" },
   { tool: "cluster_homes", label: "Place FATs" },

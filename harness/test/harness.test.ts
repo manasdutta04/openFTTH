@@ -37,6 +37,7 @@ before(async () => {
       approvalTimeoutMs: 5_000,
       maxHops: 3,
       folkEngine: { kind: "claude", command: process.execPath, args: [join(import.meta.dirname, "fake-claude.mjs")] },
+      engine: { command: [process.execPath, join(import.meta.dirname, "fake-engine.mjs")], cwd: import.meta.dirname, rulebook: "generic-gpon" },
     },
     driverFactory: claudeDriverFactory,
     engineAttachUrl: fakeEngineUrl,
@@ -293,6 +294,35 @@ test("automatic design needs a map extract", async () => {
   const res = await api("/api/project/autodesign", { method: "POST" });
   assert.equal(res.status, 400);
   assert.match((await body(res)).error, /map extract/);
+});
+
+test("import: files are inspected, a profile is saved and checked, and a project opens from it", async () => {
+  const area = join(repo, "fixtures", "gent", "area.geojson");
+  const inspected = await body(api("/api/import/inspect", { method: "POST", body: JSON.stringify({ paths: [area, "C:/data/adressen.csv"] }) }));
+  assert.equal(inspected.layers.length, 2);
+  assert.deepEqual(inspected.profile.bindings.map((b: any) => b.role), ["area", "addresses"]);
+  assert.equal(inspected.roles.area.label, "Design area");
+
+  const bad = await api("/api/import/profile", { method: "POST", body: JSON.stringify({ name: "no area", profile: { ...inspected.profile, bindings: [] } }) });
+  assert.equal(bad.status, 422);
+  assert.match((await body(bad)).error, /no design area/);
+
+  const saved = await body(api("/api/import/profile", { method: "POST", body: JSON.stringify({ name: "Lambert test", profile: inspected.profile }) }));
+  assert.equal(saved.report.level, "ok");
+  assert.match(saved.path, /Lambert-test\.yaml$/);
+  assert.equal(saved.report.profile, "Lambert-test");
+  const listed = await body(api("/api/import/profiles"));
+  assert.ok(listed.some((p: any) => p.name === "Lambert-test"));
+
+  // Reopening from Recent names the profile as the area: it is still a profile project.
+  const res = await api("/api/project", { method: "POST", body: JSON.stringify({ area_path: saved.path, rulebook: "generic-gpon" }) });
+  const meta = await body(res);
+  assert.equal(res.status, 201, JSON.stringify(meta));
+  assert.equal(meta.profilePath, saved.path);
+  const crew = await body(api("/api/crew"));
+  assert.ok(crew.members.find((m: any) => m.key === "surveyor").tools.includes("import_data"));
+  // Back to the classic project the other tests use.
+  await api("/api/project", { method: "POST", body: JSON.stringify({ area_path: join(repo, "fixtures", "gent", "area.geojson"), rulebook: "generic-gpon" }) });
 });
 
 test("tool activity says where a tool acts, and only that", async () => {

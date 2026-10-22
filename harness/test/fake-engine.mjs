@@ -6,6 +6,25 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 const argv = process.argv.slice(2);
+
+// One-shot CLI commands: `inspect --json PATHS…` and `profile-check PATH --json`.
+if (argv[0] === "inspect") {
+  const paths = argv.slice(1).filter((a) => !a.startsWith("--"));
+  const layers = paths.map((p) => ({ path: p, layer: p.replace(/^.*[\/]|\.[^.]+$/g, ""), geometry: p.endsWith(".csv") ? "None" : "Polygon", count: 3, crs: p.endsWith(".csv") ? null : "EPSG:4326", columns: ["id", "x", "y"], samples: {}, note: "" }));
+  const bindings = layers.map((l, i) => ({ path: l.path, layer: null, role: i === 0 ? "area" : "addresses", crs: null, x: l.geometry === "None" ? "x" : null, y: l.geometry === "None" ? "y" : null, columns: { id: "id" }, values: {} }));
+  process.stdout.write("reading…\n" + JSON.stringify({ layers, profile: { format: "openftth.import", version: 1, name: "proposed", description: "", bindings }, roles: { area: { label: "Design area", fields: ["name"] } } }) + "\n");
+  process.exit(0);
+}
+if (argv[0] === "profile-check") {
+  const { readFileSync } = await import("node:fs");
+  const profile = JSON.parse(readFileSync(argv[1], "utf8"));
+  if (!profile.bindings.some((b) => b.role === "area")) {
+    process.stderr.write("Traceback (most recent call last):\nValueError: the profile has no design area\n");
+    process.exit(1);
+  }
+  process.stdout.write(JSON.stringify({ level: "ok", counts: { addresses: 3 }, issues: [], profile: profile.name }) + "\n");
+  process.exit(0);
+}
 const port = Number(argv[argv.indexOf("--port") + 1] ?? 0);
 const project = argv[argv.indexOf("--project") + 1] ?? "?";
 

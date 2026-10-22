@@ -132,6 +132,7 @@ export class FolkMemory {
 export interface ProjectInputs {
   areaPath: string;
   osmPath: string | null;
+  profilePath?: string | null;
   rulebook: string;
 }
 
@@ -147,10 +148,18 @@ export function systemPrompt(crew: Crew, member: CrewMember, memory: string, eng
     ...(project
       ? [
           "## Project",
-          `Design area polygon: ${project.areaPath}`,
-          `Map extract (OpenStreetMap .osm): ${project.osmPath ?? "none given"}`,
-          `Rulebook: ${project.rulebook}`,
-          "These are the project's inputs. Surveyor's `import_osm` takes exactly these two paths; never search the disk for files or ask the user for paths you already have here. Only Surveyor imports; everyone else hands the import to @Surveyor.",
+          ...(project.profilePath
+            ? [
+                `Import profile: ${project.profilePath}`,
+                `Rulebook: ${project.rulebook}`,
+                "The project's data sources are named in this import profile. Surveyor imports them with `import_data(profile_path=...)` and reports `check_inputs`; never search the disk for files or ask the user for paths you already have here. Only Surveyor imports; everyone else hands the import to @Surveyor.",
+              ]
+            : [
+                `Design area polygon: ${project.areaPath}`,
+                `Map extract (OpenStreetMap .osm): ${project.osmPath ?? "none given"}`,
+                `Rulebook: ${project.rulebook}`,
+                "These are the project's inputs. Surveyor's `import_osm` takes exactly these two paths (with no extract, `fetch_osm(area_path)` downloads one first); never search the disk for files or ask the user for paths you already have here. Only Surveyor imports; everyone else hands the import to @Surveyor.",
+              ]),
           "",
         ]
       : []),
