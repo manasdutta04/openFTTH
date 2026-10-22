@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import geopandas as gpd
+import networkx as nx
 import osmnx as ox
 import pandas as pd
 from shapely.geometry import MultiPolygon, Polygon
@@ -52,12 +53,15 @@ EXCLUDED_TAGS = {
 MIN_HOME_FOOTPRINT_M2 = 30.0
 MAX_YES_FOOTPRINT_M2 = 400.0
 STREET_BUFFER_M = 200.0
+MAX_STREET_BUFFER_M = 1600.0
+STREET_PIECES_MAX = 0.05  # share of street vertices allowed off the main connected piece
 
 
 @dataclass
 class OsmData:
     streets: gpd.GeoDataFrame  # EPSG:4326 LineStrings with `highway`, `surface`, `osm_id`
     buildings: gpd.GeoDataFrame  # EPSG:4326 Polygons with `building`, `levels`, `flats`, `osm_id`
+    street_margin_m: float = 0.0  # how far beyond the area streets were kept
 
 
 def import_osm(path: str | Path, area: Polygon | MultiPolygon | None = None) -> OsmData:
@@ -85,18 +89,55 @@ def import_osm(path: str | Path, area: Polygon | MultiPolygon | None = None) -> 
         buildings[dst] = buildings[src] if src in buildings.columns else None
     buildings = buildings[list(cols.values()) + ["osm_id", "geometry"]].copy()
 
+    margin = 0.0
     if area is not None:
         # Keep streets a little beyond the area so homes on its edge can snap to the street
-        # they actually face (which may lie just outside the polygon).
-        area_s = gpd.GeoSeries([area], crs=4326)
-        utm = area_s.estimate_utm_crs()
-        street_zone = area_s.to_crs(utm).buffer(STREET_BUFFER_M).to_crs(4326).iloc[0]
-        streets = streets[streets.intersects(street_zone)].copy()
+        # they actually face (which may lie just outside the polygon), and widen that margin
+        # when the streets only join up outside it.
+        streets, margin = streets_around(streets, area)
         buildings = buildings[buildings.representative_point().within(area)].copy()
 
     return OsmData(
-        streets=streets.reset_index(drop=True), buildings=buildings.reset_index(drop=True)
+        streets=streets.reset_index(drop=True),
+        buildings=buildings.reset_index(drop=True),
+        street_margin_m=margin,
     )
+
+
+def off_main_share(streets: gpd.GeoDataFrame) -> float:
+    """Share of street vertices outside the largest connected piece (0 when it is one piece)."""
+    if streets.empty:
+        return 0.0
+    utm = streets.estimate_utm_crs()
+    g = nx.Graph()
+    for geom in streets.to_crs(utm).geometry:
+        for line in getattr(geom, "geoms", [geom]):
+            cs = [(round(x, 2), round(y, 2)) for x, y, *_ in line.coords]
+            g.add_edges_from(zip(cs[:-1], cs[1:], strict=False))
+    if g.number_of_nodes() == 0:
+        return 0.0
+    main = max(len(c) for c in nx.connected_components(g))
+    return 1.0 - main / g.number_of_nodes()
+
+
+def streets_around(
+    streets: gpd.GeoDataFrame, area: Polygon | MultiPolygon
+) -> tuple[gpd.GeoDataFrame, float]:
+    """The streets within a margin of the area, and that margin in metres.
+
+    The margin starts at STREET_BUFFER_M and doubles (up to MAX_STREET_BUFFER_M) while more than
+    STREET_PIECES_MAX of the network lies in pieces that only connect further out: routing
+    cannot reach homes on those pieces, and they end up with long drops to the main piece.
+    """
+    area_s = gpd.GeoSeries([area], crs=4326)
+    utm = area_s.estimate_utm_crs()
+    margin = STREET_BUFFER_M
+    while True:
+        zone = area_s.to_crs(utm).buffer(margin).to_crs(4326).iloc[0]
+        kept = streets[streets.intersects(zone)].copy()
+        if margin >= MAX_STREET_BUFFER_M or off_main_share(kept) <= STREET_PIECES_MAX:
+            return kept, margin
+        margin *= 2
 
 
 def _features(path: Path, tags: dict) -> gpd.GeoDataFrame:

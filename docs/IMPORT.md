@@ -50,6 +50,14 @@ any street, duplicate address locations, addresses without units, residential bu
 an address, and a street network in pieces (the share of street vertices the routing cannot
 reach). An `error` blocks the design; warnings are for the engineer to read.
 
+Streets are kept 200 m beyond the area, so homes on its edge reach the street they face. When
+the streets inside that margin fall apart into pieces (an area split by a motorway, a railway or
+water, whose streets only join further out), the margin doubles, up to 1,600 m, until no more
+than 5% of the network is cut off, and the import records how far it went. Without that, homes
+on a cut-off piece would get long drops across the barrier, which cannot be built. Crossing
+such a barrier directly is a separate, priced decision (planned with the crossing costs in
+[PLAN-PRODUCT.md](PLAN-PRODUCT.md), phase P2).
+
 ## Profile file
 
 ```yaml

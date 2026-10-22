@@ -67,7 +67,8 @@ def sources(tmp_path_factory, rules):
     # Existing assets: ducts along the five longest streets (2 m beside them), poles on their
     # vertices, and a no-dig zone over the middle of the area.
     lines = osm.streets.to_crs(LAMBERT)
-    lines = lines[lines.geometry.length > 0]
+    inside = gpd.GeoSeries([area], crs=4326).to_crs(LAMBERT).iloc[0]
+    lines = lines[(lines.geometry.length > 0) & lines.within(inside.buffer(50))]
     longest = lines.assign(len=lines.geometry.length).nlargest(5, "len")
     ducts = longest.copy()
     ducts["geometry"] = longest.geometry.offset_curve(2.0)
@@ -242,3 +243,16 @@ def test_inputs_load_identically_twice(sources, rules):
     b = load_inputs(_profile(d, with_assets=True), rules)
     assert list(a.homes["osm_id"]) == list(b.homes["osm_id"])
     assert list(a.streets["osm_id"]) == list(b.streets["osm_id"])
+
+
+def test_the_street_margin_widens_until_the_network_joins_up():
+    from openftth_engine.ingest.osm import STREET_BUFFER_M, STREET_PIECES_MAX, off_main_share
+
+    # The small Gent area is split by a motorway; its streets only join up well beyond it.
+    area = load_area(GENT / "area-small.geojson")
+    osm = import_osm(GENT / "gent.osm", area)
+    assert osm.street_margin_m > STREET_BUFFER_M
+    assert off_main_share(osm.streets) <= STREET_PIECES_MAX
+    # An area whose streets join up inside the usual margin keeps it.
+    whole = import_osm(GENT / "gent.osm", load_area(GENT / "area.geojson"))
+    assert whole.street_margin_m == STREET_BUFFER_M

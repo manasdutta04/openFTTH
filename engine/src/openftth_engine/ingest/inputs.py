@@ -19,7 +19,7 @@ from shapely.ops import unary_union
 
 from ..results import Decision
 from ..rules import Rulebook
-from .osm import STREET_BUFFER_M, homes_from_buildings, import_osm
+from .osm import STREET_BUFFER_M, homes_from_buildings, import_osm, streets_around
 from .profiles import Binding, ImportProfile
 from .sources import read_layer
 
@@ -122,6 +122,16 @@ def load_inputs(profile: ImportProfile, rules: Rulebook) -> Inputs:
         osm = import_osm(b.path, area)
         osm_streets, osm_buildings = osm.streets.copy(), osm.buildings.copy()
         osm_streets["surface_class"] = None
+        if osm.street_margin_m > STREET_BUFFER_M:
+            decisions.append(
+                Decision(
+                    stage="ingest",
+                    tool="import_data",
+                    reason=f"Streets kept up to {osm.street_margin_m:.0f} m beyond the area instead of {STREET_BUFFER_M:.0f} m: nearer in, the street network was in pieces that only join further out, and homes on them could not be routed.",
+                    values={"street_margin_m": osm.street_margin_m},
+                    source="solver",
+                )
+            )
         counts["osm_streets"] = len(osm_streets)
         counts["osm_buildings"] = len(osm_buildings)
 
@@ -131,7 +141,7 @@ def load_inputs(profile: ImportProfile, rules: Rulebook) -> Inputs:
         gdf = _read(b)
         gdf = gdf[gdf.geometry.geom_type.isin(["LineString", "MultiLineString"])]
         gdf = gdf.explode(index_parts=False, ignore_index=True)
-        gdf = gdf[gdf.intersects(street_zone)]
+        gdf, margin = streets_around(gdf, area)
         cls = _col(gdf, b, "class").astype(object)
         highway = [str(c).lower() if str(c).lower() in ROAD_CLASSES else "residential" for c in cls]
         surf = [
@@ -161,8 +171,13 @@ def load_inputs(profile: ImportProfile, rules: Rulebook) -> Inputs:
                     f"; {unknown} without a known road class were treated as residential streets"
                     if unknown
                     else ""
+                )
+                + (
+                    f"; kept up to {margin:.0f} m beyond the area so the network joins up"
+                    if margin > STREET_BUFFER_M
+                    else ""
                 ),
-                values={"streets": len(gdf), "unclassified": unknown},
+                values={"streets": len(gdf), "unclassified": unknown, "street_margin_m": margin},
                 source="assumption" if unknown else "rulebook",
             )
         )
