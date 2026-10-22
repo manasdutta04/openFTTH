@@ -342,10 +342,13 @@ def export_gpkg() -> dict[str, Any]:
 
 
 @mcp.tool()
-def generate_scenarios(n: int = 3, time_limit_s: float = 10.0) -> dict[str, Any]:
-    """Solve the twin under rulebook variants (baseline, larger-fats, shorter-drops,
-    lean-spares) and price each. Nothing is applied."""
-    return _out(pipeline.generate_scenarios(_s(), n, time_limit_s))
+def generate_scenarios(
+    n: int = 3, time_limit_s: float = 10.0, names: list[str] | None = None
+) -> dict[str, Any]:
+    """Solve the twin under rulebook variants and price each; nothing is applied. Variants:
+    baseline, larger-fats, shorter-drops, lean-spares, and the architectures centralised,
+    cascaded and point-to-point. `names` picks which; otherwise the first `n`."""
+    return _out(pipeline.generate_scenarios(_s(), n, time_limit_s, names))
 
 
 @mcp.tool()

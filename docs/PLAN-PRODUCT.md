@@ -23,6 +23,7 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
 - Multiple POPs/OLT sites (given or chosen), POP catchment split.
   *Done:* POPs by capacity, count or given sites, capacitated catchments, feeder and fibres per POP.
 - Architectures: centralised split (today), cascaded split (rulebook `pon.cascade` exists), point-to-point; XGS-PON budgets.
+  *Done:* centralised, cascaded (second stage in the FATs) and point-to-point, priced side by side as scenarios. XGS-PON budgets still to do.
 - Route types by rulebook and data: underground trench, existing duct reuse (preferred by cost), aerial on poles, façade along building fronts with wall distribution points and façade→underground transitions; each choice priced and explained.
 - Phasing: take-rate and build phases (design all, build by phase), BOQ per phase.
 - Constraints: crossings (rail/water/major road) with permit cost, max cabinet fill per operator pack, keep-outs.

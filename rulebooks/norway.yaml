@@ -14,6 +14,8 @@ pon:
   max_differential_db: 15.0
   split_ratio: 32
   cascade: [4, 8]           # assumed: L1 1:4 in the FDH, L2 1:8 in the FAT
+  architecture: cascaded   # centralised, cascaded (second split in the FATs) or p2p
+  p2p_budget_db: 14         # point-to-point optics (1000BASE-BX20 class), used when p2p
   worst_case_nm: 1310
 
 fibers:

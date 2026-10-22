@@ -1034,19 +1034,51 @@ def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
     )
 
 
+def _extra_splices(r: Rulebook) -> int:
+    """Splices a path has beyond FAT, FDH in and FDH out: the FAT splitter's in a cascade."""
+    return 1 if r.pon.arch() == "cascaded" else 0
+
+
+def _fibres_of(r: Rulebook, fat: Feature) -> int:
+    """Distribution fibres a FAT needs: one per FAT splitter when the split is cascaded, one per
+    unit otherwise."""
+    if r.pon.arch() == "cascaded":
+        return int(fat.openftth.get("splitters") or r.fat_splitters(int(fat.openftth["units"])))
+    return int(fat.openftth["units"])
+
+
 def assign_pon(s: Session) -> ToolResult:
-    """Group homes under each FDH into PONs of ≤ split_ratio units (one splitter each)."""
+    """Group the units under each FDH into PONs: whole FATs into 1:N splitters (centralised),
+    FAT splitters under first-stage splitters (cascaded), or no PONs at all (point-to-point)."""
     s.project.set_stage("solve")
     before = s.design.copy()
     r = s.rules
+    arch = r.pon.arch()
     homes = s.design.by_kind("home")
     fats = {f.element_uuid: f for f in s.design.by_kind("fat")}
+    stages = r.cascade_stages()
     n_pon = 0
+    n_split = 0
+    n_units = 0
     for fdh in s.design.by_kind("fdh"):
         my_fats = sorted(
             (f for f in fats.values() if f.openftth.get("fdh_id") == fdh.element_uuid),
             key=lambda f: f.openftth.get("distribution_est_m", 0.0),
         )
+        if arch == "p2p":
+            units = sum(int(f.openftth["units"]) for f in my_fats)
+            for fat in my_fats:
+                fat.openftth.pop("pon_id", None)
+                fat.openftth.pop("splitters", None)
+            for h in homes:
+                if h.openftth.get("fdh_id") == fdh.element_uuid:
+                    h.openftth.pop("pon_id", None)
+            # One feeder fibre per unit: the FDH is a patch point, not a splitter cabinet.
+            fdh.openftth["pons"] = units
+            fdh.openftth["p2p"] = True
+            n_units += units
+            continue
+        cap = stages[0] if arch == "cascaded" else r.pon.split_ratio
         pon_idx = 0
         load = 0
         pon_id = f"{fdh.props['name']}-PON-{pon_idx + 1:02d}"
@@ -1057,33 +1089,49 @@ def assign_pon(s: Session) -> ToolResult:
                 if fat.element_uuid in (h.openftth.get("fat_ids") or [h.openftth.get("fat_id")])
             ]
             units = int(fat.openftth["units"])
-            if load and load + units > r.pon.split_ratio:
+            need = r.fat_splitters(units) if arch == "cascaded" else units
+            if load and load + need > cap:
                 pon_idx += 1
                 load = 0
                 pon_id = f"{fdh.props['name']}-PON-{pon_idx + 1:02d}"
             fat.openftth["pon_id"] = pon_id
+            if arch == "cascaded":
+                fat.openftth["splitters"] = need
+                n_split += need
+            else:
+                fat.openftth.pop("splitters", None)
             for h in fat_homes:
                 h.openftth["pon_id"] = pon_id
-            load += units
+            load += need
         fdh.openftth["pons"] = pon_idx + 1 if my_fats else 0
+        fdh.openftth.pop("p2p", None)
         n_pon += fdh.openftth["pons"]
-    decisions = [
-        Decision(
-            stage="solve",
-            tool="assign_pon",
-            reason=f"Centralised split: whole FATs are packed into 1:{r.pon.split_ratio} PONs per FDH in order of distance, never splitting a FAT across two splitters (one 1:{r.pon.split_ratio} splitter per PON in the FDH).",
-            values={"pons": n_pon},
-            source="rulebook",
+    if arch == "p2p":
+        reason = (
+            "Point-to-point: no splitters; every unit gets a dedicated fibre from the POP, patched "
+            "through its FDH, so the feeder carries one fibre per unit."
         )
+        summary = f"point-to-point: {n_units} dedicated fibres, no splitters"
+        values: dict[str, Any] = {"pons": 0, "dedicated_fibres": n_units}
+    elif arch == "cascaded":
+        reason = (
+            f"Cascaded split: each FAT gets 1:{stages[1]} splitters for its units, and whole FATs' "
+            f"splitters are packed under 1:{stages[0]} splitters in the FDH in order of distance "
+            f"(one PON per FDH splitter, 1:{r.pon.split_ratio} in all); the distribution cable "
+            "carries one fibre per FAT splitter."
+        )
+        summary = f"{n_pon} PONs (1:{stages[0]} in the FDH × 1:{stages[1]} in the FAT, {n_split} FAT splitters)"
+        values = {"pons": n_pon, "fat_splitters": n_split}
+    else:
+        reason = f"Centralised split: whole FATs are packed into 1:{r.pon.split_ratio} PONs per FDH in order of distance, never splitting a FAT across two splitters (one 1:{r.pon.split_ratio} splitter per PON in the FDH)."
+        summary = f"{n_pon} PONs (1:{r.pon.split_ratio})"
+        values = {"pons": n_pon}
+    decisions = [
+        Decision(stage="solve", tool="assign_pon", reason=reason, values=values, source="rulebook")
     ]
     return _commit(
         s,
-        ToolResult(
-            tool="assign_pon",
-            summary=f"{n_pon} PONs (1:{r.pon.split_ratio})",
-            decisions=decisions,
-            data={"pons": n_pon},
-        ),
+        ToolResult(tool="assign_pon", summary=summary, decisions=decisions, data=values),
         before,
     )
 
@@ -1183,7 +1231,7 @@ def route_distribution(s: Session) -> ToolResult:
         terminals: dict[int, int] = {}
         for f in fats:
             node = int(f.openftth["node"])
-            terminals[node] = terminals.get(node, 0) + int(f.openftth["units"])
+            terminals[node] = terminals.get(node, 0) + _fibres_of(r, f)
         tree = route_tree(
             twin.graph, int(fdh.openftth["node"]), terminals, max_path_m=r.distances.max_dist_m
         )
@@ -1410,7 +1458,7 @@ def route_drops(s: Session) -> ToolResult:
                 if (feeder_tree and fdh)
                 else 0
             )
-            h.openftth["splices_on_path"] = 3 + closures
+            h.openftth["splices_on_path"] = 3 + closures + _extra_splices(s.rules)
             continue
         hn, fn = int(h.openftth["node"]), int(fat.openftth["node"])
         path = _drop_path(twin, hn, fn)
@@ -1440,7 +1488,7 @@ def route_drops(s: Session) -> ToolResult:
             if (feeder_tree and fdh)
             else 0
         )
-        h.openftth["splices_on_path"] = 3 + closures
+        h.openftth["splices_on_path"] = 3 + closures + _extra_splices(s.rules)
         s.design.add(
             Feature(
                 element_uuid=s.uid("cable.underground", f"drop:{h.element_uuid}"),
@@ -1585,7 +1633,7 @@ def validate_design(s: Session) -> ToolResult:
         Decision(
             stage="validate",
             tool="check_rules",
-            reason=f"ODN loss per home = fibre ({s.rules.pon.worst_case_nm} nm) + {s.rules.connectors_on_path()} connectors × {s.rules.loss_db.connector} + splices × {s.rules.loss_db.splice} + splitter {s.rules.splitter_loss():.1f} dB + margin {s.rules.loss_db.margin} dB, checked against class {s.rules.pon.pon_class} budget {s.rules.pon.budget_db} dB and differential {s.rules.pon.max_differential_db} dB per PON.",
+            reason=f"ODN loss per home = fibre ({s.rules.pon.worst_case_nm} nm) + {s.rules.connectors_on_path()} connectors × {s.rules.loss_db.connector} + splices × {s.rules.loss_db.splice} + splitter {s.rules.splitter_loss():.1f} dB + margin {s.rules.loss_db.margin} dB, checked against {'the point-to-point optics budget ' + format(s.rules.budget_db(), 'g') + ' dB' if s.rules.pon.arch() == 'p2p' else 'class ' + str(s.rules.pon.pon_class) + ' budget ' + format(s.rules.budget_db(), 'g') + ' dB and differential ' + format(s.rules.pon.max_differential_db, 'g') + ' dB per PON'}.",
             values=stats,
             source="rulebook",
         )
@@ -1598,7 +1646,7 @@ def validate_design(s: Session) -> ToolResult:
         s,
         ToolResult(
             tool="check_rules",
-            summary=f"{msg}; worst ODN loss {stats.get('worst_db')} dB of {s.rules.pon.budget_db} dB",
+            summary=f"{msg}; worst ODN loss {stats.get('worst_db')} dB of {s.rules.budget_db()} dB",
             decisions=decisions,
             warnings=[f"{v.severity}: {v.message}" for v in violations[:10]],
             data=data,
@@ -1953,6 +2001,151 @@ def size_cables(s: Session) -> ToolResult:
     )
 
 
+def _pass_through(fdh, fdh_node, my_fats, tf, connect, point_for) -> None:
+    """Pass-through splices at every inner node of an FDH's tree: incoming section -> each
+    outgoing section, fibre for fibre."""
+    from .solve.fibers import tube_fiber
+
+    for node, outs in tf.outgoing.items():
+        in_sec = tf.incoming.get(node)
+        if not in_sec or not outs:
+            continue
+        fallback = next(
+            (f.element_uuid for f in my_fats if int(f.openftth["node"]) == node),
+            fdh.element_uuid,
+        )
+        for out_sec in outs:
+            lo, hi = tf.section_range.get(out_sec, (0, -1))
+            for g in range(lo, hi + 1):
+                ti, fi = tube_fiber(tf.local(in_sec, g))
+                to, fo = tube_fiber(tf.local(out_sec, g))
+                connect(
+                    point_for(fdh.element_uuid, node, fallback),
+                    f"{fdh.element_uuid}:thru:{node}:{g}",
+                    source_cable_uuid=in_sec,
+                    source_tube=ti,
+                    source_fiber=fi,
+                    dest_cable_uuid=out_sec,
+                    dest_tube=to,
+                    dest_fiber=fo,
+                )
+
+
+def _cascade_fibres(
+    s, fdh, my_fats, homes_by_fat, drops_by_home, tf, connect, point_for, units_of
+) -> int:
+    """Cascaded fibres under one FDH: a first-stage splitter output per FAT splitter, carried
+    on its own distribution fibre to the FAT, where the FAT splitter's outputs feed the drops.
+    Returns the units served."""
+    from .solve.fibers import tube_fiber
+
+    r = s.rules
+    s1, s2 = r.cascade_stages()
+    stage1, stage2 = r.loss_db.splitter[s1], r.loss_db.splitter[s2]
+    fdh_node = int(fdh.openftth["node"])
+    # First-stage ports: PON order as assign_pon packed the FAT splitters.
+    split_port: dict[tuple[str, int], tuple[str, int]] = {}
+    pon_fill: dict[str, int] = {}
+    for f in sorted(
+        my_fats, key=lambda f: (f.openftth.get("distribution_est_m", 0.0), f.element_uuid)
+    ):
+        pon = f.openftth.get("pon_id", "")
+        for j in range(1, int(f.openftth.get("splitters", 0)) + 1):
+            pon_fill[pon] = pon_fill.get(pon, 0) + 1
+            split_port[(f.element_uuid, j)] = (pon, pon_fill[pon])
+    served = 0
+    for node, (lo, _hi) in sorted(tf.terminal_range.items()):
+        g = lo
+        in_sec = tf.incoming.get(node)
+        for f in sorted(
+            (f for f in my_fats if int(f.openftth["node"]) == node), key=lambda f: f.element_uuid
+        ):
+            f_lo = g
+            slots = [
+                (h, k)
+                for h in sorted(homes_by_fat.get(f.element_uuid, []), key=lambda h: h.element_uuid)
+                for k in range(1, units_of(h, f) + 1)
+            ]
+            for j in range(1, int(f.openftth.get("splitters", 0)) + 1):
+                side = f"{f.props['name']}-SPL-{j:02d}"
+                pon, port = split_port[(f.element_uuid, j)]
+                fat_in = {
+                    "dest_element_uuid": f.element_uuid,
+                    "dest_port": j,
+                    "dest_side": f"{side} splitter in",
+                }
+                out_sec = _section_carrying(tf, fdh_node, g)
+                if out_sec:
+                    t, fb = tube_fiber(tf.local(out_sec, g))
+                    connect(
+                        point_for(fdh.element_uuid, fdh_node, fdh.element_uuid),
+                        f"{fdh.element_uuid}:fdh:{g}",
+                        source_element_uuid=fdh.element_uuid,
+                        source_port=port,
+                        source_side=pon,
+                        dest_cable_uuid=out_sec,
+                        dest_tube=t,
+                        dest_fiber=fb,
+                        connection_type="splitter",
+                        loss_db=stage1,
+                    )
+                if in_sec:
+                    t, fb = tube_fiber(tf.local(in_sec, g))
+                    connect(
+                        point_for(fdh.element_uuid, node, f.element_uuid),
+                        f"{fdh.element_uuid}:fat:{g}",
+                        source_cable_uuid=in_sec,
+                        source_tube=t,
+                        source_fiber=fb,
+                        **fat_in,
+                    )
+                elif node == fdh_node:
+                    # FAT standing at the FDH: first-stage output patched to the FAT splitter.
+                    connect(
+                        point_for(fdh.element_uuid, node, fdh.element_uuid),
+                        f"{fdh.element_uuid}:fat:{g}",
+                        source_element_uuid=fdh.element_uuid,
+                        source_port=port,
+                        source_side=pon,
+                        connection_type="splitter",
+                        loss_db=stage1,
+                        **fat_in,
+                    )
+                for k, (h, unit) in enumerate(slots[(j - 1) * s2 : j * s2], start=1):
+                    drop = drops_by_home.get(h.element_uuid)
+                    if drop is not None and not h.openftth.get("mdu"):
+                        dest = {
+                            "dest_cable_uuid": drop.element_uuid,
+                            "dest_tube": 1,
+                            "dest_fiber": unit,
+                        }
+                    else:
+                        dest = {
+                            "dest_element_uuid": f.element_uuid,
+                            "dest_port": unit,
+                            "dest_side": "indoor",
+                        }
+                    connect(
+                        point_for(fdh.element_uuid, node, f.element_uuid),
+                        f"{f.element_uuid}:spl:{j}:{k}",
+                        source_element_uuid=f.element_uuid,
+                        source_port=k,
+                        source_side=side,
+                        connection_type="splitter",
+                        loss_db=stage2,
+                        **dest,
+                    )
+                    if unit == 1:
+                        h.openftth.update({"fat_splitter": j, "splitter_port": k})
+                g += 1
+            for h in {h.element_uuid: h for h, _ in slots}.values():
+                h.openftth.pop("fiber_start", None)
+                h.openftth.pop("fiber_end", None)
+            served += len(slots)
+            f.openftth.update({"fiber_start": f_lo, "fiber_end": g - 1})
+    return served
+
+
 def assign_fibers(s: Session) -> ToolResult:
     """Give every unit its fibre: splitter port in the FDH, fibre/tube on each distribution
     section, drop fibre at the home; feeder fibre per PON. Writes the splice_point and
@@ -2020,6 +2213,7 @@ def assign_fibers(s: Session) -> ToolResult:
         return int(f.openftth["units"]) if h.openftth.get("mdu") else int(h.openftth["units"])
 
     # ---- distribution: one tree per FDH ---------------------------------------------------
+    arch = r.pon.arch()
     units_total = 0
     for fdh in s.design.by_kind("fdh"):
         fdh_node = int(fdh.openftth["node"])
@@ -2039,7 +2233,7 @@ def assign_fibers(s: Session) -> ToolResult:
         demand_at: dict[int, int] = {}
         for f in my_fats:
             node = int(f.openftth["node"])
-            demand_at[node] = demand_at.get(node, 0) + int(f.openftth["units"])
+            demand_at[node] = demand_at.get(node, 0) + _fibres_of(r, f)
         tf = assign_tree_fibers(fdh_node, fsecs, demand_at)
         for c in secs:
             lo, hi = tf.section_range.get(c.element_uuid, (0, -1))
@@ -2049,17 +2243,29 @@ def assign_fibers(s: Session) -> ToolResult:
                 c.props.get("cable_count", 1)
             ):
                 c.openftth["undersized"] = True
-        # Splitter ports: PON order as assign_pon used (FATs by distribution distance), homes by id.
+        if arch == "cascaded":
+            units_total += _cascade_fibres(
+                s, fdh, my_fats, homes_by_fat, drops_by_home, tf, connect, point_for, units_of
+            )
+            _pass_through(fdh, fdh_node, my_fats, tf, connect, point_for)
+            continue
+        # Splitter ports: PON order as assign_pon used (FATs by distribution distance), homes by
+        # id. Point-to-point has no PONs: every unit has its own patch port in the FDH.
         port_of: dict[tuple[str, str, int], tuple[str, int]] = {}
         pon_fill: dict[str, int] = {}
         for f in sorted(
             my_fats, key=lambda f: (f.openftth.get("distribution_est_m", 0.0), f.element_uuid)
         ):
-            pon = f.openftth.get("pon_id", "")
+            pon = "ODP" if arch == "p2p" else f.openftth.get("pon_id", "")
             for h in sorted(homes_by_fat.get(f.element_uuid, []), key=lambda h: h.element_uuid):
                 for k in range(1, units_of(h, f) + 1):
                     pon_fill[pon] = pon_fill.get(pon, 0) + 1
                     port_of[(f.element_uuid, h.element_uuid, k)] = (pon, pon_fill[pon])
+        at_fdh = (
+            {"connection_type": "patch", "loss_db": r.loss_db.connector}
+            if arch == "p2p"
+            else {"connection_type": "splitter", "loss_db": r.splitter_loss()}
+        )
         # Terminal ranges -> FATs -> homes -> units.
         for node, (lo, _hi) in sorted(tf.terminal_range.items()):
             g = lo
@@ -2100,8 +2306,7 @@ def assign_fibers(s: Session) -> ToolResult:
                                 dest_cable_uuid=out_sec,
                                 dest_tube=t,
                                 dest_fiber=fb,
-                                connection_type="splitter",
-                                loss_db=r.splitter_loss(),
+                                **at_fdh,
                             )
                         if in_sec:
                             t, fb = tube_fiber(tf.local(in_sec, g))
@@ -2121,8 +2326,7 @@ def assign_fibers(s: Session) -> ToolResult:
                                 source_element_uuid=fdh.element_uuid,
                                 source_port=port,
                                 source_side=pon,
-                                connection_type="splitter",
-                                loss_db=r.splitter_loss(),
+                                **at_fdh,
                                 **dest,
                             )
                         g += 1
@@ -2131,35 +2335,14 @@ def assign_fibers(s: Session) -> ToolResult:
                             {
                                 "fiber_start": h_lo,
                                 "fiber_end": g - 1,
-                                "splitter_port": port_of[(f.element_uuid, h.element_uuid, 1)][1],
+                                ("patch_port" if arch == "p2p" else "splitter_port"): port_of[
+                                    (f.element_uuid, h.element_uuid, 1)
+                                ][1],
                             }
                         )
                     units_total += k_units
                 f.openftth.update({"fiber_start": f_lo, "fiber_end": g - 1})
-        # Pass-through splices at every inner node: incoming section -> each outgoing section.
-        for node, outs in tf.outgoing.items():
-            in_sec = tf.incoming.get(node)
-            if not in_sec or not outs:
-                continue
-            fallback = next(
-                (f.element_uuid for f in my_fats if int(f.openftth["node"]) == node),
-                fdh.element_uuid,
-            )
-            for out_sec in outs:
-                lo, hi = tf.section_range.get(out_sec, (0, -1))
-                for g in range(lo, hi + 1):
-                    ti, fi = tube_fiber(tf.local(in_sec, g))
-                    to, fo = tube_fiber(tf.local(out_sec, g))
-                    connect(
-                        point_for(fdh.element_uuid, node, fallback),
-                        f"{fdh.element_uuid}:thru:{node}:{g}",
-                        source_cable_uuid=in_sec,
-                        source_tube=ti,
-                        source_fiber=fi,
-                        dest_cable_uuid=out_sec,
-                        dest_tube=to,
-                        dest_fiber=fo,
-                    )
+        _pass_through(fdh, fdh_node, my_fats, tf, connect, point_for)
 
     # ---- feeder: one fibre per PON ---------------------------------------------------------
     pops = _pops(s)
@@ -2214,6 +2397,11 @@ def assign_fibers(s: Session) -> ToolResult:
                             connection_type="patch",
                             loss_db=r.loss_db.connector,
                         )
+                    in_side = (
+                        "ODP in"
+                        if r.pon.arch() == "p2p"
+                        else f"{f.props['name']}-PON-{p:02d} splitter in"
+                    )
                     if in_sec:
                         t, fb = tube_fiber(tf.local(in_sec, g))
                         connect(
@@ -2224,7 +2412,7 @@ def assign_fibers(s: Session) -> ToolResult:
                             source_fiber=fb,
                             dest_element_uuid=f.element_uuid,
                             dest_port=p,
-                            dest_side=f"{f.props['name']}-PON-{p:02d} splitter in",
+                            dest_side=in_side,
                         )
                     elif node == pop_node:
                         # FDH standing at the POP: OLT port patched straight to the splitter.
@@ -2236,7 +2424,7 @@ def assign_fibers(s: Session) -> ToolResult:
                             source_side="OLT",
                             dest_element_uuid=f.element_uuid,
                             dest_port=p,
-                            dest_side=f"{f.props['name']}-PON-{p:02d} splitter in",
+                            dest_side=in_side,
                             connection_type="patch",
                             loss_db=r.loss_db.connector,
                         )
@@ -2406,15 +2594,23 @@ def _run_chain(s: Session, time_limit_s: float) -> list[ToolResult]:
     return out
 
 
-def generate_scenarios(s: Session, n: int = 3, time_limit_s: float = 10.0) -> ToolResult:
-    """Solve the current twin under rulebook variants and price each; nothing is applied."""
+def generate_scenarios(
+    s: Session, n: int = 3, time_limit_s: float = 10.0, names: list[str] | None = None
+) -> ToolResult:
+    """Solve the current twin under rulebook variants and price each; nothing is applied.
+    `names` picks the variants (e.g. the architectures); otherwise the first `n`."""
     import tempfile
 
     from .solve.scenarios import SCENARIOS, apply_overrides, resolve_overrides
 
     _twin(s)
     s.project.set_stage("solve")
-    names = list(SCENARIOS)[: max(1, n)]
+    unknown = [x for x in names or [] if x not in SCENARIOS]
+    if unknown:
+        return _rejected(
+            "generate_scenarios", f"no scenario {', '.join(unknown)}; known: {', '.join(SCENARIOS)}"
+        )
+    names = list(names) if names else list(SCENARIOS)[: max(1, n)]
     table: list[dict[str, Any]] = []
     for name in names:
         overrides = resolve_overrides(s.rules, SCENARIOS[name])

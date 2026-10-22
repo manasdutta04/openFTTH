@@ -136,7 +136,10 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
         )
     pons = {h.openftth.get("pon_id") for h in design.by_kind("home") if h.openftth.get("pon_id")}
     stages = rules.cascade_stages()
-    if len(stages) == 1:
+    arch = rules.pon.arch()
+    if arch == "p2p":
+        pass  # no splitters: each unit's fibre is patched through to its own POP port
+    elif len(stages) == 1:
         add(
             "passives",
             f"splitter 1:{stages[0]}",
@@ -155,7 +158,7 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
         add(
             "passives",
             f"splitter 1:{stages[1]} (FAT)",
-            len(fats),
+            sum(int(f.openftth.get("splitters", 1)) for f in fats),
             "pc",
             getattr(rules.units, f"splitter_1_{stages[1]}", rules.units.splitter_1_8),
         )
@@ -172,19 +175,24 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
             "pc",
             getattr(rules.units, f"closure_{size}", rules.units.closure_288),
         )
-    add("passives", "ODF ports", len(pons), "port", rules.units.odf_per_port)
+    units = sum(int(h.openftth.get("units", 1)) for h in design.by_kind("home"))
+    if arch == "p2p":
+        add("passives", "ODF ports", units, "port", rules.units.odf_per_port, "one per unit")
+    else:
+        add("passives", "ODF ports", len(pons), "port", rules.units.odf_per_port)
 
     # ---- labour -------------------------------------------------------------------------
-    units = sum(int(h.openftth.get("units", 1)) for h in design.by_kind("home"))
-    splices = units * 2 + len(pons)  # drop@FAT + distribution@FDH per unit, feeder@FDH per PON
-    add(
-        "labour",
-        "fusion splice",
-        splices,
-        "pc",
-        rules.labour.splice,
-        "2 per unit (FAT, FDH) + 1 per PON at the FDH",
-    )
+    if arch == "p2p":
+        splices = units * 3  # drop@FAT, distribution@FDH and feeder@FDH, all per unit
+        why = "3 per unit: FAT, FDH (distribution) and FDH (feeder)"
+    elif arch == "cascaded":
+        fat_splitters = sum(int(f.openftth.get("splitters", 1)) for f in fats)
+        splices = units + 2 * fat_splitters + len(pons)
+        why = "1 per unit at the FAT splitter + 2 per FAT splitter (its input at the FAT, its fibre at the FDH) + 1 per PON at the FDH"
+    else:
+        splices = units * 2 + len(pons)  # drop@FAT + distribution@FDH per unit, feeder@FDH per PON
+        why = "2 per unit (FAT, FDH) + 1 per PON at the FDH"
+    add("labour", "fusion splice", splices, "pc", rules.labour.splice, why)
     add("labour", "OTDR test", units, "pc", rules.labour.otdr_test)
     add("labour", "FAT install", len(fats), "pc", rules.labour.fat_install)
     add("labour", "FDH install", len(fdhs), "pc", rules.labour.fdh_install)

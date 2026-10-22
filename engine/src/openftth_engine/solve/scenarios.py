@@ -22,6 +22,14 @@ SCENARIOS: dict[str, dict[str, Override | Any]] = {
     "lean-spares": {
         "fibers.spare_pct": lambda r: max(5.0, r.fibers.spare_pct / 2),
     },
+    # Architectures: the same area with one splitter per PON in the FDH, a two-stage cascade
+    # (the second stage in the FATs), or a dedicated fibre per unit.
+    "centralised": {"pon.architecture": "centralised", "pon.cascade": None},
+    "cascaded": {
+        "pon.architecture": "cascaded",
+        "pon.cascade": lambda r: [4, r.pon.split_ratio // 4],
+    },
+    "point-to-point": {"pon.architecture": "p2p", "pon.cascade": None},
 }
 
 

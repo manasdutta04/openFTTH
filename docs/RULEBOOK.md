@@ -66,3 +66,18 @@ POP, keeping each within its capacity and the homes as close to their POP as the
 allow. A FAT belongs to the POP most of its units belong to; cabinets are placed within each
 catchment, so none is fed from two POPs; each POP routes its own feeder tree and numbers its
 own fibres. The elements carry `pop_id`, and a trace from any home ends at its own POP.
+
+## Architectures (solve)
+
+`pon.architecture` chooses how homes share fibre; `generate_scenarios` with
+`names=["centralised", "cascaded", "point-to-point"]` prices all three on the same area.
+
+- **centralised**: one 1:`split_ratio` splitter per PON in the FDH; whole FATs are packed into
+  PONs; the distribution cable carries one fibre per unit.
+- **cascaded** (`cascade: [s1, s2]`): a 1:s1 splitter per PON in the FDH and 1:s2 splitters in
+  each FAT (as many as its units need). The distribution cable carries one fibre per FAT
+  splitter, so it is much thinner; each path passes both splitters, and the trace shows the
+  loss of each stage.
+- **p2p**: no splitters. Every unit has its own fibre from the POP, patched through its FDH, so
+  the feeder carries one fibre per unit and the POP needs a port per unit. Paths are checked
+  against `p2p_budget_db` instead of the PON class budget.

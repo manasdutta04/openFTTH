@@ -13,6 +13,8 @@ pon:
   max_differential_db: 15.0 # source: G.984.2 max differential optical path loss
   split_ratio: 32           # assumed: most common residential design
   cascade: null             # centralised split in the FDH
+  architecture: null          # follows cascade (centralised without one); or cascaded, p2p
+  p2p_budget_db: 14         # point-to-point optics (1000BASE-BX20 class), used when p2p
   worst_case_nm: 1310       # source: upstream wavelength has the highest attenuation
 
 fibers:

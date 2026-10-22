@@ -74,6 +74,9 @@ def build_connectivity(design: Design) -> Connectivity:
             c.rows_at[holder].append(row)
         if row.get("connection_type") == "splitter":
             splitter_outputs[(a[0], a[1])].add(a[2])
+        if a[1] == "ODP":
+            # A point-to-point patch point: its "ODP in" port p is its "ODP" port p.
+            c.add((a[0], "ODP in", a[2]), a, None)
     # Splitter internals: "<PON> splitter in" port p feeds every output port of that PON.
     for (fdh, pon), ports in sorted(splitter_outputs.items()):
         try:

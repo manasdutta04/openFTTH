@@ -159,12 +159,12 @@ def check_power_budget(design: Design, rules: Rulebook) -> tuple[list[Violation]
         pon = home.openftth.get("pon_id")
         if pon:
             per_pon.setdefault(pon, []).append(loss["total"])
-        if loss["total"] > rules.pon.budget_db:
+        if loss["total"] > rules.budget_db():
             out.append(
                 Violation(
                     "power_budget",
                     home.element_uuid,
-                    f"ODN loss {loss['total']:.1f} dB > budget {rules.pon.budget_db:g} dB",
+                    f"ODN loss {loss['total']:.1f} dB > budget {rules.budget_db():g} dB",
                     loss,
                 )
             )
@@ -183,7 +183,7 @@ def check_power_budget(design: Design, rules: Rulebook) -> tuple[list[Violation]
         "homes": n,
         "worst_db": round(worst, 2),
         "best_db": round(best, 2) if n else None,
-        "budget_db": rules.pon.budget_db,
+        "budget_db": rules.budget_db(),
         "min_loss_db": rules.pon.min_loss_db,
         # The homes behind the extremes, so "which home is worst?" has an answer.
         "worst_home": worst_home,

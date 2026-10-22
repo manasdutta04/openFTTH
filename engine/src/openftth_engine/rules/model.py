@@ -36,8 +36,31 @@ class Pon(StrictModel):
     worst_case_nm: Literal[1310, 1490, 1550] = Field(
         1310, description="Wavelength used for the worst-case budget check"
     )
+    architecture: Literal["centralised", "cascaded", "p2p"] | None = Field(
+        None,
+        description="centralised: one splitter per PON in the FDH; cascaded: `cascade` stages, the "
+        "first in the FDH and the second in each FAT; p2p: no splitters, one fibre per unit from "
+        "the POP. Left out, it follows `cascade`.",
+    )
+    p2p_budget_db: float = Field(
+        14.0,
+        description="Loss budget of point-to-point optics (1000BASE-BX20 class); used instead of "
+        "budget_db when the architecture is p2p",
+    )
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    def arch(self) -> str:
+        """The architecture in force: the one named, or what `cascade` implies."""
+        return self.architecture or ("cascaded" if self.cascade else "centralised")
+
+    @model_validator(mode="after")
+    def _architecture_matches_cascade(self) -> Pon:
+        if self.architecture == "cascaded" and (not self.cascade or len(self.cascade) != 2):
+            raise ValueError("a cascaded architecture needs two `cascade` stages, e.g. [4, 8]")
+        if self.architecture == "centralised" and self.cascade:
+            raise ValueError("a centralised architecture has no `cascade`; set it to null")
+        return self
 
     @model_validator(mode="after")
     def _cascade_matches_ratio(self) -> Pon:
@@ -280,9 +303,22 @@ class Rulebook(StrictModel):
     # ---- derived helpers used by solvers/validators -------------------------------------
 
     def splitter_loss(self) -> float:
-        """Total splitter loss on one path, from the cascade or the single split ratio."""
+        """Total splitter loss on one path, from the cascade or the single split ratio (none for
+        point-to-point)."""
+        if self.pon.arch() == "p2p":
+            return 0.0
         stages = self.cascade_stages()
         return sum(self.loss_db.splitter[s] for s in stages)
+
+    def budget_db(self) -> float:
+        """The loss budget a path is checked against: the PON class, or the p2p optics."""
+        return self.pon.p2p_budget_db if self.pon.arch() == "p2p" else self.pon.budget_db
+
+    def fat_splitters(self, units: int) -> int:
+        """Second-stage splitters a FAT needs in a cascaded design (none otherwise)."""
+        if self.pon.arch() != "cascaded" or units <= 0:
+            return 0
+        return -(-units // self.cascade_stages()[1])
 
     def cascade_stages(self) -> list[int]:
         return list(self.pon.cascade) if self.pon.cascade else [self.pon.split_ratio]

@@ -487,6 +487,30 @@
           ],
           "title": "Worst Case Nm",
           "type": "integer"
+        },
+        "architecture": {
+          "anyOf": [
+            {
+              "enum": [
+                "centralised",
+                "cascaded",
+                "p2p"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "centralised: one splitter per PON in the FDH; cascaded: `cascade` stages, the first in the FDH and the second in each FAT; p2p: no splitters, one fibre per unit from the POP. Left out, it follows `cascade`.",
+          "title": "Architecture"
+        },
+        "p2p_budget_db": {
+          "default": 14.0,
+          "description": "Loss budget of point-to-point optics (1000BASE-BX20 class); used instead of budget_db when the architecture is p2p",
+          "title": "P2P Budget Db",
+          "type": "number"
         }
       },
       "title": "Pon",
@@ -743,7 +767,9 @@
         "max_differential_db": 15.0,
         "split_ratio": 32,
         "cascade": null,
-        "worst_case_nm": 1310
+        "worst_case_nm": 1310,
+        "architecture": null,
+        "p2p_budget_db": 14.0
       }
     },
     "fibers": {

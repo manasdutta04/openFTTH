@@ -14,6 +14,8 @@ pon:
   max_differential_db: 15.0
   split_ratio: 32           # assumed: Flemish operators commonly use 1:32 centralised
   cascade: null
+  architecture: null          # follows cascade (centralised without one); or cascaded, p2p
+  p2p_budget_db: 14         # point-to-point optics (1000BASE-BX20 class), used when p2p
   worst_case_nm: 1310
 
 fibers:
