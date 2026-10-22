@@ -22,5 +22,9 @@ anyhow = { workspace = true }
 rand = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+[target.'cfg(windows)'.dependencies]
+# AI keys live in Windows Credential Manager (encrypted for the signed-in user), never in a file.
+keyring = { version = "3", features = ["windows-native"] }
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { tmpdir } from "node:os";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { OpenAiCompatDriver } from "../src/drivers/openai.ts";
 import { CodexCliDriver } from "../src/drivers/codex.ts";
 import { AcpDriver } from "../src/drivers/acp.ts";
@@ -158,10 +158,22 @@ test("engine settings persist per kind and resolve keys from the environment", a
   e.set({ kind: "claude" });
   const again = new Engines(dir, { kind: "claude", command: "claude" });
   assert.equal(again.resolved("openrouter").model, "openai/gpt-5", "settings survive a restart");
+  assert.equal(again.resolved("openrouter").apiKey, null, "a key never survives in the file");
+  assert.ok(!readFileSync(join(dir, "engines.json"), "utf8").includes("sk-test"), "keys are never written to disk");
   assert.throws(() => e.set({ kind: "nope" }));
   const list = await e.list();
   assert.equal(list.length, 6);
   assert.ok(list.every((i) => typeof i.available === "boolean" && typeof i.detail === "string"));
+});
+
+test("a key an older version saved in engines.json is handed over once and then removed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "openftth-eng-"));
+  writeFileSync(join(dir, "engines.json"), JSON.stringify({ current: "openrouter", settings: { openrouter: { model: "m", apiKey: "sk-old" } } }));
+  const e = new Engines(dir, { kind: "claude", command: "claude" });
+  assert.equal(e.current().apiKey, "sk-old", "it still works this run");
+  assert.deepEqual(e.takeLegacyKeys(), { openrouter: "sk-old" });
+  assert.ok(!readFileSync(join(dir, "engines.json"), "utf8").includes("sk-old"));
+  assert.equal(new Engines(dir, { kind: "claude", command: "claude" }).current().model, "m");
 });
 
 test("the ACP driver hands over MCP servers, streams updates and routes risky permissions to a card", async () => {
@@ -189,5 +201,8 @@ test("the ACP driver hands over MCP servers, streams updates and routes risky pe
   assert.deepEqual(approvals, ["mcp__engine__add_trench"]);
   assert.equal(second.text, "Looking. Trench added.");
   assert.equal(second.toolCalls[0]!.isError, false);
+  const third = await d.sendTurn("run a shell command");
+  assert.equal(third.text, "Looking. Shell refused.", "the agent's own shell is refused");
+  assert.deepEqual(approvals, ["mcp__engine__add_trench"], "and no card is raised for it");
   await d.dispose();
 });

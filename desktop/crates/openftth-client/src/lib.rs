@@ -291,6 +291,20 @@ impl Client {
         self.get("/api/engines")
     }
 
+    /// Hand the harness a key from the OS credential store; it keeps it in memory only.
+    pub fn set_engine_key(&self, kind: &str, api_key: &str) -> Result<Value, ClientError> {
+        self.send(
+            "POST",
+            "/api/engine/key",
+            &json!({ "kind": kind, "apiKey": api_key }),
+        )
+    }
+
+    /// Keys an older version left in engines.json: `{kind: key}`, handed over once.
+    pub fn take_legacy_keys(&self) -> Result<Value, ClientError> {
+        self.send("POST", "/api/engine/legacy-keys", &json!({}))
+    }
+
     pub fn set_engine(&self, body: &Value) -> Result<Value, ClientError> {
         self.send("POST", "/api/engine", body)
     }

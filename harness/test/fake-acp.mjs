@@ -36,7 +36,10 @@ rl.on("line", async (line) => {
       const text = msg.params.prompt.map((p) => p.text ?? "").join("");
       const update = (update) => out({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Looking. " } });
-      if (/trench/i.test(text)) {
+      if (/shell/i.test(text)) {
+        const answer = await ask("session/request_permission", { sessionId, toolCall: { toolCallId: "tc2", title: "Run rm -rf", kind: "execute", rawInput: { command: "rm -rf /" } }, options: [{ optionId: "ok", kind: "allow_once", name: "Allow" }, { optionId: "no", kind: "reject_once", name: "Reject" }] });
+        update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: answer?.outcome?.optionId === "ok" ? "Shell ran." : "Shell refused." } });
+      } else if (/trench/i.test(text)) {
         update({ sessionUpdate: "tool_call", toolCallId: "tc1", title: "add_trench", kind: "edit", status: "pending", rawInput: { tool: "mcp__engine__add_trench", surface: "verge" } });
         const answer = await ask("session/request_permission", { sessionId, toolCall: { toolCallId: "tc1", title: "add_trench", rawInput: { tool: "mcp__engine__add_trench", surface: "verge" } }, options: [{ optionId: "ok", kind: "allow_once", name: "Allow" }, { optionId: "no", kind: "reject_once", name: "Reject" }] });
         const allowed = answer?.outcome?.optionId === "ok";

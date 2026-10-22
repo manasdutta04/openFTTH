@@ -380,3 +380,16 @@ test("a crashing folk process reports an error and the next turn resumes the ses
   const backstage = await body(api("/api/backstage"));
   assert.ok(backstage.some((e: any) => e.event === "session"));
 });
+
+test("the app API refuses browser origins, foreign hosts, bad tokens and oversized bodies", async () => {
+  const health = await fetch(`${h.url}/api/health`, { headers: { origin: "https://evil.example" } });
+  assert.equal(health.status, 403, "a web page cannot drive the harness");
+  const wrong = await fetch(`${h.url}/api/crew`, { headers: { authorization: "Bearer not-the-token" } });
+  assert.equal(wrong.status, 401);
+  const big = await fetch(`${h.url}/api/room/messages`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ text: "x".repeat(9 * 1024 * 1024) }),
+  });
+  assert.equal(big.status, 413);
+});

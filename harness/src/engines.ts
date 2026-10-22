@@ -127,6 +127,11 @@ interface Stored {
 export class Engines {
   private readonly path: string;
   private stored: Stored;
+  /** API keys, in memory only: the app keeps them in the OS credential store and hands them
+   *  over at start. They are never written to engines.json. */
+  private readonly keys = new Map<EngineKind, string>();
+  /** Keys an older version saved in engines.json, until the app has moved them to the store. */
+  private legacy = new Map<EngineKind, string>();
 
   constructor(dataDir: string, fallback: FolkEngineConfig) {
     this.path = join(dataDir, "engines.json");
@@ -134,6 +139,39 @@ export class Engines {
     this.stored = readJsonOr<Stored>(this.path, { current: kind, settings: fallback.model ? { [kind]: { model: fallback.model } } : {} });
     if (!(ENGINE_KINDS as string[]).includes(this.stored.current)) this.stored.current = kind;
     if (!this.stored.settings || typeof this.stored.settings !== "object") this.stored.settings = {};
+    for (const [k, s] of Object.entries(this.stored.settings) as Array<[EngineKind, { apiKey?: string | null }]>) {
+      if (s?.apiKey) {
+        this.keys.set(k, s.apiKey);
+        this.legacy.set(k, s.apiKey);
+      }
+    }
+  }
+
+  /** A key from the app's credential store, for this run only. */
+  setKey(kind: string, apiKey: string | null): void {
+    if (!(ENGINE_KINDS as string[]).includes(kind)) throw new Error(`unknown engine kind "${kind}"`);
+    const k = apiKey?.trim();
+    if (k) this.keys.set(kind as EngineKind, k);
+    else this.keys.delete(kind as EngineKind);
+  }
+
+  /** Hand over keys an older version left in engines.json, and strip them from the file. */
+  takeLegacyKeys(): Record<string, string> {
+    const out = Object.fromEntries(this.legacy);
+    this.legacy.clear();
+    this.save();
+    return out;
+  }
+
+  private save(): void {
+    const settings: Stored["settings"] = {};
+    for (const [k, s] of Object.entries(this.stored.settings) as Array<[EngineKind, Stored["settings"][EngineKind]]>) {
+      const { apiKey: _drop, ...rest } = s ?? {};
+      settings[k] = rest;
+    }
+    // Keys an older version saved stay in the file until the app has taken them.
+    for (const [k, key] of this.legacy) settings[k] = { ...settings[k], apiKey: key };
+    writeJsonAtomic(this.path, { current: this.stored.current, settings });
   }
 
   /** The active engine with its secrets resolved (settings first, then the environment). */
@@ -148,7 +186,7 @@ export class Engines {
       kind,
       model: s.model ?? cat.defaultModel,
       baseUrl: s.baseUrl ?? (kind === "ollama" ? ollamaHost() ?? cat.defaultBaseUrl : cat.defaultBaseUrl),
-      apiKey: s.apiKey ?? (cat.keyEnv ? process.env[cat.keyEnv] ?? null : null),
+      apiKey: this.keys.get(kind) ?? (cat.keyEnv ? process.env[cat.keyEnv] ?? null : null),
     };
   }
 
@@ -160,10 +198,14 @@ export class Engines {
     const next = { ...prev };
     if (input.model !== undefined) next.model = input.model?.trim() || null;
     if (input.baseUrl !== undefined) next.baseUrl = input.baseUrl?.trim().replace(/\/+$/, "") || null;
-    if (input.apiKey !== undefined) next.apiKey = input.apiKey?.trim() || null;
+    delete next.apiKey;
+    if (input.apiKey !== undefined) {
+      this.setKey(kind, input.apiKey);
+      this.legacy.delete(kind);
+    }
     this.stored.settings[kind] = next;
     this.stored.current = kind;
-    writeJsonAtomic(this.path, this.stored);
+    this.save();
     return this.current();
   }
 

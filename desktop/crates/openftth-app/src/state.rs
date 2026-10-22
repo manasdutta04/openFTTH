@@ -302,6 +302,7 @@ impl AppState {
             want_manual: false,
         };
         st.load_crew();
+        crate::secrets::restore(&st.client);
         st.load_engines();
         st.load_rulebooks();
         st.load_recents();
@@ -1380,6 +1381,12 @@ impl AppState {
             body["baseUrl"] = Value::String(u.to_string());
         }
         if let Some(k) = api_key {
+            if let Err(e) = crate::secrets::store(kind, k) {
+                self.toasts.error(format!(
+                    "Could not save the key in Windows Credential Manager: {e}"
+                ));
+                return;
+            }
             body["apiKey"] = Value::String(k.to_string());
         }
         match self.client.set_engine(&body) {

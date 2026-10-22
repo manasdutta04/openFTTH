@@ -230,15 +230,19 @@ export class AcpDriver implements Driver {
     }
   }
 
-  /** The agent wants to run something. Engine tools that are risky go through a card; the rest run. */
+  /**
+   * The agent wants to run something. Only the openFTTH MCP servers' tools may run (the agent's
+   * own shell, file or web tools are refused, like the CLI drivers deny them); risky engine
+   * tools also go through a card.
+   */
   private async onPermission(id: number, params: any): Promise<void> {
     const call = params.toolCall ?? {};
     const options: Array<{ optionId: string; kind: string }> = Array.isArray(params.options) ? params.options : [];
     const pick = (prefix: string) => options.find((o) => String(o.kind).startsWith(prefix))?.optionId ?? null;
     const tool = toolName(call);
     const short = tool.replace(/^mcp__[a-z0-9_-]+?__/i, "");
-    let allow = true;
-    if (RISKY_ENGINE_TOOLS.has(short)) {
+    let allow = /^mcp__(engine|openftth)__/i.test(tool);
+    if (allow && RISKY_ENGINE_TOOLS.has(short)) {
       const input = (call.rawInput ?? {}) as Record<string, unknown>;
       if (!input.approval_id) {
         const decision = await this.spec.approve(`mcp__engine__${short}`, input);

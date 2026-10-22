@@ -13,6 +13,7 @@ mod inspector;
 mod markdown;
 mod palette;
 mod prefs;
+mod secrets;
 mod state;
 mod supervisor;
 mod table;

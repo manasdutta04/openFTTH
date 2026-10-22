@@ -9,6 +9,7 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { readBody, sameSecret } from "./secure.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -153,7 +154,7 @@ export class McpLink {
     }
     if (s.requireKey) {
       const given = url.searchParams.get("key") ?? (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-      if (given !== s.key) {
+      if (!sameSecret(given, s.key)) {
         reply(res, 401, { error: "this link needs its key; copy the link again from openFTTH → Connect AI apps" });
         return;
       }
@@ -174,11 +175,10 @@ function reply(res: ServerResponse, status: number, body: unknown): void {
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  if (!chunks.length) return undefined;
+  const raw = await readBody(req);
+  if (!raw.length) return undefined;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(raw.toString("utf8"));
   } catch {
     throw new Error("invalid JSON body");
   }

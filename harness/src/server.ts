@@ -10,6 +10,7 @@ import type { Engines } from "./engines.ts";
 import { listRulebooks, type Crew } from "./crew.ts";
 import { findRepoRoot } from "./config.ts";
 import { join } from "node:path";
+import { readBody, sameSecret } from "./secure.ts";
 import { inspectData, listImportProfiles, saveImportProfile } from "./engine-cli.ts";
 import { updateMcpSettings, writeClaudeBundle, type McpLink } from "./mcp-link.ts";
 import type { EventBus } from "./events.ts";
@@ -144,6 +145,14 @@ export function buildServer(d: ServerDeps): Server {
     const body = await readJson(req);
     json(res, 202, { accepted: true, ...d.projects.autodesign(body.prepare === true) });
   });
+  // AI keys from the app's credential store: kept in memory for this run, never on disk.
+  add("POST", "/api/engine/key", async (req, res) => {
+    const body = await readJson(req);
+    if (typeof body.kind !== "string") throw new HttpError(400, "kind is required");
+    d.engines.setKey(body.kind, typeof body.apiKey === "string" ? body.apiKey : null);
+    json(res, 200, { ok: true });
+  });
+  add("POST", "/api/engine/legacy-keys", (_req, res) => json(res, 200, d.engines.takeLegacyKeys()));
   add("GET", "/api/project/edits", async (_req, res) => json(res, 200, await d.projects.editHistory()));
   add("GET", "/api/project/violations", async (_req, res) => json(res, 200, await d.projects.violations()));
   add("POST", "/api/project/work-order/post", async (req, res) => {
@@ -255,7 +264,7 @@ export function buildServer(d: ServerDeps): Server {
       if (route.auth !== "none") {
         const token = bearer(req);
         const expected = route.auth === "app" ? d.cfg.appToken : d.cfg.commsToken;
-        if (!token || token !== expected) throw new HttpError(401, "missing or invalid bearer token");
+        if (!sameSecret(token, expected)) throw new HttpError(401, "missing or invalid bearer token");
       }
       const m = url.pathname.match(route.pattern)!;
       const params: Record<string, string> = {};
@@ -300,11 +309,15 @@ export function json(res: ServerResponse, status: number, body: unknown): void {
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, any>> {
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  if (!chunks.length) return {};
+  let raw: Buffer;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, any>;
+    raw = await readBody(req);
+  } catch (err) {
+    throw new HttpError(413, (err as Error).message);
+  }
+  if (!raw.length) return {};
+  try {
+    return JSON.parse(raw.toString("utf8")) as Record<string, any>;
   } catch {
     throw new HttpError(400, "invalid JSON body");
   }
