@@ -128,8 +128,15 @@ struct GeomCache {
     uuid_index: HashMap<String, usize>,
 }
 
-/// Indexed by `CLine::class`; existing ducts are drawn first, under the designed cables.
-const CABLE_KINDS: [&str; 4] = ["drop", "distribution", "feeder", "existing_duct"];
+/// Indexed by `CLine::class`; existing ducts are drawn first, under the designed cables, and
+/// crossings last, over them.
+const CABLE_KINDS: [&str; 5] = [
+    "drop",
+    "distribution",
+    "feeder",
+    "existing_duct",
+    "crossing",
+];
 const POINT_KINDS: [&str; 7] = [
     "home",
     "chamber",
@@ -481,9 +488,10 @@ impl TwinView {
             layers.distribution,
             layers.feeder,
             layers.existing,
+            layers.crossings,
         ];
-        let cable_w = [0.9f32, 2.2, 3.4, 1.6];
-        for cls in [3u8, 0, 1, 2] {
+        let cable_w = [0.9f32, 2.2, 3.4, 1.6, 6.0];
+        for cls in [3u8, 0, 1, 2, 4] {
             if !cable_on[cls as usize] || (cls == 0 && scale < 0.35) {
                 continue;
             }
@@ -519,10 +527,20 @@ impl TwinView {
                 }
                 .gamma_multiply(shown);
                 if let Some(q) = probe {
-                    consider(polyline_distance(&pts, q), 7.0, c.idx);
+                    // A bore shares its line with the cable through it; the bore is what a click
+                    // on it means, so it wins the tie.
+                    let bias = if cls == 4 { 3.0 } else { 0.0 };
+                    consider(polyline_distance(&pts, q) - bias, 7.0, c.idx);
                 }
                 if cls == 3 {
                     shapes.extend(Shape::dashed_line(&pts, Stroke::new(w, color), 6.0, 3.0));
+                } else if cls == 4 {
+                    // A bore: a wide band with a dark core, and a cap at each pit.
+                    shapes.push(Shape::line(pts.clone(), Stroke::new(w, color)));
+                    shapes.push(Shape::line(pts.clone(), Stroke::new(1.5, p.map_bg)));
+                    for end in [pts[0], pts[pts.len() - 1]] {
+                        shapes.push(Shape::circle_filled(end, 3.5, color));
+                    }
                 } else {
                     shapes.push(Shape::line(pts, Stroke::new(w, color)));
                 }
@@ -799,7 +817,7 @@ impl TwinView {
                         ui.label(caps("Layers", p.text3));
                     });
                     ui.add_space(4.0);
-                    let rows: [(&str, &str, &mut bool); 10] = [
+                    let rows: [(&str, &str, &mut bool); 11] = [
                         ("Feeder", "feeder", &mut layers.feeder),
                         ("Distribution", "distribution", &mut layers.distribution),
                         ("Drops", "drop", &mut layers.drops),
@@ -810,6 +828,7 @@ impl TwinView {
                         ("Buildings", "building", &mut layers.buildings),
                         ("Streets", "street", &mut layers.streets),
                         ("Existing network", "existing_duct", &mut layers.existing),
+                        ("Crossings", "crossing", &mut layers.crossings),
                     ];
                     for (label, kind, on) in rows {
                         let (r, resp) = ui
@@ -833,6 +852,16 @@ impl TwinView {
                         );
                         let painter = ui.painter();
                         match kind {
+                            "crossing" => {
+                                painter.line_segment(
+                                    [sw.left_center(), sw.right_center()],
+                                    Stroke::new(5.0, c),
+                                );
+                                painter.line_segment(
+                                    [sw.left_center(), sw.right_center()],
+                                    Stroke::new(1.2, p.map_bg),
+                                );
+                            }
                             "existing_duct" => {
                                 painter.extend(Shape::dashed_line(
                                     &[sw.left_center(), sw.right_center()],
@@ -948,6 +977,18 @@ fn hover_summary(e: &Element) -> Vec<String> {
         "drop" => {
             if let Some(l) = get_f(pr, "length_m") {
                 out.push(format!("{l:.0} m"));
+            }
+        }
+        "crossing" => {
+            if let Some(n) = pr.get("name").and_then(|v| v.as_str()) {
+                out.push(n.to_string());
+            }
+            if let (Some(l), Some(c)) = (get_f(pr, "length_m"), get_f(o, "cost")) {
+                out.push(format!("{l:.0} m directional drill · {c:.0} EUR"));
+            }
+            match (get_f(o, "detour_m"), get_f(o, "detour_cost")) {
+                (Some(m), Some(c)) => out.push(format!("going round: {m:.0} m, {c:.0} EUR")),
+                _ => out.push("no way round on the streets".to_string()),
             }
         }
         "chamber" => {

@@ -119,6 +119,8 @@ pub struct Layers {
     pub chambers: bool,
     /// Ducts, poles and manholes that already exist (imported, not designed).
     pub existing: bool,
+    /// Bores under motorways, railways, rivers and unmapped obstacles.
+    pub crossings: bool,
 }
 
 impl Default for Layers {
@@ -134,6 +136,7 @@ impl Default for Layers {
             fdhs: true,
             chambers: true,
             existing: true,
+            crossings: true,
         }
     }
 }

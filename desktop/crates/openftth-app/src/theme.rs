@@ -208,6 +208,7 @@ impl Palette {
                     Color32::BLACK
                 }
             }
+            "crossing" => Color32::from_rgb(0xff, 0x6b, 0x3d),
             "existing_duct" | "existing_pole" | "existing_manhole" => {
                 if dark {
                     Color32::from_rgb(0x8f, 0xa3, 0xb8)
