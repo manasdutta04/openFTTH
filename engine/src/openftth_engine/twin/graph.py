@@ -19,6 +19,8 @@ from ..results import Decision
 from ..rules import Rulebook
 
 DENSIFY_M = 25.0  # insert vertices so no edge is longer than this (better snapping/sites)
+DUCT_LINK_M = 20.0  # an existing duct joins the street network where they come this close
+SURFACES = ("asphalt", "pavement", "verge", "aerial", "existing_duct")
 
 
 @dataclass
@@ -81,6 +83,30 @@ class Twin:
         self.streets["no_dig"] = self.streets["osm_id"].astype(str).isin(osm_ids)
         return len(gone), length
 
+    def forbid_zones(self, zones: gpd.GeoDataFrame) -> tuple[int, float]:
+        """Take every street edge whose middle lies in a no-dig zone out of the route graph.
+        Existing ducts stay: cables can be pulled through them without digging."""
+        if zones.empty:
+            return 0, 0.0
+        polys = zones.to_crs(self.crs).geometry.union_all()
+        gone = []
+        for u, v, d in self.graph.edges(data=True):
+            if d.get("highway") == "existing_duct":
+                continue
+            mx = (self.xy[u][0] + self.xy[v][0]) / 2.0
+            my = (self.xy[u][1] + self.xy[v][1]) / 2.0
+            if polys.contains(Point(mx, my)):
+                gone.append((u, v))
+        length = float(sum(self.graph[u][v]["length_m"] for u, v in gone))
+        if gone:
+            self.graph.remove_edges_from(gone)
+            comps = sorted(nx.connected_components(self.graph), key=len, reverse=True)
+            if len(comps) > 1:
+                self.graph = self.graph.subgraph(comps[0]).copy()
+            self._tree = None
+            self._tree_nodes = None
+        return len(gone), length
+
     def resnap_homes(self) -> int:
         """Snap the homes whose street node left the graph to the nearest remaining node."""
         if self.homes.empty:
@@ -125,10 +151,17 @@ def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules
     streets = streets_wgs.to_crs(crs).copy()
     homes = homes_wgs.to_crs(crs).copy() if not homes_wgs.empty else homes_wgs.copy()
 
+    # A surface class given by the imported data wins over the one implied by the road class.
+    given = (
+        streets["surface_class"] if "surface_class" in streets.columns else [None] * len(streets)
+    )
     streets["surface"] = [
-        _surface_for(str(h), s, rules)
-        for h, s in zip(
-            streets["highway"], streets.get("surface", [None] * len(streets)), strict=False
+        g if isinstance(g, str) and g in SURFACES else _surface_for(str(h), s, rules)
+        for h, s, g in zip(
+            streets["highway"],
+            streets.get("surface", [None] * len(streets)),
+            given,
+            strict=False,
         )
     ]
     streets["cost_per_m"] = [rules.surfaces.cost(s) for s in streets["surface"]]
@@ -176,6 +209,7 @@ def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules
                     osm_id=row.osm_id,
                 )
 
+    _link_ducts(G, xy, rules)
     xy_arr = np.asarray(xy, dtype=float)
 
     # Keep the largest connected component; report the rest as a data gap.
@@ -218,6 +252,36 @@ def build_twin(streets_wgs: gpd.GeoDataFrame, homes_wgs: gpd.GeoDataFrame, rules
             )
     twin.homes = homes
     return twin
+
+
+def _link_ducts(G: nx.Graph, xy: list[tuple[float, float]], rules: Rulebook) -> int:
+    """Join existing ducts to the streets: every duct vertex that is not already on a street gets
+    a short trench to the nearest street vertex within DUCT_LINK_M. Returns the links added."""
+    duct_nodes, street_nodes = set(), set()
+    for u, v, d in G.edges(data=True):
+        (duct_nodes if d.get("highway") == "existing_duct" else street_nodes).update((u, v))
+    lonely = sorted(duct_nodes - street_nodes)
+    if not lonely or not street_nodes:
+        return 0
+    street_idx = np.fromiter(sorted(street_nodes), dtype=int)
+    tree = cKDTree(np.asarray([xy[i] for i in street_idx], dtype=float))
+    per_m = rules.surfaces.cost("pavement")
+    added = 0
+    for n in lonely:
+        d, i = tree.query(xy[n])
+        if d <= DUCT_LINK_M:
+            m = int(street_idx[i])
+            G.add_edge(
+                n,
+                m,
+                length_m=float(d),
+                cost=float(d) * per_m,
+                surface="pavement",
+                highway="duct_link",
+                osm_id=f"link:{n}",
+            )
+            added += 1
+    return added
 
 
 def _surface_for(highway: str, surface_tag, rules: Rulebook) -> str:

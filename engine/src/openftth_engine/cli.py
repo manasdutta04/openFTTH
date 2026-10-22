@@ -90,11 +90,15 @@ def schema(
     operator: Annotated[
         bool, typer.Option("--operator", help="The operator pack schema instead")
     ] = False,
+    profile: Annotated[
+        bool, typer.Option("--profile", help="The import profile schema instead")
+    ] = False,
 ) -> None:
     """Print (or write) the rulebook (or operator pack) JSON schema from the pydantic model."""
+    from .ingest.profiles import ImportProfile
     from .network import OperatorPack
 
-    model = OperatorPack if operator else Rulebook
+    model = ImportProfile if profile else (OperatorPack if operator else Rulebook)
     text = json.dumps(model.model_json_schema(by_alias=True), indent=2) + "\n"
     if out:
         out.write_text(text, encoding="utf-8")
@@ -119,6 +123,53 @@ def rules_validate(path: Path) -> None:
         f"[green]OK[/] {rb.name}: class {rb.pon.pon_class}, split 1:{rb.pon.split_ratio}, "
         f"splitter loss {rb.splitter_loss():.1f} dB, {rb.connectors_on_path()} connectors/path"
     )
+
+
+@app.command()
+def inspect(
+    paths: Annotated[list[Path], typer.Argument(help="Data files to look at")],
+    as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output")] = False,
+) -> None:
+    """List the layers in data files and propose an import profile for them."""
+    from .ingest.profiles import ROLE_FIELDS, ROLE_LABEL, propose_profile
+
+    profile, infos = propose_profile([str(p) for p in paths])
+    if as_json:
+        roles = {r: {"label": ROLE_LABEL[r], "fields": list(ROLE_FIELDS[r])} for r in ROLE_LABEL}
+        out = {
+            "layers": [i.to_dict() for i in infos],
+            "profile": profile.model_dump(),
+            "roles": roles,
+        }
+        sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
+        return
+    for i in infos:
+        console.print(
+            f"[cyan]{i.layer}[/] {i.geometry} ×{i.count} {i.crs or 'no CRS'} — {', '.join(i.columns[:8])}"
+        )
+    for b in profile.bindings:
+        console.print(f"  → {b.role}: {b.path}{' / ' + b.layer if b.layer else ''} {b.columns}")
+
+
+@app.command("profile-check")
+def profile_check(
+    path: Path,
+    rulebook: Annotated[str, typer.Option()] = "generic-gpon",
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Validate an import profile, read its data and print the data-quality report."""
+    from .ingest.inputs import load_inputs
+    from .ingest.profiles import ImportProfile
+    from .ingest.quality import check_inputs
+
+    inp = load_inputs(ImportProfile.load(path), load_rulebook(_resolve_rulebook(rulebook)))
+    report = check_inputs(inp, load_rulebook(_resolve_rulebook(rulebook)))
+    if as_json:
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, default=str) + "\n")
+        return
+    console.print(f"[bold]{report['level']}[/] {report['counts']}")
+    for i in report["issues"]:
+        console.print(f"  {i['level']}: {i['message']}")
 
 
 @app.command()

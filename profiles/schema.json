@@ -1,0 +1,142 @@
+{
+  "$defs": {
+    "Binding": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Source file",
+          "title": "Path",
+          "type": "string"
+        },
+        "layer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Layer inside the file (GeoPackage, DXF, \u2026)",
+          "title": "Layer"
+        },
+        "role": {
+          "enum": [
+            "area",
+            "osm",
+            "streets",
+            "buildings",
+            "addresses",
+            "existing_ducts",
+            "poles",
+            "manholes",
+            "no_dig_zones"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "crs": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "CRS when the file has none, e.g. EPSG:31370",
+          "title": "Crs"
+        },
+        "x": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Table x / longitude column",
+          "title": "X"
+        },
+        "y": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Table y / latitude column",
+          "title": "Y"
+        },
+        "columns": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Role attribute \u2192 source column",
+          "title": "Columns",
+          "type": "object"
+        },
+        "values": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "description": "Role attribute \u2192 {source value: openFTTH value}, e.g. road classes",
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "path",
+        "role"
+      ],
+      "title": "Binding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "default": "openftth.import",
+      "pattern": "^openftth\\.import$",
+      "title": "Format",
+      "type": "string"
+    },
+    "version": {
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "name": {
+      "default": "import",
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "bindings": {
+      "items": {
+        "$ref": "#/$defs/Binding"
+      },
+      "title": "Bindings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "bindings"
+  ],
+  "title": "ImportProfile",
+  "type": "object"
+}

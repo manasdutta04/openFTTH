@@ -183,6 +183,57 @@ def import_osm(area_path: str, osm_path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def list_layers(path: str) -> list[dict[str, Any]]:
+    """What a data file holds: layers, geometry type, feature count, CRS, columns, sample values.
+    Reads GeoJSON, GeoPackage, Shapefile, KML, FlatGeobuf, GML, MapInfo, DXF and CSV."""
+    from .ingest.sources import list_layers as _list
+
+    return [i.to_dict() for i in _list(path)]
+
+
+@mcp.tool()
+def propose_import(paths: list[str]) -> dict[str, Any]:
+    """A first import profile for a set of files: which layer is the area, the streets, the
+    address register, existing ducts and so on, and which columns carry what. Review it, then
+    pass it to import_data."""
+    from .ingest.profiles import propose_profile
+
+    profile, infos = propose_profile(paths)
+    return {"profile": profile.model_dump(), "layers": [i.to_dict() for i in infos]}
+
+
+@mcp.tool()
+def import_data(
+    profile: dict[str, Any] | None = None, profile_path: str | None = None
+) -> dict[str, Any]:
+    """Import the project's data from any sources an import profile names (area, streets,
+    buildings, address register, existing ducts/poles/manholes, no-dig zones, OSM extract)."""
+    from .ingest.profiles import ImportProfile
+
+    if profile is not None:
+        p = ImportProfile.model_validate(profile)
+    elif profile_path:
+        p = ImportProfile.load(profile_path)
+    else:
+        return {"error": "give a profile or a profile_path"}
+    return _out(pipeline.import_data(_s(), p))
+
+
+@mcp.tool()
+def check_inputs() -> dict[str, Any]:
+    """Data-quality report on the imported inputs: homes far from streets, duplicates,
+    buildings without addresses, a street network in pieces. Read-only."""
+    return _out(pipeline.check_inputs_tool(_s()))
+
+
+@mcp.tool()
+def fetch_osm(area_path: str) -> dict[str, Any]:
+    """Download an OpenStreetMap extract for an area polygon from the public Overpass API into
+    the project (a network call; only when no local extract exists)."""
+    return _out(pipeline.fetch_osm_tool(_s(), area_path))
+
+
+@mcp.tool()
 def build_twin() -> dict[str, Any]:
     """Build the street graph with trench costs and snap homes to it."""
     return _out(pipeline.build_twin_tool(_s()))

@@ -19,7 +19,8 @@ from shapely.geometry import LineString, Point, mapping
 
 from .deliver import build_boq, render_map
 from .deliver.boq import boq_to_csv
-from .ingest import homes_from_buildings, import_osm, load_area
+from .ingest.inputs import Inputs, load_inputs, profile_for
+from .ingest.profiles import ImportProfile
 from .interchange import Design, Feature, Metadata, stable_uuid
 from .network import check_operator, homes_behind, load_operator_pack, trace_home
 from .network.operator import OperatorPack
@@ -104,6 +105,7 @@ def _wgs(twin: Twin, geom) -> Any:
 # Where an object's data comes from, by the tool that first wrote it.
 TOOL_SOURCE = {
     "import_osm": "osm",
+    "import_data": "import",
     "build_twin": "osm",
     "move_site": "user",
     "exclude_building": "user",
@@ -184,12 +186,26 @@ def _no_dig_ids(s: Session) -> set[str]:
 
 
 def _finish_twin(s: Session, twin: Twin) -> Twin:
-    """Apply the engineer's no-dig list to a freshly built twin."""
+    """Apply the engineer's no-dig streets and the imported no-dig zones to a fresh twin."""
     no_dig = _no_dig_ids(s)
     if no_dig:
         twin.forbid_ways(no_dig)
     else:
         twin.streets["no_dig"] = False
+    zones = s.cache.get("no_dig_zones")
+    if zones is not None and not zones.empty:
+        edges, length = twin.forbid_zones(zones)
+        twin.decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{edges} street edge(s), {length:.0f} m, lie in no-dig zones and left the "
+                "route graph; existing ducts through them stay usable.",
+                values={"edges": edges, "length_m": round(length, 1)},
+                source="user",
+            )
+        )
+    twin.resnap_homes()
     return twin
 
 
@@ -203,30 +219,67 @@ def _write_streets(s: Session, twin: Twin) -> None:
 # ---- Ingest / Twin ------------------------------------------------------------------------
 
 
-def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path) -> ToolResult:
-    s.project.set_stage("ingest")
-    before = s.design.copy()
-    area = load_area(area_path)
-    osm = import_osm(osm_path, area)
-    homes_wgs, decisions = homes_from_buildings(osm.buildings, s.rules)
-    excluded = {x["osm_id"]: x for x in _steering(s, "excluded_buildings")}
-    if excluded and not homes_wgs.empty:
-        homes_wgs = homes_wgs[~homes_wgs["osm_id"].astype(str).isin(set(excluded))].copy()
+PROFILE_FILE = "import.yaml"
 
-    s.design.remove_where(kind="building")
-    s.design.remove_where(kind="service_area")
+
+def _filter_excluded(s: Session, homes: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Homes in buildings the engineer excluded do not enter the design."""
+    excluded = _excluded_osm_ids(s)
+    if not excluded or homes.empty:
+        return homes
+    col = "building_id" if "building_id" in homes.columns else "osm_id"
+    return homes[~homes[col].astype(str).isin(excluded)].copy()
+
+
+def _load_profile(s: Session) -> ImportProfile | None:
+    """The project's import profile: the saved one, or the classic area + OSM pair."""
+    inputs = s.project.meta.get("inputs") or {}
+    saved = inputs.get("profile")
+    if saved and Path(saved).exists():
+        return ImportProfile.load(saved)
+    if inputs.get("area"):
+        return profile_for(inputs["area"], inputs.get("osm"))
+    return None
+
+
+def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path) -> ToolResult:
+    """The classic start: an area polygon and an OpenStreetMap extract."""
+    return import_data(s, profile_for(area_path, osm_path), tool="import_osm")
+
+
+def import_data(
+    s: Session, profile: ImportProfile | str | Path, tool: str = "import_data"
+) -> ToolResult:
+    """Import a project's data from any sources an import profile names: the area, streets,
+    buildings, an address register, existing ducts, poles and manholes, no-dig zones, and/or an
+    OpenStreetMap extract. The profile is saved with the project so every later rebuild reads
+    exactly the same data."""
+    s.project.set_stage("ingest")
+    if not isinstance(profile, ImportProfile):
+        profile = ImportProfile.load(profile)
+    before = s.design.copy()
+    inp = load_inputs(profile, s.rules)
+    homes_wgs = _filter_excluded(s, inp.homes)
+    excluded = {x["osm_id"]: x for x in _steering(s, "excluded_buildings")}
+
+    for kind in ("building", "service_area", "existing_pole", "existing_manhole", "existing_duct"):
+        s.design.remove_where(kind=kind)
+    area = inp.area
     area_series = gpd.GeoSeries([area], crs=4326)
     area_m2 = float(area_series.to_crs(area_series.estimate_utm_crs()).area.iloc[0])
+    area_name = (
+        Path(profile.by_role("area")[0].path).stem if profile.by_role("area") else profile.name
+    )
     s.design.add(
         Feature(
             element_uuid=s.uid("service_area", "area"),
             element_type="service_area",
             geometry=area,
-            props={"name": Path(area_path).stem, "area_m2": round(area_m2, 1)},
+            props={"name": area_name, "area_m2": round(area_m2, 1)},
             openftth={"kind": "service_area"},
         )
     )
-    for b in osm.buildings.itertuples(index=False):
+    for b in inp.buildings.itertuples(index=False):
         extra: dict[str, Any] = {}
         if str(b.osm_id) in excluded:
             extra = {"excluded": True, "excluded_reason": excluded[str(b.osm_id)]["reason"]}
@@ -243,23 +296,93 @@ def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path)
                 openftth={"kind": "building", "osm_id": b.osm_id, **extra},
             )
         )
-    s.cache["osm"] = osm
-    s.cache["homes_wgs"] = homes_wgs
-    s.cache["area"] = area
+    # Existing infrastructure is in service already: it is recorded, not designed.
+    existing = [
+        (inp.poles, "pole", "existing_pole", "owner"),
+        (inp.manholes, "manhole", "existing_manhole", "type"),
+    ]
+    for gdf, etype, kind, attr in existing:
+        for r in gdf.itertuples(index=False):
+            value = getattr(r, attr)
+            s.design.add(
+                Feature(
+                    element_uuid=s.uid(etype, r.osm_id),
+                    element_type=etype,
+                    geometry=r.geometry,
+                    props={
+                        "name": str(r.osm_id).split(":")[-1],
+                        attr: None if value in (None, "") else str(value),
+                    },
+                    openftth={
+                        "kind": kind,
+                        "source_id": r.osm_id,
+                        "lifecycle": "in_service",
+                        "provenance": {"source": "import", "created_by": tool},
+                    },
+                )
+            )
+    ducts = inp.streets[inp.streets["highway"] == "existing_duct"]
+    for r in ducts.itertuples(index=False):
+        s.design.add(
+            Feature(
+                element_uuid=s.uid("duct.pe", r.osm_id),
+                element_type="duct.pe",
+                geometry=r.geometry,
+                props={
+                    "name": str(r.osm_id).split(":")[-1],
+                    "owner": r.name if isinstance(r.name, str) else None,
+                },
+                openftth={
+                    "kind": "existing_duct",
+                    "source_id": r.osm_id,
+                    "lifecycle": "in_service",
+                    "provenance": {"source": "import", "created_by": tool},
+                },
+            )
+        )
+    s.cache.update(
+        {
+            "inputs": inp,
+            "streets": inp.streets,
+            "homes_wgs": homes_wgs,
+            "area": area,
+            "no_dig_zones": inp.no_dig,
+        }
+    )
+    saved = profile.save(s.project.dir / PROFILE_FILE)
     previous = s.project.meta.get("inputs") or {}
+    osm = profile.by_role("osm")
     s.project.meta["inputs"] = {
-        "area": str(Path(area_path).resolve()),
-        "osm": str(Path(osm_path).resolve()),
+        "profile": str(saved),
+        "area": profile.by_role("area")[0].path if profile.by_role("area") else None,
+        "osm": osm[0].path if osm else None,
         **{k: previous[k] for k in STEERING_INPUTS if previous.get(k)},
     }
+    n_streets = int((inp.streets["highway"] != "existing_duct").sum())
+    units = int(homes_wgs["units"].sum()) if not homes_wgs.empty else 0
+    where = (
+        "the address register" if inp.counts.get("addresses") else "building footprints (estimated)"
+    )
+    extras = [
+        f"{v} {k.replace('_', ' ')}"
+        for k, v in inp.counts.items()
+        if k in ("existing_ducts", "poles", "manholes", "no_dig_zones") and v
+    ]
+    summary = (
+        f"{n_streets} street segments, {len(inp.buildings)} buildings, {len(homes_wgs)} homes "
+        f"({units} units) from {where}" + (f"; existing: {', '.join(extras)}" if extras else "")
+    )
     result = ToolResult(
-        tool="import_osm",
-        summary=f"{len(osm.streets)} street segments, {len(osm.buildings)} buildings, {len(homes_wgs)} synthetic homes ({int(homes_wgs['units'].sum()) if not homes_wgs.empty else 0} units)",
-        decisions=decisions,
+        tool=tool,
+        summary=summary,
+        decisions=inp.decisions,
         data={
-            "streets": len(osm.streets),
-            "buildings": len(osm.buildings),
+            "streets": n_streets,
+            "buildings": len(inp.buildings),
             "homes": len(homes_wgs),
+            "units": units,
+            "counts": inp.counts,
+            "profile": str(saved),
         },
     )
     return _commit(s, result, before)
@@ -268,8 +391,9 @@ def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path)
 def build_twin_tool(s: Session) -> ToolResult:
     s.project.set_stage("twin")
     before = s.design.copy()
-    osm = s.cache["osm"]
-    twin = _finish_twin(s, build_twin(osm.streets, s.cache["homes_wgs"], s.rules))
+    if "streets" not in s.cache:
+        _twin(s)
+    twin = _finish_twin(s, build_twin(s.cache["streets"], s.cache["homes_wgs"], s.rules))
     s.twin = twin
     # Homes become `to` features (one per building, with a unit count). A home that is
     # already in the design keeps what the solvers put on it (its FAT, PON, drop and path
@@ -292,7 +416,7 @@ def build_twin_tool(s: Session) -> ToolResult:
                     "home_kind": h.kind,
                     "node": int(h.node),
                     "offset_m": round(float(h.offset_m), 1),
-                    "building": s.uid("building", h.osm_id),
+                    "building": s.uid("building", getattr(h, "building_id", None) or h.osm_id),
                 },
             )
         )
@@ -1214,17 +1338,21 @@ def design_all(
 def _twin(s: Session) -> Twin:
     """The twin, rebuilt from the project's recorded inputs when this session has none."""
     if s.twin is None:
-        inputs = s.project.meta.get("inputs") or {}
-        if not (inputs.get("area") and inputs.get("osm")):
-            raise RuntimeError("twin not built; call import_osm and build_twin first")
-        area = load_area(inputs["area"])
-        osm = import_osm(inputs["osm"], area)
-        homes_wgs, _ = homes_from_buildings(osm.buildings, s.rules)
-        excluded = _excluded_osm_ids(s)
-        if excluded and not homes_wgs.empty:
-            homes_wgs = homes_wgs[~homes_wgs["osm_id"].astype(str).isin(excluded)].copy()
-        s.cache.update({"osm": osm, "homes_wgs": homes_wgs, "area": area})
-        s.twin = _finish_twin(s, build_twin(osm.streets, homes_wgs, s.rules))
+        profile = _load_profile(s)
+        if profile is None:
+            raise RuntimeError("twin not built; import the project's data first")
+        inp: Inputs = load_inputs(profile, s.rules)
+        homes_wgs = _filter_excluded(s, inp.homes)
+        s.cache.update(
+            {
+                "inputs": inp,
+                "streets": inp.streets,
+                "homes_wgs": homes_wgs,
+                "area": inp.area,
+                "no_dig_zones": inp.no_dig,
+            }
+        )
+        s.twin = _finish_twin(s, build_twin(inp.streets, homes_wgs, s.rules))
         pops = s.design.by_kind("pop")
         if pops:
             s.cache["pop_node"] = int(pops[0].openftth["node"])
@@ -2218,11 +2346,16 @@ def exclude_building(s: Session, element_uuid: str, reason: str) -> ToolResult:
     s.project.meta.setdefault("inputs", {})["excluded_buildings"] = _steering(
         s, "excluded_buildings"
     ) + [{"osm_id": osm_id, "element": element_uuid, "reason": reason}]
+
+    def keep(df: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        col = "building_id" if "building_id" in df.columns else "osm_id"
+        return df[df[col].astype(str) != osm_id].copy()
+
     if s.twin is not None and not s.twin.homes.empty:
-        s.twin.homes = s.twin.homes[s.twin.homes["osm_id"].astype(str) != osm_id].copy()
+        s.twin.homes = keep(s.twin.homes)
     hw = s.cache.get("homes_wgs")
     if hw is not None and not hw.empty:
-        s.cache["homes_wgs"] = hw[hw["osm_id"].astype(str) != osm_id].copy()
+        s.cache["homes_wgs"] = keep(hw)
 
     # Detach the homes: a dedicated indoor FAT goes with its building, a shared FAT loses
     # the units, and so does the cabinet above it. Ids of everything that stays are unchanged.
@@ -2720,4 +2853,53 @@ def homes_behind_tool(s: Session, element_uuid: str) -> ToolResult:
             "units": units,
             "home_ids": homes[:500],
         },
+    )
+
+
+# ---- Inputs: quality and download -----------------------------------------------------------
+
+
+def check_inputs_tool(s: Session) -> ToolResult:
+    """What the project's inputs hold and what will make the design wrong: read-only."""
+    from .ingest.quality import check_inputs
+
+    inp = s.cache.get("inputs")
+    if inp is None:
+        profile = _load_profile(s)
+        if profile is None:
+            return _rejected("check_inputs", "no data imported yet")
+        inp = load_inputs(profile, s.rules)
+        s.cache["inputs"] = inp
+    report = check_inputs(inp, s.rules)
+    n = len(report["issues"])
+    return ToolResult(
+        tool="check_inputs",
+        summary=f"inputs {report['level']}: {n} finding(s); "
+        + ", ".join(f"{k} {v}" for k, v in report["counts"].items() if v),
+        warnings=[f"{i['level']}: {i['message']}" for i in report["issues"]],
+        data=report,
+    )
+
+
+def fetch_osm_tool(s: Session, area_path: str) -> ToolResult:
+    """Download an OpenStreetMap extract for the area into the project (a network call)."""
+    from .ingest.fetch import fetch_osm
+
+    out = s.project.dir / "sources" / f"{Path(area_path).stem}.osm"
+    path = fetch_osm(area_path, out)
+    size_kb = path.stat().st_size // 1024
+    return ToolResult(
+        tool="fetch_osm",
+        summary=f"OpenStreetMap extract saved: {path.name} ({size_kb} kB)",
+        decisions=[
+            Decision(
+                stage="ingest",
+                tool="fetch_osm",
+                reason="Streets and buildings downloaded from OpenStreetMap for the area (public "
+                "Overpass API), because no local extract was given.",
+                values={"path": str(path), "kb": size_kb},
+                source="user",
+            )
+        ],
+        data={"path": str(path)},
     )
