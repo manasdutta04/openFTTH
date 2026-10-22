@@ -43,6 +43,7 @@ for the roadmap and [docs/DEMO.md](docs/DEMO.md) for the current gate demo.
 | `desktop/` | Rust workspace: core, voice, renderer, Windows app. |
 | `macos/` | Swift package for the Mac app (later). |
 | `docs/` | Plan, protocol, rulebook and design-model documentation. |
+| `landing/` | The landing page, a git submodule of its own repository (`git submodule update --init landing`). |
 
 ## Install (Windows, free)
 
