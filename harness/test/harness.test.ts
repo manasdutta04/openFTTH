@@ -277,9 +277,28 @@ test("a home's fibre trace is served straight from the engine", async () => {
   assert.equal(out.data.steps[0].side, "OLT");
 });
 
-test("posting a work order is a risky tool that opens a card", async () => {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("posting a work order from the app opens a card and posts only once it is allowed", async () => {
   const { RISKY_ENGINE_TOOLS } = await import("../src/approvals.ts");
   assert.ok(RISKY_ENGINE_TOOLS.has("post_work_order"));
+  const frames: Array<{ event?: string; data: any }> = [];
+  const off = h.bus.on((f) => frames.push({ event: f.kind, data: f.data }));
+  const res = await api("/api/project/work-order/post", { method: "POST", body: JSON.stringify({ why: "WO-0001 (hand-built blocks)" }) });
+  const out = await body(res);
+  assert.equal(res.status, 202, JSON.stringify(out));
+  assert.ok(out.approval && out.pending, "the post waits on a card");
+  const card = (await body(api("/api/approvals"))).find((a: any) => a.id === out.approval);
+  assert.equal(card.state, "pending");
+  assert.equal(card.tool, "post_work_order");
+  assert.match(card.summary, /hand-built blocks/);
+  assert.ok(!frames.some((f) => f.event === "design.version" && f.data.tool === "post_work_order"), "nothing is posted before the answer");
+  await body(api(`/api/approvals/${out.approval}`, { method: "POST", body: JSON.stringify({ decision: "allow" }) }));
+  for (let i = 0; i < 50 && !frames.some((f) => f.event === "design.version" && f.data.tool === "post_work_order"); i++) await sleep(20);
+  off();
+  assert.ok(frames.some((f) => f.event === "design.version" && f.data.tool === "post_work_order"), "posted after the allow");
+  const note = (await body(api("/api/room/messages"))).filter((m: any) => m.kind === "steer").pop();
+  assert.match(note.text, /^WO-0001 posted/);
 });
 
 test("engines say what they cost, and Ollama is free", async () => {

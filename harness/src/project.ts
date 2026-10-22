@@ -83,6 +83,11 @@ export const EDIT_TOOLS = [
   "reassign",
   "undo_edit",
   "redo_edit",
+  "complete_network",
+  // The free checks and opening a work order: the engineer's own actions, no crew turn.
+  "check_rules",
+  "check_operator",
+  "open_work_order",
 ] as const;
 export type SteerTool = (typeof STEER_TOOLS)[number];
 
@@ -263,7 +268,9 @@ export class ProjectService {
    * Design the open project from its inputs to deliverables with no AI: the engine's tools in
    * stage order. Returns at once; progress arrives as conversation lines and design frames.
    */
-  autodesign(): { steps: number } {
+  /** The whole design by the engine alone, or with `prepareOnly` just the area (import, data
+   *  check, street twin) for an engineer who lays the network out by hand. */
+  autodesign(prepareOnly = false): { steps: number } {
     const meta = this.requireMeta();
     const room = this.room;
     const engine = this.requireEngine();
@@ -274,12 +281,19 @@ export class ProjectService {
     if (this.automating || room.busy) throw new HttpError(409, "the crew is working; wait for the turn to finish");
     this.automating = true;
     const started = Date.now();
-    const total = AUTODESIGN_STEPS.length;
+    const steps = prepareOnly ? AUTODESIGN_STEPS.slice(0, PREPARE_STEPS) : AUTODESIGN_STEPS;
+    const total = steps.length;
     this.autoRun = room
       .exclusive(async () => {
-        room.note(`Automatic design started: ${total} engine steps, no AI involved.`, "text", { automatic: true });
+        room.note(
+          prepareOnly
+            ? `Preparing the area to lay out by hand: ${total} engine steps, no AI involved.`
+            : `Automatic design started: ${total} engine steps, no AI involved.`,
+          "text",
+          { automatic: true },
+        );
         let last: Record<string, unknown> | null = null;
-        for (const [i, step] of AUTODESIGN_STEPS.entries()) {
+        for (const [i, step] of steps.entries()) {
           let tool = step.tool;
           let args: Record<string, unknown> = {};
           if (step.tool === "import_osm") {
@@ -317,6 +331,10 @@ export class ProjectService {
           last = out;
         }
         const secs = Math.round((Date.now() - started) / 1000);
+        if (prepareOnly) {
+          room.note(`The area is ready in ${secs} s: place a POP (P), a cabinet (H) and FATs (T), give them their homes with Reassign (R), draw the cables (D), then Edit → Complete the network.`, "text", { automatic: true });
+          return;
+        }
         room.note(`Automatic design finished in ${secs} s. Every number came from the engine's solvers and checks; open the BOQ tab or File → Export for the deliverables.${last && typeof last.summary === "string" ? ` Last step: ${last.summary}.` : ""}`, "text", { automatic: true });
       })
       .catch((err: Error) => room.note(`Automatic design could not start: ${err.message}`, "error"))
@@ -384,6 +402,14 @@ export class ProjectService {
     if (!editing && !(STEER_TOOLS as readonly string[]).includes(tool)) {
       throw new HttpError(400, `${tool} is not one of the steering or editing tools (${[...STEER_TOOLS, ...EDIT_TOOLS].join(", ")})`);
     }
+    const out = await this.runEngineerTool(tool, args);
+    const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+    if (revalidate && !editing) void this.room?.userTurn(`@Checker ${checkerPrompt(tool, out, reason)}`);
+    return out;
+  }
+
+  /** Run one of the engineer's own engine tools: activity frames, a room message, a new version. */
+  private async runEngineerTool(tool: string, args: Record<string, unknown>): Promise<SteerResult> {
     const room = this.room;
     if (!room) throw new HttpError(409, "no project open");
     if (room.busy) throw new HttpError(409, "the crew is working; stop the turn or wait for it to finish");
@@ -402,8 +428,40 @@ export class ProjectService {
     room.steerMessage(`${out.summary}${reason ? ` — ${reason}` : ""}`, { tool, args, version: out.version, reran, warnings: out.warnings ?? [] });
     if (out.version) this.d.bus.emit("design.version", { version: out.version, tool, summary: out.summary, changes: out.changes ?? null });
     await room.refreshStage();
-    if (revalidate && !editing) void room.userTurn(`@Checker ${checkerPrompt(tool, out, reason)}`);
     return out;
+  }
+
+  /**
+   * Post the open work order to the network of record from the app. Posting is risky, so it
+   * waits on an approval card like any crew member's request: this returns at once with the
+   * card, and the post runs (or is refused) in the background once the engineer answers.
+   */
+  postWorkOrder(why?: string): { approval: string; pending: true } {
+    const meta = this.current;
+    const room = this.room;
+    if (!meta || !room) throw new HttpError(409, "no project open");
+    if (room.busy) throw new HttpError(409, "the crew is working; stop the turn or wait for it to finish");
+    const decision = this.d.approvals.request({
+      project: meta.id,
+      folk: "you",
+      tool: "post_work_order",
+      input: {},
+      summary: why ? `Post ${why} to the network of record` : "Post the open work order to the network of record",
+    });
+    // The card is registered as the request is made: the newest pending one is this one.
+    const id = this.d.approvals.list().find((a) => a.state === "pending" && a.shortTool === "post_work_order" && a.folk === "you")?.id ?? "";
+    void decision.then(async (d) => {
+      if (d.behavior !== "allow") {
+        room.steerMessage(`Work order not posted: ${d.message ?? "denied"}`, { tool: "post_work_order", warnings: [] });
+        return;
+      }
+      try {
+        await this.runEngineerTool("post_work_order", (d.updatedInput ?? {}) as Record<string, unknown>);
+      } catch (e) {
+        room.steerMessage(`Work order not posted: ${e instanceof Error ? e.message : String(e)}`, { tool: "post_work_order", warnings: [] });
+      }
+    });
+    return { approval: id, pending: true };
   }
 
   /** What undo and redo would do now (the engine keeps the edit stack). */
@@ -480,6 +538,8 @@ export function projectId(areaPath: string, rulebook: string): string {
  * make every decision, so this is the whole design at no cost; the crew is for questions,
  * explanations and changes.
  */
+/** How many of the steps below prepare the area (data in, checked, street twin built). */
+export const PREPARE_STEPS = 3;
 export const AUTODESIGN_STEPS: Array<{ tool: string; label: string }> = [
   { tool: "import_osm", label: "Import the project's data" },
   { tool: "check_inputs", label: "Check the data" },

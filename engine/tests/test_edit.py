@@ -92,8 +92,15 @@ def test_a_drawn_cable_follows_the_streets_and_survives_routing(s):
     assert cable.props["fiber_count"] == min(s.rules.fibers.distribution)
     bad = edit.draw_cable(s, "distribution", [_lonlat(fdh), _lonlat(fat)], "x", fiber_count=7)
     assert bad.summary.startswith("rejected")
+    drawn = set(cable.openftth["drawn_edges"])
     route_distribution(s)
-    assert cable.element_uuid in s.design, "routing keeps what the engineer drew"
+    # Routing keeps what the engineer drew: either the cable itself (when no tree uses it) or
+    # tree sections laid along every edge of it, marked as drawn.
+    kept = cable.element_uuid in s.design
+    marked = set()
+    for c in s.design.by_kind("distribution"):
+        marked.update(c.openftth.get("drawn_edges") or [])
+    assert kept or drawn <= marked, "routing keeps what the engineer drew"
 
 
 def test_split_set_and_delete(s):
@@ -275,3 +282,16 @@ def test_delete_several_is_one_edit_and_violations_are_listed(s):
     head = s.project.head()
     listed = edit.list_violations(s)
     assert set(listed) == {"count", "by_check", "items"} and s.project.head() == head
+
+
+def test_a_rule_check_in_between_does_not_block_undo(s):
+    from openftth_engine.pipeline import check_operator_tool, validate_design
+
+    fat = sorted(s.design.by_kind("fat"), key=lambda f: f.element_uuid)[0]
+    old = fat.props["name"]
+    assert edit.set_attribute(s, fat.element_uuid, "name", "FAT-CHECKED", "survey").version
+    validate_design(s)
+    check_operator_tool(s)
+    assert edit.edit_history(s)["can_undo"], "checks change nothing in the design"
+    assert edit.undo_edit(s).version
+    assert s.design.get(fat.element_uuid).props["name"] == old

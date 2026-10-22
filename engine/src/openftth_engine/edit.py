@@ -26,7 +26,13 @@ from .pipeline import (
     _to_metric,
     _twin,
     _wgs,
+    assign_fibers,
     assign_pon,
+    place_chambers,
+    route_distribution,
+    route_drops,
+    route_feeder,
+    size_cables,
 )
 from .results import Decision, ToolResult
 from .solve.fibers import FIBERS_PER_TUBE, tube_fiber
@@ -44,6 +50,7 @@ UNDOABLE = (
     "set_attribute",
     "reassign",
     "move_site",
+    "complete_network",
 )
 
 SITE_KINDS = ("fat", "fdh", "chamber", "pop")
@@ -78,6 +85,14 @@ def _label(f: Feature) -> str:
     if f.kind == "drop" and f.props.get("from_label") and f.props.get("to_label"):
         return f"drop {f.props['from_label']} → {f.props['to_label']}"
     return f"{f.kind} {f.element_uuid[:8]}"
+
+
+def _sync_connections(s: Session) -> None:
+    """A FAT's or a cabinet's connections are the units on it; the reserve is what is left."""
+    for f in s.design.by_kind("fat") + s.design.by_kind("fdh"):
+        units = int(f.openftth.get("units", 0))
+        f.props["total_connections"] = units
+        f.props["reserve_capacity"] = int(f.props.get("port_capacity", 0) or 0) - units
 
 
 def _reason(tool: str, reason: str) -> str | None:
@@ -172,7 +187,13 @@ def add_site(s: Session, kind: str, lon: float, lat: float, reason: str) -> Tool
             element_type="tb",
             placement="outdoor",
             geometry=point,
-            props={"name": name, "port_capacity": r.fat.max_homes, "status": "planned"},
+            props={
+                "name": name,
+                "port_capacity": r.fat.max_homes,
+                "total_connections": 0,
+                "reserve_capacity": r.fat.max_homes,
+                "status": "planned",
+            },
             openftth={"kind": "fat", "units": 0, **pin},
         )
     elif kind == "fdh":
@@ -183,7 +204,13 @@ def add_site(s: Session, kind: str, lon: float, lat: float, reason: str) -> Tool
             element_type="otb",
             placement="outdoor",
             geometry=point,
-            props={"name": name, "port_capacity": cap, "status": "planned"},
+            props={
+                "name": name,
+                "port_capacity": cap,
+                "total_connections": 0,
+                "reserve_capacity": cap,
+                "status": "planned",
+            },
             openftth={"kind": "fdh", "units": 0, "capacity": cap, "fats": 0, **pin},
         )
     elif kind == "chamber":
@@ -201,7 +228,8 @@ def add_site(s: Session, kind: str, lon: float, lat: float, reason: str) -> Tool
         )
         name = f"CH-{node}"
     else:
-        name = _next_name(s, "pop", "POP-", 1)
+        # A lone POP is "POP", as the solver names it; more are numbered.
+        name = _next_name(s, "pop", "POP-", 1) if s.design.by_kind("pop") else "POP"
         f = Feature(
             element_uuid=s.uid("odf", f"pop:manual:{node}"),
             element_type="odf",
@@ -571,6 +599,8 @@ def draw_cable(
         fibers,
         {"drawn_by": "engineer", "placed_reason": why, "downstream_units": 0},
     )
+    # The routers follow these edges; they outlive this cable when it becomes tree sections.
+    f.openftth["drawn_edges"] = sorted(f.openftth["edges"])
     s.design.add(f)
     worst = max(d for _, d in snapped)
     result = ToolResult(
@@ -641,8 +671,10 @@ def split_cable(s: Session, element_uuid: str, lon: float, lat: float, reason: s
     second = _cable_feature(
         s, second_id, kind, nodes[i:], f"{name}-B", int(f.props.get("fiber_count", 1)), extra
     )
+    drawn = set(f.openftth.get("drawn_edges") or f.openftth.get("edges", {}))
     for part in (first, second):
         part.props["cable_count"] = f.props.get("cable_count", 1)
+        part.openftth["drawn_edges"] = sorted(drawn & set(part.openftth["edges"]))
     s.design.add(first)
     s.design.add(second)
     chamber_note = ""
@@ -825,6 +857,7 @@ def join_cables(s: Session, first_uuid: str, second_uuid: str, reason: str) -> T
     for key in ("cable_count", "status", "notes"):
         if key in a.props:
             joined.props[key] = a.props[key]
+    joined.openftth["drawn_edges"] = sorted(joined.openftth["edges"])
     s.design.remove(second_uuid)
     s.design.add(joined)
     if conns:
@@ -1105,55 +1138,76 @@ def set_attribute(s: Session, element_uuid: str, key: str, value: Any, reason: s
     return _record_edit(s, _checked(s, result), started)
 
 
-def reassign(s: Session, element_uuid: str, to_uuid: str, reason: str) -> ToolResult:
-    """Give a home to another FAT, or a FAT to another cabinet; the PONs, routes, sizes and
-    fibres that depend on it are worked out again, as one version."""
+def reassign(
+    s: Session,
+    element_uuid: str | None,
+    to_uuid: str,
+    reason: str,
+    element_uuids: list[str] | None = None,
+) -> ToolResult:
+    """Give homes to a FAT, or FATs to a cabinet (one, or a whole selection at once); the PONs,
+    routes, sizes and fibres that depend on it are worked out again, as one version."""
     why = _reason("reassign", reason)
     if not why:
         return _rejected("reassign", "a reason is required; every manual edit records why")
-    for u in (element_uuid, to_uuid):
+    ids = list(dict.fromkeys([*(element_uuids or []), *([element_uuid] if element_uuid else [])]))
+    if not ids:
+        return _rejected("reassign", "say what to reassign")
+    for u in [*ids, to_uuid]:
         if u not in s.design:
             return _rejected("reassign", f"no element {u} in the design")
-    f, to = s.design.get(element_uuid), s.design.get(to_uuid)
-    pair = (f.kind, to.kind)
-    if pair not in (("home", "fat"), ("fat", "fdh")):
-        return _rejected("reassign", "reassign a home to a FAT, or a FAT to an FDH cabinet")
+    to = s.design.get(to_uuid)
+    want = {"fat": "home", "fdh": "fat"}.get(to.kind or "")
+    if want is None:
+        return _rejected("reassign", "reassign homes to a FAT, or FATs to an FDH cabinet")
+    movers = [s.design.get(u) for u in ids if s.design.get(u).kind == want]
+    movers = [f for f in movers if f.openftth.get(f"{to.kind}_id") != to_uuid]
+    if not movers:
+        return _rejected(
+            "reassign",
+            f"nothing to move: select {want}s that are not on {_label(to)} yet",
+        )
+    skipped = len(ids) - len(movers)
     started = _begin(s)
-    units = int(f.openftth.get("units", 1))
-    if pair == ("home", "fat"):
-        old = f.openftth.get("fat_id")
-        if old == to_uuid:
-            return _rejected("reassign", f"{_label(f)} is already on {_label(to)}")
-        if old and old in s.design:
-            prev = s.design.get(old)
-            prev.openftth["units"] = max(0, int(prev.openftth.get("units", 0)) - units)
-        to.openftth["units"] = int(to.openftth.get("units", 0)) + units
-        f.openftth["fat_id"] = to_uuid
-        f.openftth["fat_ids"] = [to_uuid]
-        f.openftth["fdh_id"] = to.openftth.get("fdh_id")
-        if to.openftth.get("pop_id"):
-            f.openftth["pop_id"] = to.openftth["pop_id"]
-    else:
-        old = f.openftth.get("fdh_id")
-        if old == to_uuid:
-            return _rejected("reassign", f"{_label(f)} is already on {_label(to)}")
-        if old and old in s.design:
-            prev = s.design.get(old)
-            prev.openftth["units"] = max(0, int(prev.openftth.get("units", 0)) - units)
-            prev.openftth["fats"] = max(0, int(prev.openftth.get("fats", 0)) - 1)
-        to.openftth["units"] = int(to.openftth.get("units", 0)) + units
-        to.openftth["fats"] = int(to.openftth.get("fats", 0)) + 1
-        f.openftth["fdh_id"] = to_uuid
-        for h in s.design.by_kind("home"):
-            if h.openftth.get("fat_id") == element_uuid:
-                h.openftth["fdh_id"] = to_uuid
+    olds: list[str | None] = []
+    for f in movers:
+        units = int(f.openftth.get("units", 1))
+        if want == "home":
+            old = f.openftth.get("fat_id")
+            if old and old in s.design:
+                prev = s.design.get(old)
+                prev.openftth["units"] = max(0, int(prev.openftth.get("units", 0)) - units)
+            to.openftth["units"] = int(to.openftth.get("units", 0)) + units
+            f.openftth["fat_id"] = to_uuid
+            f.openftth["fat_ids"] = [to_uuid]
+            f.openftth["fdh_id"] = to.openftth.get("fdh_id")
+            if to.openftth.get("pop_id"):
+                f.openftth["pop_id"] = to.openftth["pop_id"]
+        else:
+            old = f.openftth.get("fdh_id")
+            if old and old in s.design:
+                prev = s.design.get(old)
+                prev.openftth["units"] = max(0, int(prev.openftth.get("units", 0)) - units)
+                prev.openftth["fats"] = max(0, int(prev.openftth.get("fats", 0)) - 1)
+            to.openftth["units"] = int(to.openftth.get("units", 0)) + units
+            to.openftth["fats"] = int(to.openftth.get("fats", 0)) + 1
+            f.openftth["fdh_id"] = to_uuid
+            for h in s.design.by_kind("home"):
+                if h.openftth.get("fat_id") == f.element_uuid:
+                    h.openftth["fdh_id"] = to_uuid
+        olds.append(old)
     warnings: list[str] = []
+    if skipped:
+        warnings.append(
+            f"{skipped} selected element(s) are not {want}s or already there; left as they are"
+        )
     if to.kind == "fat":
         cap = int(to.props.get("port_capacity", 0) or 0)
         if cap and int(to.openftth["units"]) > cap:
             warnings.append(
                 f"{_label(to)} now serves {to.openftth['units']} units over its {cap} ports"
             )
+    _sync_connections(s)
     # Everything downstream of the assignment is worked out again, recorded with this edit.
     s.deferred = []
     try:
@@ -1161,25 +1215,121 @@ def reassign(s: Session, element_uuid: str, to_uuid: str, reason: str) -> ToolRe
     finally:
         pre, s.deferred = s.deferred, None
     sub = pre + _rerun(s)
+    if len(movers) == 1:
+        old = olds[0]
+        what = (
+            f"{_label(movers[0])} moved from {_label(s.design.get(old))} to {_label(to)}"
+            if old and old in s.design
+            else f"{_label(movers[0])} given to {_label(to)}"
+        )
+    else:
+        what = f"{len(movers)} {'homes' if want == 'home' else 'FATs'} moved to {_label(to)}"
     result = _merge(
         ToolResult(
             tool="reassign",
-            summary=f"{_label(f)} moved from {_label(s.design.get(old)) if old and old in s.design else 'nothing'} to {_label(to)}",
+            summary=what,
             decisions=[
                 Decision(
                     stage="solve",
                     tool="reassign",
-                    element=element_uuid,
+                    element=f.element_uuid,
                     reason=f"{_label(f)} reassigned to {_label(to)} by the engineer: {why}.",
-                    values={"from": old, "to": to_uuid, "units": units},
+                    values={"from": old, "to": to_uuid, "units": int(f.openftth.get("units", 1))},
                     source="user",
                 )
+                for f, old in zip(movers, olds, strict=True)
             ],
             warnings=warnings,
-            data={"element": element_uuid, "to": to_uuid},
+            data={
+                "element": movers[0].element_uuid,
+                "elements": [f.element_uuid for f in movers],
+                "to": to_uuid,
+            },
         ),
         sub,
     )
+    return _record_edit(s, _checked(s, result), started)
+
+
+def complete_network(s: Session, reason: str) -> ToolResult:
+    """Finish a network the engineer laid out by hand: from the sites they placed and the homes
+    and FATs they assigned, route the feeder and distribution along the cables they drew (and
+    only where they drew none, the cheapest way), connect every assigned home with its drop,
+    place chambers, size the cables and number the fibres. One version, undone in one step.
+    Nothing is clustered or placed: every site stays the engineer's."""
+    why = _reason("complete_network", reason)
+    if not why:
+        return _rejected("complete_network", "a reason is required; every manual edit records why")
+    d = s.design
+    pops, fdhs, fats = d.by_kind("pop"), d.by_kind("fdh"), d.by_kind("fat")
+    if not pops:
+        return _rejected("complete_network", "place a POP first")
+    if not fdhs:
+        return _rejected("complete_network", "place an FDH cabinet first")
+    if not fats:
+        return _rejected("complete_network", "place a FAT first")
+    loose = [
+        _label(f) for f in fats if f.openftth.get("fdh_id") not in {x.element_uuid for x in fdhs}
+    ]
+    if loose:
+        return _rejected(
+            "complete_network",
+            f"{', '.join(loose[:3])}{' and more' if len(loose) > 3 else ''} feed(s) no cabinet: reassign them to an FDH first",
+        )
+    homes = d.by_kind("home")
+    served = [h for h in homes if h.openftth.get("fat_id") in {f.element_uuid for f in fats}]
+    if not served:
+        return _rejected(
+            "complete_network", "no home is assigned to a FAT yet: reassign homes first"
+        )
+    started = _begin(s)
+    # Units follow the assignments as they stand (the engine counts them; nobody types them).
+    by_fat: dict[str, int] = {}
+    for h in served:
+        by_fat[h.openftth["fat_id"]] = by_fat.get(h.openftth["fat_id"], 0) + int(
+            h.openftth.get("units", 1)
+        )
+    for f in fats:
+        f.openftth["units"] = by_fat.get(f.element_uuid, 0)
+    for c in fdhs:
+        mine = [f for f in fats if f.openftth.get("fdh_id") == c.element_uuid]
+        c.openftth["units"] = sum(int(f.openftth["units"]) for f in mine)
+        c.openftth["fats"] = len(mine)
+    _sync_connections(s)
+    s.deferred = []
+    try:
+        for step in (
+            assign_pon,
+            route_feeder,
+            route_distribution,
+            route_drops,
+            place_chambers,
+            size_cables,
+            assign_fibers,
+        ):
+            step(s)
+    finally:
+        sub, s.deferred = s.deferred, None
+    unserved = len(homes) - len(served)
+    result = _merge(
+        ToolResult(
+            tool="complete_network",
+            summary=f"Network completed from your layout: {len(served)} home(s) on {len(fats)} FAT(s) under {len(fdhs)} cabinet(s)",
+            decisions=[
+                Decision(
+                    stage="solve",
+                    tool="complete_network",
+                    reason=f"The engineer laid out the sites and assignments by hand ({why}); the engine routed, sized and numbered the network from them, following every cable they drew.",
+                    values={"homes": len(served), "fats": len(fats), "fdhs": len(fdhs)},
+                    source="user",
+                )
+            ],
+            warnings=[f"{unserved} home(s) have no FAT and are not served"] if unserved else [],
+            data={"homes": len(served), "unserved": unserved},
+        ),
+        sub,
+    )
+    result.summary = result.summary.replace("; re-ran ", "; ran ")
     return _record_edit(s, _checked(s, result), started)
 
 
@@ -1203,6 +1353,19 @@ def _restore(s: Session, version: str) -> None:
         s.cache["pop_node"] = int(pops[0].openftth["node"])
 
 
+def _unchanged_since(s: Session, version: str | None) -> bool:
+    """The design is what it was at `version`: no version since, or only ones that changed
+    nothing in it (a rule check, a work order opened)."""
+    if not version:
+        return False
+    if s.project.head() == version:
+        return True
+    try:
+        return s.project.design_at(version).diff(s.design).is_empty()
+    except Exception:  # noqa: BLE001 - an unknown version is simply not undoable
+        return False
+
+
 def undo_edit(s: Session) -> ToolResult:
     """Step back over the engineer's last edit. Only when the design has not changed since,
     so a solver run in between is never silently thrown away."""
@@ -1211,7 +1374,7 @@ def undo_edit(s: Session) -> ToolResult:
     if not stack:
         return _rejected("undo_edit", "nothing to undo")
     top = stack[-1]
-    if s.project.head() != top["after"]:
+    if not _unchanged_since(s, top["after"]):
         return _rejected(
             "undo_edit",
             "the design changed since that edit; go back through Versions instead",
@@ -1256,7 +1419,7 @@ def redo_edit(s: Session) -> ToolResult:
     if not redo:
         return _rejected("redo_edit", "nothing to redo")
     top = redo[-1]
-    if s.project.head() != top.get("undo"):
+    if not _unchanged_since(s, top.get("undo")):
         return _rejected("redo_edit", "the design changed since the undo; nothing to redo")
     before = s.design.copy()
     s.project.set_stage("solve")
@@ -1295,10 +1458,11 @@ def edit_history(s: Session) -> dict[str, Any]:
     meta = s.project.meta
     stack = list(meta.get("edit_stack") or [])
     redo = list(meta.get("redo_stack") or [])
-    head = s.project.head()
     return {
-        "can_undo": bool(stack) and stack[-1]["after"] == head and bool(stack[-1].get("before")),
+        "can_undo": bool(stack)
+        and bool(stack[-1].get("before"))
+        and _unchanged_since(s, stack[-1]["after"]),
         "undo": stack[-1] if stack else None,
-        "can_redo": bool(redo) and redo[-1].get("undo") == head,
+        "can_redo": bool(redo) and _unchanged_since(s, redo[-1].get("undo")),
         "redo": redo[-1] if redo else None,
     }

@@ -1,0 +1,13 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"name": "Gent hand-built sample (two blocks)"},
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[3.6856, 51.0699], [3.6872, 51.0699], [3.6872, 51.0708], [3.6856, 51.0708], [3.6856, 51.0699]]]
+      }
+    }
+  ]
+}

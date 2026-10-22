@@ -455,10 +455,23 @@ def set_attribute(element_uuid: str, key: str, value: Any, reason: str) -> dict[
 
 
 @mcp.tool()
-def reassign(element_uuid: str, to_uuid: str, reason: str) -> dict[str, Any]:
-    """Give a home to another FAT or a FAT to another cabinet; PONs, routes, sizes and fibres
-    are worked out again as one version."""
-    return _out(edit.reassign(_s(), element_uuid, to_uuid, reason))
+def reassign(
+    to_uuid: str,
+    reason: str,
+    element_uuid: str | None = None,
+    element_uuids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Give homes to a FAT or FATs to a cabinet (one, or several at once); PONs, routes, sizes
+    and fibres are worked out again as one version."""
+    return _out(edit.reassign(_s(), element_uuid, to_uuid, reason, element_uuids=element_uuids))
+
+
+@mcp.tool()
+def complete_network(reason: str) -> dict[str, Any]:
+    """Finish a network laid out by hand: route feeder and distribution along the cables the
+    engineer drew, add drops for every assigned home, place chambers, size cables and number
+    fibres, as one version. Places no site and clusters nothing."""
+    return _out(edit.complete_network(_s(), reason))
 
 
 @mcp.tool()

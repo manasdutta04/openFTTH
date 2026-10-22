@@ -67,6 +67,7 @@
           "join_cables",
           "edit_splice",
           "list_violations",
+          "complete_network",
           "set_attribute",
           "reassign",
           "undo_edit",

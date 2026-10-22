@@ -169,6 +169,134 @@ def _clear_solved(s: Session, kind: str) -> None:
             s.design.remove(f.element_uuid)
 
 
+#: How much cheaper a street edge the engineer drew a cable along is for the routing trees: low
+#: enough that a tree follows the drawn cables wherever they lead, while edges priced at zero
+#: would let the approximation wander.
+DRAWN_PREFERENCE = 0.01
+
+
+def _take_drawn(s: Session, kind: str) -> tuple[set[str], list[Feature]]:
+    """The street edges the engineer drew cables of `kind` along, and those cables, taken out of
+    the design: the router lays its sections over the same edges, so they would be doubled."""
+    edges: set[str] = set()
+    taken: list[Feature] = []
+    for f in sorted(s.design.by_kind(kind), key=lambda f: f.element_uuid):
+        mine = f.openftth.get("drawn_edges")
+        if mine is None and f.openftth.get("drawn_by") == "engineer":
+            mine = list(f.openftth.get("edges", {}))
+        if mine:
+            edges.update(mine)
+            taken.append(f)
+            s.design.remove(f.element_uuid)
+    return edges, taken
+
+
+def _favouring(G: nx.Graph, drawn: set[str]) -> tuple[nx.Graph, str]:
+    """The street graph to route on, and the edge weight to use: with drawn edges, a copy where
+    they cost a fraction, so the tree follows them (cable costs still come from `cost`)."""
+    if not drawn:
+        return G, "cost"
+    H = G.copy()
+    for u, v, d in H.edges(data=True):
+        key = f"{min(u, v)}-{max(u, v)}"
+        d["preference"] = d["cost"] * (DRAWN_PREFERENCE if key in drawn else 1.0)
+    return H, "preference"
+
+
+def _settle_drawn(s: Session, kind: str, drawn: set[str], taken: list[Feature]) -> list[str]:
+    """After routing `kind`: mark which section edges the engineer drew, and keep every drawn
+    stretch the trees did not use as a cable of its own (a spare, say): nothing the engineer
+    drew is lost, and nothing is laid twice."""
+    if not drawn:
+        return []
+    used: set[str] = set()
+    for c in s.design.by_kind(kind):
+        mine = sorted(k for k in c.openftth.get("edges", {}) if k in drawn)
+        used.update(c.openftth.get("edges", {}))
+        if mine:
+            c.openftth["drawn_edges"] = mine
+            if len(mine) == len(c.openftth["edges"]):
+                c.openftth["drawn_by"] = "engineer"
+    kept = 0
+    for f in taken:
+        mine = set(f.openftth.get("drawn_edges") or f.openftth.get("edges", {}))
+        if not mine & used:
+            s.design.add(f)
+            continue
+        kept += _keep_unused(s, kind, f, sorted(mine - used))
+    if kept:
+        return [
+            f"{kept} stretch(es) of the {kind} you drew serve no site of the tree; kept as drawn"
+        ]
+    return []
+
+
+def _surfaces(twin: Twin, pairs: list[tuple[int, int]]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for u, v in pairs:
+        out[twin.graph[u][v]["surface"]] = out.get(twin.graph[u][v]["surface"], 0.0) + float(
+            twin.graph[u][v]["length_m"]
+        )
+    return {k: round(m, 1) for k, m in sorted(out.items())}
+
+
+def _keep_unused(s: Session, kind: str, f: Feature, edges: list[str]) -> int:
+    """The drawn edges of `f` no tree uses, as cables of their own (one per unbroken run)."""
+    twin = _twin(s)
+    G = nx.Graph()
+    for key in edges:
+        a, b = (int(x) for x in key.split("-"))
+        if twin.graph.has_edge(a, b):
+            G.add_edge(a, b)
+    n = 0
+    for comp in sorted(nx.connected_components(G), key=min):
+        sub = G.subgraph(comp)
+        ends = sorted(v for v in sub if sub.degree(v) == 1) or [min(comp)]
+        nodes = [ends[0]] + [v for _, v in nx.dfs_edges(sub, ends[0])]
+        if len(nodes) < 2:
+            continue
+        n += 1
+        pairs = list(zip(nodes[:-1], nodes[1:], strict=False))
+        keys = {f"{min(u, v)}-{max(u, v)}": (u, v) for u, v in pairs}
+        length = sum(twin.graph[u][v]["length_m"] for u, v in pairs)
+        slack = s.rules.slack.per_closure_m
+        piece = f.model_copy(deep=True)
+        piece.element_uuid = s.uid("cable.underground", f"kept:{f.element_uuid}:{nodes[0]}")
+        piece.geometry = _wgs(twin, twin.path_line(nodes))
+        piece.props.update(
+            {
+                "name": f"{f.props.get('name', kind)}-{n}",
+                "from_label": f"N{nodes[0]}",
+                "to_label": f"N{nodes[-1]}",
+                "length_m": round(length, 1),
+                "slack_m": slack,
+                "total_length_m": round(length + slack, 1),
+            }
+        )
+        piece.openftth.update(
+            {
+                "edges": {
+                    k: (
+                        f"crossing:{twin.graph[u][v]['crossing']}"
+                        if twin.graph[u][v].get("crossing")
+                        else twin.graph[u][v]["surface"],
+                        round(twin.graph[u][v]["length_m"], 2),
+                    )
+                    for k, (u, v) in keys.items()
+                },
+                "surfaces": _surfaces(twin, pairs),
+                "drawn_edges": sorted(keys),
+                "drawn_by": "engineer",
+                "downstream_units": 0,
+                "trench_cost": round(sum(twin.graph[u][v]["cost"] for u, v in pairs), 2),
+            }
+        )
+        for k in ("fdh_id", "pop_id", "fiber_start", "fiber_end", "fibers_used"):
+            piece.openftth.pop(k, None)
+        s.design.add(piece)
+    return n
+
+
 def _commit(s: Session, result: ToolResult, before: Design | None = None) -> ToolResult:
     _stamp(s, result.tool, before)
     if before is not None:
@@ -1157,7 +1285,9 @@ def route_feeder(s: Session) -> ToolResult:
     multi = len(pops) > 1
     for key in [k for k in s.trees if k.startswith("feeder")]:
         del s.trees[key]
+    drawn, taken = _take_drawn(s, "feeder")
     _clear_solved(s, "feeder")
+    graph, weight = _favouring(twin.graph, drawn)
     n = 0
     length = 0.0
     unreachable = 0
@@ -1168,7 +1298,7 @@ def route_feeder(s: Session) -> ToolResult:
         for f in mine:
             node = int(f.openftth["node"])
             terminals[node] = terminals.get(node, 0) + int(f.openftth.get("pons", 1))
-        tree = route_tree(twin.graph, int(pop.openftth["node"]), terminals)
+        tree = route_tree(graph, int(pop.openftth["node"]), terminals, weight=weight)
         s.trees[f"feeder:{pop.element_uuid}" if multi else "feeder"] = tree
         n += _emit_cable_sections(
             s,
@@ -1189,13 +1319,17 @@ def route_feeder(s: Session) -> ToolResult:
         )
     if pops:
         s.cache["pop_node"] = int(pops[0].openftth["node"])
+    drawn_warnings = _settle_drawn(s, "feeder", drawn, taken)
     crossing_decisions = _sync_crossings(s, "route_feeder")
     decisions = [
         Decision(
             stage="solve",
             tool="route_feeder",
             reason="Feeder routed POP → FDHs as a min-cost Steiner tree over the street graph (trench cost per metre by surface); fibre count per section = downstream PONs + spare, rounded up the feeder ladder."
-            + (" Each POP feeds only the cabinets in its own catchment." if multi else ""),
+            + (" Each POP feeds only the cabinets in its own catchment." if multi else "")
+            + (
+                " The tree follows the feeder the engineer drew wherever it leads." if drawn else ""
+            ),
             values={
                 "sections": n,
                 "length_m": round(length, 1),
@@ -1216,7 +1350,8 @@ def route_feeder(s: Session) -> ToolResult:
             tool="route_feeder",
             summary=summary,
             decisions=decisions,
-            warnings=[f"{unreachable} FDH(s) unreachable from their POP"] if unreachable else [],
+            warnings=([f"{unreachable} FDH(s) unreachable from their POP"] if unreachable else [])
+            + drawn_warnings,
             data={"length_m": round(length, 1)},
         ),
         before,
@@ -1228,7 +1363,9 @@ def route_distribution(s: Session) -> ToolResult:
     twin = _twin(s)
     r = s.rules
     before = s.design.copy()
+    drawn, taken = _take_drawn(s, "distribution")
     _clear_solved(s, "distribution")
+    graph, weight = _favouring(twin.graph, drawn)
     total = 0.0
     n = 0
     grafted = 0
@@ -1244,7 +1381,11 @@ def route_distribution(s: Session) -> ToolResult:
             node = int(f.openftth["node"])
             terminals[node] = terminals.get(node, 0) + _fibres_of(r, f)
         tree = route_tree(
-            twin.graph, int(fdh.openftth["node"]), terminals, max_path_m=r.distances.max_dist_m
+            graph,
+            int(fdh.openftth["node"]),
+            terminals,
+            weight=weight,
+            max_path_m=r.distances.max_dist_m,
         )
         grafted += len(tree.grafted)
         s.trees[fdh.element_uuid] = tree
@@ -1266,10 +1407,16 @@ def route_distribution(s: Session) -> ToolResult:
         Decision(
             stage="solve",
             tool="route_distribution",
-            reason="Per FDH, distribution routed FDH → FATs as a min-cost Steiner tree; fibre count per section = downstream units (one fibre per home in a centralised-split design) + spare, rounded up the distribution ladder.",
+            reason="Per FDH, distribution routed FDH → FATs as a min-cost Steiner tree; fibre count per section = downstream units (one fibre per home in a centralised-split design) + spare, rounded up the distribution ladder."
+            + (
+                " The trees follow the distribution cables the engineer drew wherever they lead."
+                if drawn
+                else ""
+            ),
             values={"sections": n, "length_m": round(total, 1)},
         )
     ]
+    drawn_warnings = _settle_drawn(s, "distribution", drawn, taken)
     if grafted:
         decisions.append(
             Decision(
@@ -1289,6 +1436,7 @@ def route_distribution(s: Session) -> ToolResult:
             tool="route_distribution",
             summary=f"distribution {total:.0f} m in {n} sections",
             decisions=decisions,
+            warnings=drawn_warnings,
             data={"length_m": round(total, 1)},
         ),
         before,

@@ -48,6 +48,6 @@ for approval, and only call the tool with the `approval_id` the approval card re
   a spare distribution cable here", "split this cable at the joint", "give this home to
   FAT-012", "join these two cables", "move this splice to fibre 7"), use `add_site`,
   `draw_cable`, `split_cable`, `join_cables`, `edit_splice`, `set_attribute`, `reassign`,
-  `delete_element` or `delete_elements` with the user's reason; a fibre number for
+  `delete_element` or `delete_elements` with the user's reason (and `complete_network` when they have laid a network out by hand and ask you to finish it); a fibre number for
   `edit_splice` must come from the user, and `undo_edit` / `redo_edit` when they ask to go
   back. Each result says which rules the design now breaks: pass that on. Never edit unasked.
