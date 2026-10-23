@@ -65,8 +65,9 @@ survive upgrades and uninstalls (the uninstaller asks).
 **Bring your own AI, or none.** **Design automatically** designs a whole area with the engine
 alone: no AI, account or key. For the crew, pick an engine in the composer's engine menu:
 the Claude CLI or Codex CLI (your own subscription), an OpenAI-compatible API or OpenRouter
-(your own key), or a local model through [Ollama](https://ollama.com) (free). Help → Check for
-updates looks for a newer release only when you ask.
+(your own key), or a local model through [Ollama](https://ollama.com) (free). openFTTH checks
+GitHub for a newer release when it starts and offers the download (turn it off in Settings →
+Updates); Help → Check for updates asks at any time.
 
 To build the installer yourself: `tools\package-windows.ps1 -Installer` (Rust, Node 24 + pnpm,
 uv and [Inno Setup 6](https://jrsoftware.org/isinfo.php), all free).

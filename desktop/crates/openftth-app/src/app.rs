@@ -21,15 +21,15 @@ use crate::icons::{self, Icon};
 use crate::import::ImportWizard;
 use crate::inspector::{inspector, is_excluded, is_movable, InspectorAction};
 use crate::palette::{Command, CommandPalette};
-use crate::prefs::Prefs;
-use crate::state::{AppState, Tab};
+use crate::prefs::{Prefs, StartMode};
+use crate::state::{AppState, Tab, UpdateState};
 use crate::table::{table_tab, TableAction, TableState};
 use crate::tabs::{backstage_tab, boq_tab, splice_tab, versions_tab, TabState};
 use crate::theme::{self, font, Mode, Palette, Weight, R};
 use crate::twin::TwinView;
 use crate::welcome::{welcome, OpenForm, WelcomeAction};
 use crate::widgets::{
-    self, menu_check, menu_item, menu_separator, mono_text, pulse_dot, tag, text,
+    self, caps, menu_check, menu_item, menu_separator, mono_text, pulse_dot, tag, text,
 };
 
 const TITLE_H: f32 = 34.0;
@@ -70,6 +70,10 @@ pub struct OpenFtthApp {
     follow_crew: bool,
     /// The preferences as last written, so they are saved only when they change.
     saved_prefs: Prefs,
+    start_mode: StartMode,
+    auto_update: bool,
+    /// The Settings window, open on this section.
+    settings: Option<SettingsTab>,
     about: bool,
     /// The title of the work order being opened, while its dialog shows.
     wo_dialog: Option<String>,
@@ -205,11 +209,14 @@ impl OpenFtthApp {
             show_cursors: prefs.show_cursors,
             follow_crew: prefs.follow_crew,
             saved_prefs: prefs,
+            start_mode: prefs.start_mode,
+            auto_update: prefs.auto_update,
+            settings: None,
             about: false,
             palette: CommandPalette::default(),
             wo_dialog: None,
             editor: Editor {
-                manual: prefs.manual,
+                manual: prefs.opening_manual(),
                 ..Editor::default()
             },
             table: TableState::default(),
@@ -562,6 +569,9 @@ project {}",
                 .response
                 .on_hover_cursor(CursorIcon::PointingHand);
             });
+            if menu_item(ui, &p, "Settings…", Some("Ctrl+,"), true) {
+                self.settings = Some(SettingsTab::General);
+            }
             if menu_item(ui, &p, "Reveal project folder", None, open) {
                 if let Some(pr) = &self.st.project {
                     reveal(&pr.dir.display().to_string());
@@ -761,12 +771,11 @@ project {}",
                 self.palette.toggle();
             }
             if menu_item(ui, &p, "Keyboard shortcuts", None, true) {
-                self.st.toasts.info(
-                    "Ctrl+K palette · Ctrl+1…6 tabs · E Auto/Manual · V T H C P D S R M tools · Del · J join · Ctrl+Z/Y · F fit · Esc",
-                );
+                self.settings = Some(SettingsTab::Shortcuts);
             }
             if menu_item(ui, &p, "Check for updates", None, true) {
-                self.st.check_updates();
+                self.settings = Some(SettingsTab::Updates);
+                self.st.check_updates(true);
             }
             if menu_item(ui, &p, "Connect AI apps…", None, true) {
                 self.connect.show_window(&self.st);
@@ -777,6 +786,236 @@ project {}",
         })
         .response
         .on_hover_cursor(CursorIcon::PointingHand);
+    }
+
+    /// Settings: how the app looks and opens, the update check, and the keyboard shortcuts.
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        let Some(mut tab) = self.settings else {
+            return;
+        };
+        let p = self.st.palette;
+        let mut open = true;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(560.0);
+                ui.set_min_height(360.0);
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(130.0);
+                        for (t, label) in [
+                            (SettingsTab::General, "General"),
+                            (SettingsTab::Updates, "Updates"),
+                            (SettingsTab::Shortcuts, "Keyboard shortcuts"),
+                        ] {
+                            let (r, resp) =
+                                ui.allocate_exact_size(vec2(130.0, 28.0), Sense::click());
+                            if tab == t {
+                                ui.painter().rect_filled(r, R as f32, p.accent_soft);
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(r, R as f32, p.bg3);
+                            }
+                            ui.painter().text(
+                                pos2(r.left() + 10.0, r.center().y),
+                                Align2::LEFT_CENTER,
+                                label,
+                                font(
+                                    12.5,
+                                    if tab == t {
+                                        Weight::Medium
+                                    } else {
+                                        Weight::Regular
+                                    },
+                                ),
+                                p.text,
+                            );
+                            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                tab = t;
+                            }
+                        }
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        ui.set_width(400.0);
+                        match tab {
+                            SettingsTab::General => self.settings_general(ui),
+                            SettingsTab::Updates => self.settings_updates(ui),
+                            SettingsTab::Shortcuts => settings_shortcuts(ui, &p),
+                        }
+                    });
+                });
+            });
+        self.settings = open.then_some(tab);
+    }
+
+    fn settings_general(&mut self, ui: &mut Ui) {
+        let p = self.st.palette;
+        ui.label(caps("Appearance", p.text3));
+        ui.horizontal(|ui| {
+            ui.radio_value(
+                &mut self.mode,
+                Mode::Dark,
+                text("Dark", 12.5, Weight::Regular, p.text),
+            );
+            ui.radio_value(
+                &mut self.mode,
+                Mode::Light,
+                text("Light", 12.5, Weight::Regular, p.text),
+            );
+        });
+        ui.add_space(10.0);
+        ui.label(caps("A project opens in", p.text3));
+        ui.horizontal(|ui| {
+            for (m, label) in [
+                (StartMode::Last, "The last mode used"),
+                (StartMode::Auto, "Auto"),
+                (StartMode::Manual, "Manual"),
+            ] {
+                ui.radio_value(
+                    &mut self.start_mode,
+                    m,
+                    text(label, 12.5, Weight::Regular, p.text),
+                );
+            }
+        });
+        ui.label(text(
+            "Auto: the crew or the automatic design works the map. Manual: you edit it with the tool bar. Switch any time with E.",
+            11.5,
+            Weight::Regular,
+            p.text3,
+        ));
+        ui.add_space(10.0);
+        ui.label(caps("Crew", p.text3));
+        ui.checkbox(
+            &mut self.show_crew,
+            text("Show the crew panel", 12.5, Weight::Regular, p.text),
+        );
+        ui.checkbox(
+            &mut self.show_cursors,
+            text(
+                "Show the crew's cursors on the map",
+                12.5,
+                Weight::Regular,
+                p.text,
+            ),
+        );
+        ui.checkbox(
+            &mut self.follow_crew,
+            text(
+                "Follow the crew's cursor while it works",
+                12.5,
+                Weight::Regular,
+                p.text,
+            ),
+        );
+    }
+
+    fn settings_updates(&mut self, ui: &mut Ui) {
+        let p = self.st.palette;
+        ui.label(text(
+            format!("openFTTH {}", env!("CARGO_PKG_VERSION")),
+            15.0,
+            Weight::Semibold,
+            p.text,
+        ));
+        ui.add_space(6.0);
+        let (line, colour) = match &self.st.update {
+            UpdateState::Idle => ("Not checked yet.".to_string(), p.text3),
+            UpdateState::Checking => ("Checking GitHub for a newer version…".to_string(), p.text2),
+            UpdateState::Latest => ("You have the newest version.".to_string(), p.green),
+            UpdateState::Available { version, .. } => {
+                (format!("openFTTH {version} is available."), p.accent)
+            }
+            UpdateState::Failed(e) => (format!("Could not check: {e}"), p.amber),
+        };
+        ui.add(egui::Label::new(text(line, 12.5, Weight::Regular, colour)).wrap());
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let checking = self.st.update == UpdateState::Checking;
+            if widgets::button_enabled(ui, &p, "Check now", widgets::Kind::Quiet, !checking)
+                .clicked()
+            {
+                self.st.check_updates(true);
+            }
+            if let UpdateState::Available { url, .. } = &self.st.update {
+                if widgets::button(ui, &p, "Download update", widgets::Kind::Prominent).clicked() {
+                    crate::connect::open_external(url);
+                }
+            }
+        });
+        ui.add_space(12.0);
+        ui.checkbox(
+            &mut self.auto_update,
+            text(
+                "Check for updates when openFTTH starts",
+                12.5,
+                Weight::Regular,
+                p.text,
+            ),
+        );
+        ui.label(text(
+            "The check asks GitHub's release list for the newest version; nothing about you or your projects is sent.",
+            11.5,
+            Weight::Regular,
+            p.text3,
+        ));
+    }
+
+    /// A newer release was found: say so, and offer the download.
+    fn update_window(&mut self, ctx: &egui::Context) {
+        if !self.st.update_popup {
+            return;
+        }
+        let UpdateState::Available { version, url } = self.st.update.clone() else {
+            self.st.update_popup = false;
+            return;
+        };
+        let p = self.st.palette;
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new("Update available")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(340.0);
+                ui.label(text(
+                    format!("openFTTH {version} is ready"),
+                    15.0,
+                    Weight::Semibold,
+                    p.text,
+                ));
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(text(
+                        format!(
+                            "You have {}. Download the new installer and run it: it updates openFTTH in place and keeps your projects.",
+                            env!("CARGO_PKG_VERSION")
+                        ),
+                        12.5,
+                        Weight::Regular,
+                        p.text2,
+                    ))
+                    .wrap(),
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if widgets::button(ui, &p, "Download update", widgets::Kind::Prominent).clicked() {
+                        crate::connect::open_external(&url);
+                        close = true;
+                    }
+                    if widgets::button(ui, &p, "Later", widgets::Kind::Quiet).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if !open || close {
+            self.st.update_popup = false;
+        }
     }
 
     fn about_window(&mut self, ctx: &egui::Context) {
@@ -1697,6 +1936,11 @@ project {}",
                 }
             }
             Command::About => self.about = true,
+            Command::Settings => self.settings = Some(SettingsTab::General),
+            Command::CheckUpdates => {
+                self.settings = Some(SettingsTab::Updates);
+                self.st.check_updates(true);
+            }
             Command::Undo => self.st.edit("undo_edit", serde_json::json!({})),
             Command::Join => self.join_selection(),
             Command::Complete => self.complete_network(),
@@ -1740,6 +1984,9 @@ project {}",
         let typing = ui.ctx().text_edit_focused();
         if ui.input(|i| i.modifiers.command && i.key_pressed(Key::K)) {
             self.palette.toggle();
+        }
+        if ui.input(|i| i.modifiers.command && i.key_pressed(Key::Comma)) {
+            self.settings = Some(SettingsTab::General);
         }
         if self.palette.open {
             return; // the palette takes the keyboard while it is open
@@ -1953,6 +2200,14 @@ impl eframe::App for OpenFtthApp {
 
         self.about_window(ui.ctx());
         self.engine_window(ui.ctx());
+        self.settings_window(ui.ctx());
+        self.update_window(ui.ctx());
+        if !self.st.update_checked_once {
+            self.st.update_checked_once = true;
+            if self.auto_update {
+                self.st.check_updates(false);
+            }
+        }
         self.reset_window(ui.ctx());
         self.work_order_window(ui.ctx());
         self.import.show(ui.ctx(), &mut self.st);
@@ -1966,6 +2221,8 @@ impl eframe::App for OpenFtthApp {
             show_cursors: self.show_cursors,
             follow_crew: self.follow_crew,
             manual: self.editor.manual,
+            start_mode: self.start_mode,
+            auto_update: self.auto_update,
         };
         if now != self.saved_prefs {
             now.save();
@@ -2110,4 +2367,70 @@ fn flat_buttons(ui: &mut Ui) {
     v.widgets.active.bg_stroke = Stroke::NONE;
     ui.spacing_mut().button_padding = vec2(8.0, 5.0);
     ui.spacing_mut().item_spacing.x = 0.0;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    General,
+    Updates,
+    Shortcuts,
+}
+
+/// Every keyboard shortcut, by where it works.
+fn settings_shortcuts(ui: &mut Ui, p: &crate::theme::Palette) {
+    let groups: [(&str, &[(&str, &str)]); 3] = [
+        (
+            "Anywhere",
+            &[
+                ("Ctrl+K", "Command palette: every action and element"),
+                ("Ctrl+,", "Settings"),
+                (
+                    "Ctrl+1 … Ctrl+6",
+                    "Map, BOQ, splices, versions, backstage, table",
+                ),
+                ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+                ("Esc", "Close a dialog, put a tool down"),
+            ],
+        ),
+        (
+            "On the map",
+            &[
+                ("E", "Switch Auto and Manual mode"),
+                ("F", "Fit the design"),
+                ("V", "Select"),
+                ("Shift+drag", "Select a box"),
+                ("M", "Measure"),
+            ],
+        ),
+        (
+            "Manual mode",
+            &[
+                ("T / H / C / P", "Add a FAT / cabinet / chamber / POP"),
+                ("D", "Draw a cable"),
+                ("S", "Split a cable"),
+                ("J", "Join the two selected cables"),
+                ("R", "Reassign a home or FAT"),
+                ("K", "Draw a keep-out or no-dig zone"),
+                ("Del", "Delete the selection"),
+            ],
+        ),
+    ];
+    egui::ScrollArea::vertical()
+        .max_height(340.0)
+        .show(ui, |ui| {
+            for (title, rows) in groups {
+                ui.label(caps(title, p.text3));
+                egui::Grid::new(title)
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        for (keys, what) in rows {
+                            ui.label(mono_text(*keys, 12.0, p.text));
+                            ui.label(text(*what, 12.5, Weight::Regular, p.text2));
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(8.0);
+            }
+        });
 }

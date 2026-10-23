@@ -32,7 +32,9 @@ Please report privately through
   Connect AI apps. It listens on loopback only and can require a key, which you can rotate.
 - **Nothing is sent anywhere unless you ask.** There is no telemetry. Network calls happen only
   for the AI engine you choose, for an explicit map download (the engine's `fetch_osm` tool, which
-  the crew runs only when asked) and for Help → Check for updates.
+  the crew runs only when asked) and for the update check: at start-up (Settings → Updates, on
+  by default, can be turned off) and from Help → Check for updates. The check asks GitHub's
+  release list for the newest version and sends nothing about you or your projects.
 
 ## Your AI keys
 

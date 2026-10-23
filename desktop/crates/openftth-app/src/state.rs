@@ -242,6 +242,14 @@ pub struct AppState {
     checks_stale: bool,
     /// A background request whose answer is only a toast (posting a work order).
     notice_rx: Option<Receiver<Result<String, String>>>,
+    /// The last update check and its answer.
+    pub update: UpdateState,
+    update_rx: Option<Receiver<Result<(String, String), String>>>,
+    update_manual: bool,
+    /// A newer release was found: the update pop-up is showing.
+    pub update_popup: bool,
+    /// The start-up check has been made (or skipped) this session.
+    pub update_checked_once: bool,
     /// When a crew member or the automatic design last touched an engine tool.
     crew_active_at: Option<Instant>,
     /// Something asked for manual mode (the "Lay out by hand" button); the app takes it.
@@ -301,6 +309,11 @@ impl AppState {
             violations_rx: None,
             checks_stale: false,
             notice_rx: None,
+            update: UpdateState::Idle,
+            update_rx: None,
+            update_manual: false,
+            update_popup: false,
+            update_checked_once: false,
             crew_active_at: None,
             want_manual: false,
         };
@@ -921,6 +934,7 @@ impl AppState {
     }
 
     fn poll_edit(&mut self) {
+        self.poll_update();
         if let Some(rx) = &self.notice_rx {
             if let Ok(out) = rx.try_recv() {
                 self.notice_rx = None;
@@ -1020,30 +1034,54 @@ impl AppState {
         self.notice_rx = Some(rx);
     }
 
-    /// Ask GitHub for the newest release (only when the engineer asks) and open its page when it
-    /// is newer than this build.
-    pub fn check_updates(&mut self) {
-        if self.notice_rx.is_some() {
+    /// Ask GitHub for the newest release, in the background: at start-up when the engineer left
+    /// automatic checks on (`manual` false: quiet unless there is an update), or from Settings and
+    /// Help (`manual` true: the answer shows either way). The only data sent is the request.
+    pub fn check_updates(&mut self, manual: bool) {
+        if self.update_rx.is_some() {
             return;
         }
+        self.update = UpdateState::Checking;
+        self.update_manual = manual;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let mine = env!("CARGO_PKG_VERSION");
-            let out = match openftth_client::latest_release(crate::RELEASES_REPO) {
-                Ok((tag, url)) => {
-                    let theirs = tag.trim_start_matches('v');
-                    if newer(theirs, mine) {
-                        crate::connect::open_external(&url);
-                        Ok(format!("openFTTH {theirs} is out (you have {mine}): its page is open in your browser"))
-                    } else {
-                        Ok(format!("openFTTH {mine} is the newest release"))
-                    }
-                }
-                Err(e) => Err(format!("Could not check for updates: {e}")),
-            };
+            let out = openftth_client::latest_release(crate::RELEASES_REPO)
+                .map(|(tag, url)| (tag.trim_start_matches('v').to_string(), url))
+                .map_err(|e| e.to_string());
             let _ = tx.send(out);
         });
-        self.notice_rx = Some(rx);
+        self.update_rx = Some(rx);
+    }
+
+    fn poll_update(&mut self) {
+        let Some(rx) = &self.update_rx else {
+            return;
+        };
+        let Ok(out) = rx.try_recv() else {
+            return;
+        };
+        self.update_rx = None;
+        let mine = env!("CARGO_PKG_VERSION");
+        self.update = match out {
+            Ok((version, url)) if newer(&version, mine) => {
+                self.update_popup = true;
+                UpdateState::Available { version, url }
+            }
+            Ok(_) => {
+                if self.update_manual {
+                    self.toasts
+                        .success(format!("openFTTH {mine} is the newest version"));
+                }
+                UpdateState::Latest
+            }
+            Err(e) => {
+                if self.update_manual {
+                    self.toasts
+                        .error(format!("Could not check for updates: {e}"));
+                }
+                UpdateState::Failed(e)
+            }
+        };
     }
 
     /// Ask the engine which elements break a rule, in the background.
@@ -1509,4 +1547,14 @@ pub fn auto_owner(tool: &str) -> &'static str {
         | "export_profile" => "drafter",
         _ => "planner",
     }
+}
+
+/// Where the update check stands.
+#[derive(Clone, PartialEq)]
+pub enum UpdateState {
+    Idle,
+    Checking,
+    Latest,
+    Available { version: String, url: String },
+    Failed(String),
 }

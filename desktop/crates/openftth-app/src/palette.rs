@@ -21,6 +21,8 @@ pub enum Command {
     NewProject,
     RevealFolder,
     About,
+    Settings,
+    CheckUpdates,
     Undo,
     Redo,
     Join,
@@ -324,6 +326,8 @@ impl CommandPalette {
         action("Light theme", "", Command::ThemeLight, true);
         action("New project", "start page", Command::NewProject, true);
         action("Close project", "", Command::CloseProject, open);
+        action("Settings", "Ctrl+,", Command::Settings, true);
+        action("Check for updates", "", Command::CheckUpdates, true);
         action("About openFTTH", "", Command::About, true);
         let mut entries: Vec<Entry> = out
             .into_iter()
