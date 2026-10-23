@@ -36,7 +36,7 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: harness/pnpm-lock.yaml
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - run: uv python install 3.12
 
       - name: Tests
