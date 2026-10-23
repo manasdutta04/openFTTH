@@ -25,7 +25,8 @@ if (-not (Test-Path $notes)) { throw "write $notes before releasing" }
 $iscc = @(
     (Get-Command iscc -ErrorAction SilentlyContinue).Source,
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
 ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 
 $pack = @("-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "package-windows.ps1"))
@@ -51,8 +52,9 @@ foreach ($a in $assets) { "{0,8:N1} MB  {1}" -f ((Get-Item $a).Length / 1MB), (S
 
 if ($NoPublish) { return }
 $title = "openFTTH $tag" + $(if ($version.StartsWith("0.")) { " (beta)" } else { "" })
-$flags = @("--title", $title, "--notes-file", $notes)
-if ($version.StartsWith("0.")) { $flags += "--prerelease" }
+# Betas are full releases with "(beta)" in the title: the app's update check reads
+# releases/latest, which skips pre-releases.
+$flags = @("--title", $title, "--notes-file", $notes, "--latest")
 gh release view $tag *> $null
 if ($LASTEXITCODE -eq 0) {
     gh release upload $tag @assets --clobber

@@ -65,7 +65,15 @@ Type: filesandordirs; Name: "{app}"
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Data: string;
+  ResultCode: Integer;
 begin
+  // The app's harness and engine run as their own processes (node.exe, python.exe from the app
+  // folder): stop any still running so every file can be removed.
+  if CurUninstallStep = usUninstall then
+    Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ''' +
+      ExpandConstant('{app}') + '\*'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if CurUninstallStep = usPostUninstall then
   begin
     Data := ExpandConstant('{%USERPROFILE}\.openftth');
