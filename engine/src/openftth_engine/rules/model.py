@@ -26,7 +26,7 @@ CLASS_LOSS: dict[str, tuple[float, float]] = {
 }
 GPON_CLASSES = ("B+", "C+")
 XGS_CLASSES = ("N1", "N2", "E1", "E2")
-SurfaceClass = Literal["asphalt", "pavement", "verge", "aerial", "existing_duct"]
+SurfaceClass = Literal["asphalt", "pavement", "verge", "aerial", "facade", "existing_duct"]
 Placement = Literal["pole", "wall", "chamber", "cabinet"]
 
 
@@ -241,11 +241,50 @@ class Surfaces(StrictModel):
     pavement: SurfaceCost = SurfaceCost(trench_per_m=60.0, reinstatement_per_m=20.0)
     verge: SurfaceCost = SurfaceCost(trench_per_m=35.0, reinstatement_per_m=5.0)
     aerial: SurfaceCost = SurfaceCost(trench_per_m=20.0)
+    facade: SurfaceCost = Field(
+        SurfaceCost(trench_per_m=30.0),
+        description="Cable clipped along building fronts, with its wall fixings, per metre",
+    )
     existing_duct: SurfaceCost = SurfaceCost(trench_per_m=5.0)
 
     def cost(self, surface: SurfaceClass) -> float:
         sc: SurfaceCost = getattr(self, surface)
         return sc.trench_per_m + sc.reinstatement_per_m
+
+
+class Aerial(StrictModel):
+    """Cable strung on existing poles (the imported pole layer)."""
+
+    enabled: bool = Field(True, description="Offer aerial spans where the data has poles")
+    max_span_m: float = Field(50.0, gt=0, description="Longest span between two poles")
+    pole_attach: float = Field(
+        45.0, description="Attaching to one pole: clamp, bracket and the owner's fee"
+    )
+    transition: float = Field(
+        250.0, description="Taking the cable down a pole into the ground: guard and pit"
+    )
+
+
+class Facade(StrictModel):
+    """Cable along building fronts: where a street is lined with buildings the cable runs on
+    their walls instead of in a trench."""
+
+    enabled: bool = Field(
+        False, description="Offer facade routes (needs the owners' consent; off unless allowed)"
+    )
+    max_offset_m: float = Field(
+        6.0, gt=0, description="A wall counts as lining the street within this distance"
+    )
+    min_cover: float = Field(
+        0.8, gt=0, le=1, description="Share of a stretch of street that must be lined by walls"
+    )
+    highways: list[str] = Field(
+        ["residential", "living_street", "unclassified", "service", "tertiary", "pedestrian"],
+        description="Street classes where facade cabling is allowed",
+    )
+    transition: float = Field(
+        300.0, description="Taking the cable down a wall into the ground: guard and pit"
+    )
 
 
 class BarrierCrossing(StrictModel):
@@ -360,6 +399,8 @@ class Rulebook(StrictModel):
     slack: Slack = Slack()
     ducts: Ducts = Ducts()
     surfaces: Surfaces = Surfaces()
+    aerial: Aerial = Aerial()
+    facade: Facade = Facade()
     crossings: Crossings = Crossings()
     routing: Routing = Routing()
     highway_to_surface: dict[str, SurfaceClass] = Field(

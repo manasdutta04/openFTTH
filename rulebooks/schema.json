@@ -1,5 +1,38 @@
 {
   "$defs": {
+    "Aerial": {
+      "additionalProperties": false,
+      "description": "Cable strung on existing poles (the imported pole layer).",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Offer aerial spans where the data has poles",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_span_m": {
+          "default": 50.0,
+          "description": "Longest span between two poles",
+          "exclusiveMinimum": 0,
+          "title": "Max Span M",
+          "type": "number"
+        },
+        "pole_attach": {
+          "default": 45.0,
+          "description": "Attaching to one pole: clamp, bracket and the owner's fee",
+          "title": "Pole Attach",
+          "type": "number"
+        },
+        "transition": {
+          "default": 250.0,
+          "description": "Taking the cable down a pole into the ground: guard and pit",
+          "title": "Transition",
+          "type": "number"
+        }
+      },
+      "title": "Aerial",
+      "type": "object"
+    },
     "BarrierCrossing": {
       "additionalProperties": false,
       "properties": {
@@ -201,6 +234,57 @@
         }
       },
       "title": "Ducts",
+      "type": "object"
+    },
+    "Facade": {
+      "additionalProperties": false,
+      "description": "Cable along building fronts: where a street is lined with buildings the cable runs on\ntheir walls instead of in a trench.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Offer facade routes (needs the owners' consent; off unless allowed)",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_offset_m": {
+          "default": 6.0,
+          "description": "A wall counts as lining the street within this distance",
+          "exclusiveMinimum": 0,
+          "title": "Max Offset M",
+          "type": "number"
+        },
+        "min_cover": {
+          "default": 0.8,
+          "description": "Share of a stretch of street that must be lined by walls",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Min Cover",
+          "type": "number"
+        },
+        "highways": {
+          "default": [
+            "residential",
+            "living_street",
+            "unclassified",
+            "service",
+            "tertiary",
+            "pedestrian"
+          ],
+          "description": "Street classes where facade cabling is allowed",
+          "items": {
+            "type": "string"
+          },
+          "title": "Highways",
+          "type": "array"
+        },
+        "transition": {
+          "default": 300.0,
+          "description": "Taking the cable down a wall into the ground: guard and pit",
+          "title": "Transition",
+          "type": "number"
+        }
+      },
+      "title": "Facade",
       "type": "object"
     },
     "Fat": {
@@ -727,6 +811,14 @@
             "reinstatement_per_m": 0.0
           }
         },
+        "facade": {
+          "$ref": "#/$defs/SurfaceCost",
+          "default": {
+            "trench_per_m": 30.0,
+            "reinstatement_per_m": 0.0
+          },
+          "description": "Cable clipped along building fronts, with its wall fixings, per metre"
+        },
         "existing_duct": {
           "$ref": "#/$defs/SurfaceCost",
           "default": {
@@ -1034,10 +1126,40 @@
           "reinstatement_per_m": 0.0,
           "trench_per_m": 20.0
         },
+        "facade": {
+          "reinstatement_per_m": 0.0,
+          "trench_per_m": 30.0
+        },
         "existing_duct": {
           "reinstatement_per_m": 0.0,
           "trench_per_m": 5.0
         }
+      }
+    },
+    "aerial": {
+      "$ref": "#/$defs/Aerial",
+      "default": {
+        "enabled": true,
+        "max_span_m": 50.0,
+        "pole_attach": 45.0,
+        "transition": 250.0
+      }
+    },
+    "facade": {
+      "$ref": "#/$defs/Facade",
+      "default": {
+        "enabled": false,
+        "max_offset_m": 6.0,
+        "min_cover": 0.8,
+        "highways": [
+          "residential",
+          "living_street",
+          "unclassified",
+          "service",
+          "tertiary",
+          "pedestrian"
+        ],
+        "transition": 300.0
       }
     },
     "crossings": {
@@ -1091,6 +1213,7 @@
           "pavement",
           "verge",
           "aerial",
+          "facade",
           "existing_duct"
         ],
         "type": "string"

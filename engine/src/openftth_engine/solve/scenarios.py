@@ -30,7 +30,17 @@ SCENARIOS: dict[str, dict[str, Override | Any]] = {
         "pon.cascade": lambda r: [4, r.pon.split_ratio // 4],
     },
     "point-to-point": {"pon.architecture": "p2p", "pon.cascade": None},
+    # Route types: every street in a trench (or an existing duct), cable on the building fronts
+    # where the walls line the street, on existing poles, or whichever of the two is cheaper.
+    "trench-only": {"aerial.enabled": False, "facade.enabled": False},
+    "facade": {"aerial.enabled": False, "facade.enabled": True},
+    "aerial": {"aerial.enabled": True, "facade.enabled": False},
+    "aerial-and-facade": {"aerial.enabled": True, "facade.enabled": True},
 }
+
+#: Rulebook sections that change the route graph itself: a variant that changes one of them
+#: gets its own twin.
+TWIN_SECTIONS = ("aerial", "facade", "surfaces", "routing", "crossings", "highway_to_surface")
 
 
 def resolve_overrides(rules: Rulebook, overrides: dict[str, Override | Any]) -> dict[str, Any]:

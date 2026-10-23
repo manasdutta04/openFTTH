@@ -356,7 +356,8 @@ def generate_scenarios(
 ) -> dict[str, Any]:
     """Solve the twin under rulebook variants and price each; nothing is applied. Variants:
     baseline, larger-fats, shorter-drops, lean-spares, and the architectures centralised,
-    cascaded and point-to-point. `names` picks which; otherwise the first `n`."""
+    cascaded and point-to-point, and the route types trench-only, facade, aerial and
+    aerial-and-facade. `names` picks which; otherwise the first `n`."""
     return _out(pipeline.generate_scenarios(_s(), n, time_limit_s, names))
 
 

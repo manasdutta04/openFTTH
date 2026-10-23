@@ -21,7 +21,8 @@ from ..rules import Rulebook
 
 DENSIFY_M = 25.0  # insert vertices so no edge is longer than this (better snapping/sites)
 DUCT_LINK_M = 20.0  # an existing duct joins the street network where they come this close
-SURFACES = ("asphalt", "pavement", "verge", "aerial", "existing_duct")
+SURFACES = ("asphalt", "pavement", "verge", "aerial", "facade", "existing_duct")
+OVERHEAD = ("aerial", "facade")  # no digging: a no-dig zone does not stop them
 
 
 @dataclass
@@ -86,17 +87,24 @@ class Twin:
 
     def forbid_zones(self, zones: gpd.GeoDataFrame) -> tuple[int, float]:
         """Take every street edge whose middle lies in a no-dig zone out of the route graph.
-        Existing ducts stay: cables can be pulled through them without digging."""
+        Existing ducts stay: cables can be pulled through them without digging. Aerial and
+        facade spans need no digging either: only a keep-out zone stops them."""
         if zones.empty:
             return 0, 0.0
-        polys = zones.to_crs(self.crs).geometry.union_all()
+        z = zones.to_crs(self.crs)
+        polys = z.geometry.union_all()
+        kinds = z["kind"] if "kind" in z.columns else None
+        keep_out = (
+            z.geometry[kinds.astype(str) == "keep_out"].union_all() if kinds is not None else None
+        )
         gone = []
         for u, v, d in self.graph.edges(data=True):
             if d.get("highway") == "existing_duct":
                 continue
             mx = (self.xy[u][0] + self.xy[v][0]) / 2.0
             my = (self.xy[u][1] + self.xy[v][1]) / 2.0
-            if polys.contains(Point(mx, my)):
+            inside = keep_out if d.get("surface") in OVERHEAD else polys
+            if inside is not None and not inside.is_empty and inside.contains(Point(mx, my)):
                 gone.append((u, v))
         length = float(sum(self.graph[u][v]["length_m"] for u, v in gone))
         if gone:
@@ -131,6 +139,7 @@ def build_twin(
     rules: Rulebook,
     barriers_wgs: gpd.GeoDataFrame | None = None,
     buildings_wgs: gpd.GeoDataFrame | None = None,
+    poles_wgs: gpd.GeoDataFrame | None = None,
 ) -> Twin:
     """Project to a metric CRS, build the street graph, offer priced crossings under the
     barriers (motorways, railways, rivers) and snap homes to it."""
@@ -218,6 +227,11 @@ def build_twin(
                     osm_id=row.osm_id,
                 )
 
+    buildings = (
+        buildings_wgs.to_crs(crs) if buildings_wgs is not None and not buildings_wgs.empty else None
+    )
+    poles = poles_wgs.to_crs(crs) if poles_wgs is not None and not poles_wgs.empty else None
+    decisions.extend(_offer_overhead(G, xy, poles, buildings, rules))
     joined = _join_dead_ends(G, xy)
     if joined:
         decisions.append(
@@ -246,9 +260,6 @@ def build_twin(
                 source="rulebook",
             )
         )
-    buildings = (
-        buildings_wgs.to_crs(crs) if buildings_wgs is not None and not buildings_wgs.empty else None
-    )
     found = _add_gap_crossings(G, xy, buildings, rules)
     gaps = [k for k, kind in found if kind == "unmapped"]
     joins = [k for k, kind in found if kind == "join"]
@@ -615,6 +626,145 @@ def _link_ducts(G: nx.Graph, xy: list[tuple[float, float]], rules: Rulebook) -> 
             )
             added += 1
     return added
+
+
+def _offer_overhead(
+    G: nx.Graph,
+    xy: list[tuple[float, float]],
+    poles: gpd.GeoDataFrame | None,
+    buildings: gpd.GeoDataFrame | None,
+    rules: Rulebook,
+) -> list[Decision]:
+    """Re-price street edges that need no trench: an edge whose ends and middle are each
+    within half a span of an existing pole can be strung on the poles; an edge lined by
+    building walls for at least `facade.min_cover` of its length can run on the facades.
+    Each edge takes the cheapest of its trench, aerial and facade prices; routing then picks
+    the cheapest route over them. The edge keeps its trench price in `trench_cost` so the
+    saving can be reported."""
+    import shapely
+    from shapely import STRtree
+
+    edges = [
+        (u, v, d)
+        for u, v, d in G.edges(data=True)
+        if d.get("highway") not in ("existing_duct", "duct_link")
+        and d["surface"] in SURFACES
+        and d["surface"] not in ("existing_duct", *OVERHEAD)
+    ]
+    if not edges:
+        return []
+    offers: dict[str, dict[tuple[int, int], float]] = {"aerial": {}, "facade": {}}
+    if rules.aerial.enabled and poles is not None:
+        pts = np.column_stack([poles.geometry.x.values, poles.geometry.y.values])
+        pts = pts[np.isfinite(pts).all(axis=1)]
+        if len(pts):
+            tree = cKDTree(pts)
+            reach = rules.aerial.max_span_m / 2.0
+            per_m = (
+                rules.surfaces.cost("aerial") + rules.aerial.pole_attach / rules.aerial.max_span_m
+            )
+            for u, v, _ in edges:
+                a, b = np.asarray(xy[u]), np.asarray(xy[v])
+                d, _i = tree.query(np.vstack([a, b, (a + b) / 2.0]))
+                if float(d.max()) <= reach:
+                    offers["aerial"][(u, v)] = per_m
+    if rules.facade.enabled and buildings is not None:
+        allowed = set(rules.facade.highways)
+        polys = [
+            geom
+            for geom in buildings.geometry
+            if geom is not None and geom.geom_type in ("Polygon", "MultiPolygon")
+        ]
+        cand = [(u, v) for u, v, d in edges if d.get("highway") in allowed]
+        if polys and cand:
+            walls = shapely.buffer(np.asarray(polys, dtype=object), rules.facade.max_offset_m)
+            tree = STRtree(walls)
+            lines = np.asarray([LineString([xy[u], xy[v]]) for u, v in cand], dtype=object)
+            hit_line, hit_wall = tree.query(lines, predicate="intersects")
+            near: dict[int, list[int]] = {}
+            for i, j in zip(hit_line.tolist(), hit_wall.tolist(), strict=True):
+                near.setdefault(i, []).append(j)
+            per_m = rules.surfaces.cost("facade")
+            for i in sorted(near):
+                line = lines[i]
+                if line.length <= 0:
+                    continue
+                cover = line.intersection(shapely.union_all(walls[sorted(near[i])])).length
+                if cover / line.length >= rules.facade.min_cover:
+                    offers["facade"][cand[i]] = per_m
+    decisions: list[Decision] = []
+    choice: dict[tuple[int, int], tuple[str, float]] = {}
+    for u, v, d in edges:
+        best, price = d["surface"], d["cost"] / d["length_m"] if d["length_m"] else 0.0
+        for kind in ("aerial", "facade"):
+            p = offers[kind].get((u, v))
+            if p is not None and p < price:
+                best, price = kind, p
+        if best != d["surface"]:
+            choice[(u, v)] = (best, d["length_m"] * price)
+    # A run of spans must save more than its two transitions into the ground cost; shorter
+    # runs stay in the trench.
+    dropped = 0
+    for kind in ("aerial", "facade"):
+        run = nx.Graph()
+        run.add_edges_from(e for e, (k, _c) in choice.items() if k == kind)
+        transition = getattr(rules, kind).transition
+        for comp in sorted(nx.connected_components(run), key=min):
+            part = run.subgraph(comp).edges
+            keys = [(u, v) if (u, v) in choice else (v, u) for u, v in part]
+            saving = sum(G[u][v]["cost"] - choice[(u, v)][1] for u, v in keys)
+            if saving < 2 * transition:
+                for e in keys:
+                    del choice[e]
+                dropped += 1
+    taken = {"aerial": 0.0, "facade": 0.0}
+    for (u, v), (kind, cost) in sorted(choice.items()):
+        d = G[u][v]
+        d["trench_cost"] = d["cost"]
+        d["surface"] = kind
+        d["cost"] = cost
+        taken[kind] += d["length_m"]
+    if taken["aerial"]:
+        decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{taken['aerial']:.0f} m of street have existing poles no more than "
+                f"{rules.aerial.max_span_m / 2:g} m apart from the route (half a "
+                f"{rules.aerial.max_span_m:g} m span); there the cable can be strung on the poles at "
+                f"{rules.surfaces.cost('aerial'):g} per metre plus {rules.aerial.pole_attach:g} per pole, "
+                "cheaper than a trench. Routing takes a span only where it is cheaper overall.",
+                values={"aerial_m_offered": round(taken["aerial"], 1)},
+                source="rulebook",
+            )
+        )
+    if taken["facade"]:
+        decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{taken['facade']:.0f} m of street are lined by building walls (within "
+                f"{rules.facade.max_offset_m:g} m, over at least {rules.facade.min_cover:.0%} of each "
+                f"stretch); there the cable can run on the facades at {rules.surfaces.cost('facade'):g} "
+                "per metre instead of a trench. Facade cabling needs the building owners' consent.",
+                values={"facade_m_offered": round(taken["facade"], 1)},
+                source="rulebook",
+            )
+        )
+    if dropped:
+        decisions.append(
+            Decision(
+                stage="twin",
+                tool="build_twin",
+                reason=f"{dropped} short run(s) of poles or walls were left in the trench: what they "
+                "save over the trench does not pay for taking the cable up and back down "
+                f"({rules.aerial.transition:g} per pole transition, {rules.facade.transition:g} per wall "
+                "transition).",
+                values={"short_runs": dropped},
+                source="rulebook",
+            )
+        )
+    return decisions
 
 
 def _surface_for(highway: str, surface_tag, rules: Rulebook) -> str:

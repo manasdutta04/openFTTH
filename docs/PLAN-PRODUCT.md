@@ -23,13 +23,33 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
 - Multiple POPs/OLT sites (given or chosen), POP catchment split.
   *Done:* POPs by capacity, count or given sites, capacitated catchments, feeder and fibres per POP.
 - Architectures: centralised split (today), cascaded split (rulebook `pon.cascade` exists), point-to-point; XGS-PON budgets.
-  *Done:* centralised, cascaded (second stage in the FATs) and point-to-point, priced side by side as scenarios. XGS-PON budgets still to do.
+  *Done:* centralised, cascaded (second stage in the FATs) and point-to-point, priced side by side as scenarios; XGS-PON (N1–E2 classes, 1270/1577 nm) and GPON + XGS-PON on one ODN with the coexistence loss.
 - Route types by rulebook and data: underground trench, existing duct reuse (preferred by cost), aerial on poles, façade along building fronts with wall distribution points and façade→underground transitions; each choice priced and explained.
+  *Done:* aerial spans on the pole layer and façade runs where walls line the street, each edge
+  priced against its trench, short runs left in the ground, closures mounted on poles/walls,
+  pole attachments and transitions in the BOQ; scenarios `trench-only`, `facade`, `aerial`,
+  `aerial-and-facade`.
 - Phasing: take-rate and build phases (design all, build by phase), BOQ per phase.
+  *Done:* `fibers.take_rate` scales the connection costs; `plan_phases` orders cabinets by
+  density or distance and the delivery writes a BOQ per phase (trench dug once). Blocks of flats
+  get a riser, floor boxes and flat cabling (`inside`).
 - Constraints: crossings (rail/water/major road) with permit cost, max cabinet fill per operator pack, keep-outs.
+  *Keep-outs done:* keep-out and no-dig zones drawn in the app or imported; equipment stays out
+  of keep-out zones, trenches out of both.
   *Crossings done:* priced bores under motorways, railways, rivers and unmapped obstacles,
   taken only when cheaper than going round, with the detour recorded (see RULEBOOK.md).
 - Gate: a terraced street gets façade where allowed, ducts reused where present, aerial where poles exist; scenario table compares them.
+  *Passed (2026-10-23)*, Gent small area (601 units, belgium rulebook, 602 poles placed along
+  every other street; `engine/tests/test_overhead.py`):
+
+  | scenario | trench m | façade m | aerial m | FATs | total EUR | per unit |
+  |---|---|---|---|---|---|---|
+  | trench-only | 4,134 | 0 | 0 | 36 | 1,009,256 | 1,679 |
+  | facade | 2,509 | 883 | 0 | 36 | 872,791 | 1,452 |
+  | aerial | 1,343 | 0 | 2,300 | 36 | 760,713 | 1,266 |
+  | aerial-and-facade | 1,113 | 338 | 2,170 | 36 | 750,254 | 1,248 |
+
+  No violations in any scenario. Existing ducts are reused by cost as before (the sample has none).
 
 ### P3 — Professional manual editing (app + engine edit tools)
 - Engine edit tools (all versioned, `source: user`, re-validate): `add_site(kind, lon, lat)`, `delete_element`, `draw_cable(kind, via points snapped to graph)`, `split_cable`, `join_cables`, `reassign_home(home, fat)`, `set_attribute(element, key, value)` within schema, `edit_splice(row)`; undo/redo = version stepping (`rewind_design` stays risky only for posted versions).

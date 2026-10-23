@@ -629,21 +629,25 @@ def import_data(
     return _commit(s, result, before)
 
 
+def _raw_twin(s: Session) -> Twin:
+    """The street graph from the session's imported inputs, under the session's rulebook."""
+    inp = s.cache.get("inputs")
+    return build_twin(
+        s.cache["streets"],
+        s.cache["homes_wgs"],
+        s.rules,
+        s.cache.get("barriers"),
+        getattr(inp, "buildings", None),
+        getattr(inp, "poles", None),
+    )
+
+
 def build_twin_tool(s: Session) -> ToolResult:
     s.project.set_stage("twin")
     before = s.design.copy()
     if "streets" not in s.cache:
         _twin(s)
-    twin = _finish_twin(
-        s,
-        build_twin(
-            s.cache["streets"],
-            s.cache["homes_wgs"],
-            s.rules,
-            s.cache.get("barriers"),
-            getattr(s.cache.get("inputs"), "buildings", None),
-        ),
-    )
+    twin = _finish_twin(s, _raw_twin(s))
     s.twin = twin
     # Homes become `to` features (one per building, with a unit count). A home that is
     # already in the design keeps what the solvers put on it (its FAT, PON, drop and path
@@ -1823,6 +1827,13 @@ def place_chambers(s: Session) -> ToolResult:
     fat_nodes = {int(f.openftth["node"]) for f in s.design.by_kind("fat")}
     pop_nodes = {int(p.openftth["node"]) for p in s.design.by_kind("pop")}
     branch: dict[int, int] = {}  # node → max downstream fibres passing
+    carried: dict[int, set[str]] = {}  # node → surfaces of the tree edges meeting there
+    for tree in s.trees.values():
+        for u, v in tree.tree.edges:
+            if twin.graph.has_edge(u, v):
+                surface = str(twin.graph[u][v].get("surface", ""))
+                carried.setdefault(int(u), set()).add(surface)
+                carried.setdefault(int(v), set()).add(surface)
     for key, tree in s.trees.items():
         deg = dict(tree.tree.degree)
         for node, d in deg.items():
@@ -1832,11 +1843,19 @@ def place_chambers(s: Session) -> ToolResult:
                     default=0,
                 )
                 branch[node] = max(branch.get(node, 0), fibres)
-    n_small = n_large = 0
+    n_small = n_large = n_mounted = 0
     for node in sorted(set(branch) | fdh_nodes):
         if node in pop_nodes:
             continue
         large = node in fdh_nodes
+        # A branch point where every cable meeting it is on poles or walls: the closure hangs
+        # there and nothing is dug.
+        here = carried.get(node, set())
+        mount = (
+            ("pole" if "aerial" in here else "wall")
+            if here and not large and here <= {"aerial", "facade"}
+            else None
+        )
         size = next(
             (sz for sz in sorted(r.closures.sizes) if sz >= branch.get(node, 0)),
             max(r.closures.sizes),
@@ -1857,17 +1876,24 @@ def place_chambers(s: Session) -> ToolResult:
                     "node": int(node),
                     "closure": not large and node not in fat_nodes,
                     "size": size,
+                    **({"mount": mount} if mount else {}),
                 },
             )
         )
         n_large += large
-        n_small += not large
+        n_small += not large and not mount
+        n_mounted += bool(mount)
     decisions = [
         Decision(
             stage="solve",
             tool="place_chambers",
-            reason="Chambers placed at every branch point of the feeder/distribution trees and at FAT sites (small) and at FDHs (large); branch chambers get a splice closure sized to the largest cable passing through.",
-            values={"small": n_small, "large": n_large},
+            reason="Chambers placed at every branch point of the feeder/distribution trees and at FAT sites (small) and at FDHs (large); branch chambers get a splice closure sized to the largest cable passing through."
+            + (
+                f" {n_mounted} branch point(s) lie on poles or walls only: their closure is mounted there and no chamber is dug."
+                if n_mounted
+                else ""
+            ),
+            values={"small": n_small, "large": n_large, "mounted": n_mounted},
             source="assumption",
         )
     ]
@@ -2203,7 +2229,8 @@ def _twin(s: Session) -> Twin:
             }
         )
         s.twin = _finish_twin(
-            s, build_twin(inp.streets, homes_wgs, s.rules, inp.barriers, inp.buildings)
+            s,
+            build_twin(inp.streets, homes_wgs, s.rules, inp.barriers, inp.buildings, inp.poles),
         )
         pops = s.design.by_kind("pop")
         if pops:
@@ -2351,6 +2378,14 @@ def set_rule(s: Session, path: str, value: Any) -> ToolResult:
         yaml.safe_dump(new_rules.model_dump(by_alias=True), sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
+    from .solve.scenarios import TWIN_SECTIONS
+
+    if path.split(".")[0] in TWIN_SECTIONS and s.twin is not None:
+        # Route options and prices live on the street graph: re-price it (same nodes).
+        if "streets" in s.cache:
+            s.twin = _finish_twin(s, _raw_twin(s))
+        else:
+            s.twin = None
     decisions = [
         Decision(
             stage="rules",
@@ -3040,7 +3075,7 @@ def generate_scenarios(
     `names` picks the variants (e.g. the architectures); otherwise the first `n`."""
     import tempfile
 
-    from .solve.scenarios import SCENARIOS, apply_overrides, resolve_overrides
+    from .solve.scenarios import SCENARIOS, TWIN_SECTIONS, apply_overrides, resolve_overrides
 
     _twin(s)
     s.project.set_stage("solve")
@@ -3064,6 +3099,10 @@ def generate_scenarios(
                 trees={},
                 cache=dict(s.cache),
             )
+            if any(getattr(variant, k) != getattr(s.rules, k) for k in TWIN_SECTIONS):
+                # Route options change the street graph's prices: the variant gets its own twin
+                # (same nodes, so every site and snapped home stays valid).
+                scratch.twin = _finish_twin(scratch, _raw_twin(scratch))
             for kind in SOLVE_KINDS:
                 scratch.design.remove_where(kind=kind)
             scratch.design.tables = {}
@@ -3075,6 +3114,7 @@ def generate_scenarios(
                 if line.category == "civil" and line.item.startswith("trench")
             )
             violations, stats = run_all_checks(scratch.design, variant)
+            civil = {line.item: line.qty for line in boq.lines if line.category == "civil"}
             table.append(
                 {
                     "name": name,
@@ -3082,6 +3122,9 @@ def generate_scenarios(
                     "fats": len(scratch.design.by_kind("fat")),
                     "fdhs": len(scratch.design.by_kind("fdh")),
                     "trench_m": round(trench, 1),
+                    "duct_m": round(civil.get("trench in existing_duct", 0.0), 1),
+                    "facade_m": round(civil.get("facade cabling", 0.0), 1),
+                    "aerial_m": round(civil.get("aerial span on existing poles", 0.0), 1),
                     "boq_total": boq.grand_total,
                     "cost_per_unit": boq.cost_per_unit,
                     "currency": boq.currency,

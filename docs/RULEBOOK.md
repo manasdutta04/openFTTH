@@ -19,17 +19,34 @@ called anything but "draft".
 
 | Section | Used by | Notes |
 |---|---|---|
-| `pon` | validate (power budget), assign_pon | ITU-T G.984.2 class (B+ 13–28 dB, C+ 17–32 dB), split ratio, optional cascade `[4, 8]`, differential loss, worst-case wavelength (1310 nm) |
+| `pon` | validate (power budget), assign_pon | `technology` (`gpon`, `xgspon`, or `gpon+xgspon` on one ODN with a coexistence element), class: ITU-T G.984.2 for GPON (B+ 13–28 dB, C+ 17–32 dB), G.9807.1 for XGS-PON (N1 14–29, N2 16–31, E1 18–33, E2 20–35 dB); split ratio, optional cascade `[4, 8]`, differential loss, worst-case wavelength (1310 nm; 1270 or 1577 nm for XGS-PON) |
 | `fibers` | size cables | ladders for distribution/feeder, drop fibres, spare %, take rate |
 | `homes` | ingest | count dwelling units (not addresses); apartment estimation when no unit data |
 | `distances` | cluster_homes, place_fdh, validate | max drop (street distance), max FDH→FAT, logical reach, pulling distance |
 | `loss_db`, `connectors_per_path` | validate | connector/splice/splitter losses, fibre attenuation per wavelength, design margin, connectors counted on a path (ODF, FDH in/out, FAT, ONT) |
 | `fdh`, `fat`, `chambers`, `closures`, `slack`, `ducts` | solve | capacities, fill limits, placements, sizes |
 | `routing` | twin | OSM highway classes no cable may follow (motorways, staircases, planned roads, …); those ways never enter the route graph |
-| `surfaces`, `highway_to_surface` | twin, boq | trench + reinstatement cost per metre by surface; which surface each OSM highway class trenches in |
+| `surfaces`, `highway_to_surface` | twin, boq | trench + reinstatement cost per metre by surface (`facade` and `aerial` are the cable's price on walls or poles); which surface each OSM highway class trenches in |
+| `aerial` | twin, boq | spans on the existing poles of the pole layer: `enabled`, `max_span_m`, `pole_attach` per pole, `transition` per pole-to-ground point |
+| `facade` | twin, boq | cable along building fronts (off by default; needs the owners' consent): `max_offset_m`, `min_cover`, allowed `highways`, `transition` per wall-to-ground point |
+| `inside` | route_drops, boq | blocks of flats: storey height, flats per floor and per floor box, riser, floor box, flat cabling and riser labour prices |
+| `phasing` | plan_phases, deliver | number of build phases and their order (`density` or `distance`); one BOQ per phase |
 | `crossings` | twin, solve, boq | the price of a directional drill under a `motorway`, `railway`, `water` or `unmapped` obstacle (`fixed` for the permit and pits, `per_m` for the drilling) and `max_length_m`, the longest bore offered |
 | `pops` | solve | `max_units`, the units one POP (OLT site) serves; an area with more gets several POPs, each with its own catchment |
 | `units`, `labour` | boq | unit prices |
+
+## Route types (twin, boq)
+
+Each street edge of the route graph is priced as a trench in its surface. Where the pole layer
+has a pole within half a span of both ends and the middle of an edge, the edge can instead be
+strung on the poles (`surfaces.aerial` per metre plus `aerial.pole_attach` per span); where
+building walls line at least `facade.min_cover` of an edge within `facade.max_offset_m`, it can
+run on the facades (`surfaces.facade`). The edge takes the cheapest; a run of spans that saves
+less than its two transitions into the ground stays in the trench. A no-dig zone does not stop
+poles or walls, a keep-out zone does. Branch points with only overhead cables get their closure
+mounted on the pole or wall instead of a chamber. The BOQ lists the spans, facade metres, pole
+attachments and pole/wall-to-ground transitions. The scenarios `trench-only`, `facade`,
+`aerial` and `aerial-and-facade` price the same area under each choice.
 
 ## Crossings (twin, solve)
 

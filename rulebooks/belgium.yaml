@@ -79,7 +79,21 @@ surfaces:                   # assumed, EUR per metre, Flemish urban rates
   pavement:      {trench_per_m: 70, reinstatement_per_m: 30}
   verge:         {trench_per_m: 40, reinstatement_per_m: 8}
   aerial:        {trench_per_m: 25}
+  facade:        {trench_per_m: 30}   # clipped to walls, with fixings; assumed
   existing_duct: {trench_per_m: 6}
+
+aerial:                     # cable strung on the existing poles of the pole layer; assumed
+  enabled: true
+  max_span_m: 50
+  pole_attach: 45           # clamp, bracket and the pole owner's fee
+  transition: 250           # down the pole into the ground: guard and pit
+
+facade:                     # cable along building fronts; needs the owners' consent
+  enabled: false
+  max_offset_m: 6           # a wall this close lines the street
+  min_cover: 0.8            # share of a stretch the walls must line
+  highways: [residential, living_street, unclassified, service, tertiary, pedestrian]
+  transition: 300           # down the wall into the ground: guard and pit
 
 crossings:
   road_drill_per_m: 200

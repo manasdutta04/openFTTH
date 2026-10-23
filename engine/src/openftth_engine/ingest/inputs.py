@@ -39,7 +39,7 @@ ROAD_CLASSES = {
     "path",
     "track",
 }
-SURFACE_CLASSES = {"asphalt", "pavement", "verge", "aerial", "existing_duct"}
+SURFACE_CLASSES = {"asphalt", "pavement", "verge", "aerial", "facade", "existing_duct"}
 
 
 @dataclass

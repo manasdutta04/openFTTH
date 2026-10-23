@@ -34,6 +34,26 @@ class Boq(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
 
 
+def _transitions(design: Design) -> dict[str, int]:
+    """Points where the network goes from poles or walls into the ground: a node shared by an
+    aerial (or facade) edge and an edge in a trench, duct or bore."""
+    kinds: dict[str, set[str]] = {}
+    for cable in design.by_type("cable.underground"):
+        if cable.openftth.get("kind") == "drop":
+            continue
+        for edge, (surface, _m) in cable.openftth.get("edges", {}).items():
+            group = surface if surface in ("aerial", "facade") else "ground"
+            for node in str(edge).split("-"):
+                kinds.setdefault(node, set()).add(group)
+    out = {"aerial": 0, "facade": 0}
+    for groups in kinds.values():
+        if "ground" in groups or len(groups) > 1:
+            for k in ("aerial", "facade"):
+                if k in groups and (groups - {k}):
+                    out[k] += 1
+    return out
+
+
 def build_boq(design: Design, rules: Rulebook, dug: set[str] | None = None) -> Boq:
     """The bill of quantities. The network (trench, cables, cabinets, FATs) is built for every
     home passed; the connection of a home (its drop, the flat cabling, its splice at the FAT and
@@ -80,6 +100,7 @@ def build_boq(design: Design, rules: Rulebook, dug: set[str] | None = None) -> B
                 trench[surface] = trench.get(surface, 0.0) + metres
     if dug is not None:
         dug |= seen_edges
+    transitions = _transitions(design)
     for barrier in sorted(bores):
         price = getattr(rules.crossings, barrier)
         label = {"water": "river or canal", "unmapped": "unmapped obstacle"}.get(barrier, barrier)
@@ -92,11 +113,31 @@ def build_boq(design: Design, rules: Rulebook, dug: set[str] | None = None) -> B
             "directional drill, taken where it is cheaper than going round",
         )
         add("civil", f"crossing under {label}: drilling", sum(bores[barrier]), "m", price.per_m)
+    overhead = {"aerial": "aerial span on existing poles", "facade": "facade cabling"}
     for surface in sorted(trench):
         sc = getattr(rules.surfaces, surface)
-        add("civil", f"trench in {surface}", trench[surface], "m", sc.trench_per_m)
+        item = overhead.get(surface, f"trench in {surface}")
+        add("civil", item, trench[surface], "m", sc.trench_per_m)
         if sc.reinstatement_per_m:
             add("civil", f"reinstatement {surface}", trench[surface], "m", sc.reinstatement_per_m)
+    if trench.get("aerial"):
+        add(
+            "civil",
+            "pole attachment",
+            math.ceil(trench["aerial"] / rules.aerial.max_span_m) + transitions["aerial"],
+            "pc",
+            rules.aerial.pole_attach,
+            f"one per {rules.aerial.max_span_m:g} m span, plus one per run end",
+        )
+    for kind, label in (("aerial", "pole"), ("facade", "wall")):
+        add(
+            "civil",
+            f"{label} to ground transition",
+            transitions[kind],
+            "pc",
+            getattr(rules, kind).transition,
+            "where the route goes from overhead into the ground",
+        )
     drop_offset = sum(float(d.openftth.get("offset_m", 0.0)) for d in design.by_kind("drop"))
     add(
         "civil",
@@ -107,7 +148,11 @@ def build_boq(design: Design, rules: Rulebook, dug: set[str] | None = None) -> B
         "assumed: verge/garden trench for the off-street part of each drop"
         + (f"; {at_take}" if at_take else ""),
     )
-    chambers = Counter(c.props.get("manhole_type", "small") for c in design.by_kind("chamber"))
+    chambers = Counter(
+        c.props.get("manhole_type", "small")
+        for c in design.by_kind("chamber")
+        if not c.openftth.get("mount")  # a closure on a pole or wall: nothing dug
+    )
     add("civil", "chamber small", chambers.get("small", 0), "pc", rules.units.chamber_small)
     add("civil", "chamber large", chambers.get("large", 0), "pc", rules.units.chamber_large)
 
