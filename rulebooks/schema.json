@@ -59,6 +59,8 @@
       "properties": {
         "spacing_m": {
           "default": 250.0,
+          "exclusiveMinimum": 0,
+          "maximum": 5000,
           "title": "Spacing M",
           "type": "number"
         },
@@ -177,24 +179,32 @@
         "max_drop_m": {
           "default": 150.0,
           "description": "Max drop length home \u2192 FAT along the street",
+          "exclusiveMinimum": 0,
+          "maximum": 2000,
           "title": "Max Drop M",
           "type": "number"
         },
         "max_dist_m": {
           "default": 2000.0,
           "description": "Max distribution cable length FDH \u2192 FAT",
+          "exclusiveMinimum": 0,
+          "maximum": 20000,
           "title": "Max Dist M",
           "type": "number"
         },
         "max_reach_km": {
           "default": 20.0,
-          "description": "Max logical reach OLT \u2192 ONT",
+          "description": "Max reach OLT \u2192 ONT (G.984.1: 60 km logical at most)",
+          "exclusiveMinimum": 0,
+          "maximum": 60,
           "title": "Max Reach Km",
           "type": "number"
         },
         "max_pull_m": {
           "default": 250.0,
           "description": "Max pull between chambers",
+          "exclusiveMinimum": 0,
+          "maximum": 5000,
           "title": "Max Pull M",
           "type": "number"
         }
@@ -212,11 +222,14 @@
         },
         "max_fill_pct": {
           "default": 40.0,
+          "exclusiveMinimum": 0,
+          "maximum": 100,
           "title": "Max Fill Pct",
           "type": "number"
         },
         "min_bend_radius_mm": {
           "default": 300.0,
+          "exclusiveMinimum": 0,
           "title": "Min Bend Radius Mm",
           "type": "number"
         },
@@ -293,12 +306,15 @@
         "max_homes": {
           "default": 32,
           "description": "Max homes (units) served by one FAT",
+          "maximum": 256,
+          "minimum": 1,
           "title": "Max Homes",
           "type": "integer"
         },
         "min_homes": {
           "default": 4,
           "description": "Below this an FAT is discouraged (cost only)",
+          "minimum": 0,
           "title": "Min Homes",
           "type": "integer"
         },
@@ -342,6 +358,8 @@
         "max_fill_pct": {
           "default": 80.0,
           "description": "Max initial fill of an FDH",
+          "exclusiveMinimum": 0,
+          "maximum": 100,
           "title": "Max Fill Pct",
           "type": "number"
         },
@@ -371,6 +389,8 @@
         "drop": {
           "default": 2,
           "description": "Fibres per drop cable",
+          "maximum": 12,
+          "minimum": 1,
           "title": "Drop",
           "type": "integer"
         },
@@ -406,12 +426,16 @@
         "spare_pct": {
           "default": 20.0,
           "description": "Spare fibres as % of demand, rounded up to ladder",
+          "maximum": 200,
+          "minimum": 0,
           "title": "Spare Pct",
           "type": "number"
         },
         "take_rate": {
           "default": 1.0,
           "description": "Share of homes passed that get a drop (0\u20131)",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
           "title": "Take Rate",
           "type": "number"
         }
@@ -431,12 +455,16 @@
         "default_units_apartment": {
           "default": 6,
           "description": "Units assumed for an apartment building with no unit data",
+          "maximum": 500,
+          "minimum": 1,
           "title": "Default Units Apartment",
           "type": "integer"
         },
         "m2_per_unit": {
           "default": 90.0,
           "description": "Floor area per unit used to estimate units from footprint \u00d7 levels",
+          "maximum": 1000,
+          "minimum": 15,
           "title": "M2 Per Unit",
           "type": "number"
         }
@@ -451,6 +479,8 @@
         "floor_height_m": {
           "default": 3.0,
           "description": "Storey height used for the riser length",
+          "maximum": 8,
+          "minimum": 2,
           "title": "Floor Height M",
           "type": "number"
         },
@@ -463,6 +493,7 @@
         "units_per_floor_box": {
           "default": 8,
           "description": "Flats one floor box serves",
+          "minimum": 1,
           "title": "Units Per Floor Box",
           "type": "integer"
         },
@@ -526,17 +557,25 @@
       "properties": {
         "connector": {
           "default": 0.3,
+          "description": "Loss per mated connector pair",
+          "maximum": 1.0,
+          "minimum": 0,
           "title": "Connector",
           "type": "number"
         },
         "splice": {
           "default": 0.1,
+          "description": "Loss per fusion splice",
+          "maximum": 0.5,
+          "minimum": 0,
           "title": "Splice",
           "type": "number"
         },
         "margin": {
           "default": 2.0,
           "description": "Design margin added to every path",
+          "maximum": 10,
+          "minimum": 0,
           "title": "Margin",
           "type": "number"
         },
@@ -557,6 +596,8 @@
         "coexistence": {
           "default": 1.0,
           "description": "Insertion loss of the coexistence element (WDM1r) when GPON and XGS-PON share an ODN",
+          "maximum": 3,
+          "minimum": 0,
           "title": "Coexistence",
           "type": "number"
         }
@@ -633,6 +674,8 @@
         "max_differential_db": {
           "default": 15.0,
           "description": "Max difference in loss between ONTs on one PON",
+          "exclusiveMinimum": 0,
+          "maximum": 20,
           "title": "Max Differential Db",
           "type": "number"
         },
@@ -692,6 +735,8 @@
         "p2p_budget_db": {
           "default": 14.0,
           "description": "Loss budget of point-to-point optics (1000BASE-BX20 class); used instead of budget_db when the architecture is p2p",
+          "exclusiveMinimum": 0,
+          "maximum": 40,
           "title": "P2P Budget Db",
           "type": "number"
         }
@@ -711,6 +756,54 @@
         }
       },
       "title": "Pops",
+      "type": "object"
+    },
+    "Review": {
+      "additionalProperties": false,
+      "description": "Who checked the values. Shipped presets are drafts: confirm every value with your\noperator before a design is built. openFTTH certifies nothing.",
+      "properties": {
+        "status": {
+          "default": "draft",
+          "enum": [
+            "draft",
+            "reviewed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reviewed_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Name and role of the reviewing engineer",
+          "title": "Reviewed By"
+        },
+        "date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Date of the review (YYYY-MM-DD)",
+          "title": "Date"
+        },
+        "note": {
+          "default": "Draft: confirm every value with your operator before construction.",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "title": "Review",
       "type": "object"
     },
     "Routing": {
@@ -935,6 +1028,7 @@
     "country": {
       "anyOf": [
         {
+          "pattern": "^[A-Z]{2}$",
           "type": "string"
         },
         {
@@ -946,8 +1040,18 @@
     },
     "currency": {
       "default": "EUR",
+      "pattern": "^[A-Z]{3}$",
       "title": "Currency",
       "type": "string"
+    },
+    "review": {
+      "$ref": "#/$defs/Review",
+      "default": {
+        "status": "draft",
+        "reviewed_by": null,
+        "date": null,
+        "note": "Draft: confirm every value with your operator before construction."
+      }
     },
     "pon": {
       "$ref": "#/$defs/Pon",

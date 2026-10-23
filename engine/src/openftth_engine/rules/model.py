@@ -34,6 +34,27 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PriceModel(StrictModel):
+    """A section of prices and counts: nothing in it may be negative."""
+
+    @model_validator(mode="after")
+    def _not_negative(self):
+        for name, value in self:
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0:
+                raise ValueError(f"{name} is {value:g}; a price or count cannot be negative")
+        return self
+
+
+def _ascending(name: str, values: list[int]) -> None:
+    if not values:
+        raise ValueError(f"{name} needs at least one size")
+    if any(v <= 0 for v in values) or values != sorted(set(values)):
+        raise ValueError(f"{name} must be positive sizes, smallest first, each once: {values}")
+
+
+SPLIT_RATIOS = (2, 4, 8, 16, 32, 64, 128)
+
+
 class Pon(StrictModel):
     technology: PonTechnology = Field(
         "gpon",
@@ -49,7 +70,7 @@ class Pon(StrictModel):
     budget_db: float = Field(28.0, description="Max ODN loss for the class (B+ = 28 dB)")
     min_loss_db: float = Field(13.0, description="Min ODN loss for the class (B+ = 13 dB)")
     max_differential_db: float = Field(
-        15.0, description="Max difference in loss between ONTs on one PON"
+        15.0, gt=0, le=20, description="Max difference in loss between ONTs on one PON"
     )
     split_ratio: int = Field(32, description="Total split per PON (1:N)")
     cascade: list[int] | None = Field(
@@ -70,6 +91,8 @@ class Pon(StrictModel):
     )
     p2p_budget_db: float = Field(
         14.0,
+        gt=0,
+        le=40,
         description="Loss budget of point-to-point optics (1000BASE-BX20 class); used instead of "
         "budget_db when the architecture is p2p",
     )
@@ -104,6 +127,13 @@ class Pon(StrictModel):
         return self
 
     @model_validator(mode="after")
+    def _ratios_are_powers_of_two(self) -> Pon:
+        for r in [self.split_ratio, *(self.cascade or [])]:
+            if r not in SPLIT_RATIOS:
+                raise ValueError(f"split 1:{r} does not exist; splitters are 1:2 … 1:128")
+        return self
+
+    @model_validator(mode="after")
     def _cascade_matches_ratio(self) -> Pon:
         if self.cascade:
             prod = 1
@@ -115,13 +145,23 @@ class Pon(StrictModel):
 
 
 class Fibers(StrictModel):
-    drop: int = Field(2, description="Fibres per drop cable")
+    drop: int = Field(2, ge=1, le=12, description="Fibres per drop cable")
     distribution: list[int] = Field(
         [12, 24, 48, 96, 144, 288], description="Distribution cable ladder"
     )
     feeder: list[int] = Field([96, 144, 288], description="Feeder cable ladder")
-    spare_pct: float = Field(20.0, description="Spare fibres as % of demand, rounded up to ladder")
-    take_rate: float = Field(1.0, description="Share of homes passed that get a drop (0–1)")
+    spare_pct: float = Field(
+        20.0, ge=0, le=200, description="Spare fibres as % of demand, rounded up to ladder"
+    )
+    take_rate: float = Field(
+        1.0, gt=0, le=1, description="Share of homes passed that get a drop (0–1)"
+    )
+
+    @model_validator(mode="after")
+    def _ladders(self) -> Fibers:
+        _ascending("fibers.distribution", self.distribution)
+        _ascending("fibers.feeder", self.feeder)
+        return self
 
 
 class Homes(StrictModel):
@@ -129,24 +169,33 @@ class Homes(StrictModel):
         True, description="Count dwelling units (busnummers / flats), not addresses"
     )
     default_units_apartment: int = Field(
-        6, description="Units assumed for an apartment building with no unit data"
+        6, ge=1, le=500, description="Units assumed for an apartment building with no unit data"
     )
     m2_per_unit: float = Field(
-        90.0, description="Floor area per unit used to estimate units from footprint × levels"
+        90.0,
+        ge=15,
+        le=1000,
+        description="Floor area per unit used to estimate units from footprint × levels",
     )
 
 
 class Distances(StrictModel):
-    max_drop_m: float = Field(150.0, description="Max drop length home → FAT along the street")
-    max_dist_m: float = Field(2000.0, description="Max distribution cable length FDH → FAT")
-    max_reach_km: float = Field(20.0, description="Max logical reach OLT → ONT")
-    max_pull_m: float = Field(250.0, description="Max pull between chambers")
+    max_drop_m: float = Field(
+        150.0, gt=0, le=2000, description="Max drop length home → FAT along the street"
+    )
+    max_dist_m: float = Field(
+        2000.0, gt=0, le=20000, description="Max distribution cable length FDH → FAT"
+    )
+    max_reach_km: float = Field(
+        20.0, gt=0, le=60, description="Max reach OLT → ONT (G.984.1: 60 km logical at most)"
+    )
+    max_pull_m: float = Field(250.0, gt=0, le=5000, description="Max pull between chambers")
 
 
 class LossDb(StrictModel):
-    connector: float = 0.3
-    splice: float = 0.1
-    margin: float = Field(2.0, description="Design margin added to every path")
+    connector: float = Field(0.3, ge=0, le=1.0, description="Loss per mated connector pair")
+    splice: float = Field(0.1, ge=0, le=0.5, description="Loss per fusion splice")
+    margin: float = Field(2.0, ge=0, le=10, description="Design margin added to every path")
     splitter: dict[int, float] = Field(
         default_factory=lambda: {2: 3.7, 4: 7.2, 8: 10.5, 16: 13.8, 32: 17.1, 64: 20.5}
     )
@@ -155,12 +204,42 @@ class LossDb(StrictModel):
     )
     coexistence: float = Field(
         1.0,
+        ge=0,
+        le=3,
         description="Insertion loss of the coexistence element (WDM1r) when GPON and XGS-PON "
         "share an ODN",
     )
 
+    @model_validator(mode="after")
+    def _physical(self) -> LossDb:
+        import math
 
-class ConnectorsPerPath(StrictModel):
+        last = 0.0
+        for n in sorted(self.splitter):
+            loss = self.splitter[n]
+            ideal = 10 * math.log10(n)
+            if n not in SPLIT_RATIOS:
+                raise ValueError(f"loss_db.splitter has a 1:{n} splitter, which does not exist")
+            if not ideal <= loss <= ideal + 4:
+                raise ValueError(
+                    f"loss_db.splitter 1:{n} is {loss:g} dB; a real one loses between "
+                    f"{ideal:.1f} dB (the ideal split) and {ideal + 4:.1f} dB"
+                )
+            if loss <= last:
+                raise ValueError("loss_db.splitter must lose more with every larger split")
+            last = loss
+        for nm, a in self.fiber_per_km.items():
+            if not 1260 <= nm <= 1625:
+                raise ValueError(f"loss_db.fiber_per_km has {nm} nm, outside the 1260–1625 nm band")
+            if not 0.15 <= a <= 0.6:
+                raise ValueError(
+                    f"loss_db.fiber_per_km at {nm} nm is {a:g} dB/km; single-mode fibre is "
+                    "0.15–0.6 dB/km (ITU-T G.652)"
+                )
+        return self
+
+
+class ConnectorsPerPath(PriceModel):
     odf: int = 2
     fdh_in: int = 1
     fdh_out: int = 1
@@ -178,38 +257,54 @@ class Pops(StrictModel):
 
 class Fdh(StrictModel):
     capacities: list[int] = Field([288, 576], description="FDH sizes in splitter output ports")
-    max_fill_pct: float = Field(80.0, description="Max initial fill of an FDH")
+    max_fill_pct: float = Field(80.0, gt=0, le=100, description="Max initial fill of an FDH")
     placements: list[Placement] = Field(["cabinet"])
+
+    @model_validator(mode="after")
+    def _sizes(self) -> Fdh:
+        _ascending("fdh.capacities", self.capacities)
+        return self
 
 
 class Fat(StrictModel):
-    max_homes: int = Field(32, description="Max homes (units) served by one FAT")
-    min_homes: int = Field(4, description="Below this an FAT is discouraged (cost only)")
+    max_homes: int = Field(32, ge=1, le=256, description="Max homes (units) served by one FAT")
+    min_homes: int = Field(4, ge=0, description="Below this an FAT is discouraged (cost only)")
     placements: list[Placement] = Field(["pole", "wall", "chamber"])
+
+    @model_validator(mode="after")
+    def _order(self) -> Fat:
+        if self.min_homes > self.max_homes:
+            raise ValueError(f"fat.min_homes {self.min_homes} is above max_homes {self.max_homes}")
+        return self
 
 
 class Chambers(StrictModel):
-    spacing_m: float = 250.0
+    spacing_m: float = Field(250.0, gt=0, le=5000)
     types: dict[str, str] = Field(default_factory=lambda: {"small": "600x450", "large": "1200x600"})
 
 
 class Closures(StrictModel):
     sizes: list[int] = Field([48, 96, 288])
 
+    @model_validator(mode="after")
+    def _sizes(self) -> Closures:
+        _ascending("closures.sizes", self.sizes)
+        return self
 
-class Slack(StrictModel):
+
+class Slack(PriceModel):
     per_closure_m: float = 10.0
     per_fat_m: float = 5.0
 
 
 class Ducts(StrictModel):
     prefer_existing: bool = True
-    max_fill_pct: float = 40.0
-    min_bend_radius_mm: float = 300.0
+    max_fill_pct: float = Field(40.0, gt=0, le=100)
+    min_bend_radius_mm: float = Field(300.0, gt=0)
     microduct_bundles: list[int] = Field([7, 12, 24])
 
 
-class SurfaceCost(StrictModel):
+class SurfaceCost(PriceModel):
     trench_per_m: float
     reinstatement_per_m: float = 0.0
 
@@ -252,7 +347,7 @@ class Surfaces(StrictModel):
         return sc.trench_per_m + sc.reinstatement_per_m
 
 
-class Aerial(StrictModel):
+class Aerial(PriceModel):
     """Cable strung on existing poles (the imported pole layer)."""
 
     enabled: bool = Field(True, description="Offer aerial spans where the data has poles")
@@ -265,7 +360,7 @@ class Aerial(StrictModel):
     )
 
 
-class Facade(StrictModel):
+class Facade(PriceModel):
     """Cable along building fronts: where a street is lined with buildings the cable runs on
     their walls instead of in a trench."""
 
@@ -287,14 +382,14 @@ class Facade(StrictModel):
     )
 
 
-class BarrierCrossing(StrictModel):
+class BarrierCrossing(PriceModel):
     fixed: float = Field(
         description="Permit, launch and reception pits, mobilisation: once per crossing"
     )
     per_m: float = Field(description="Directional drilling under the barrier, per metre")
 
 
-class Crossings(StrictModel):
+class Crossings(PriceModel):
     road_drill_per_m: float = 180.0
     max_length_m: float = Field(
         80.0,
@@ -313,7 +408,7 @@ class Crossings(StrictModel):
         return c.fixed + c.per_m * length_m
 
 
-class UnitCosts(StrictModel):
+class UnitCosts(PriceModel):
     fat: float = 350.0
     fdh_288: float = 6500.0
     fdh_576: float = 9500.0
@@ -333,23 +428,25 @@ class UnitCosts(StrictModel):
     drop_per_m: float = 1.2
 
 
-class Labour(StrictModel):
+class Labour(PriceModel):
     splice: float = 18.0
     otdr_test: float = 12.0
     fat_install: float = 180.0
     fdh_install: float = 1200.0
 
 
-class InsidePlant(StrictModel):
+class InsidePlant(PriceModel):
     """Fibre inside a building with several units: a riser from the building entry up through
     the floors, a floor box on each floor, and a cable from the box to each flat."""
 
-    floor_height_m: float = Field(3.0, description="Storey height used for the riser length")
+    floor_height_m: float = Field(
+        3.0, ge=2, le=8, description="Storey height used for the riser length"
+    )
     units_per_floor: int = Field(
         4,
         description="Flats per floor, to estimate the floors of a building whose levels are unknown",
     )
-    units_per_floor_box: int = Field(8, description="Flats one floor box serves")
+    units_per_floor_box: int = Field(8, ge=1, description="Flats one floor box serves")
     riser_per_m: float = Field(2.5, description="Riser cable and its fixing, per metre")
     floor_box: float = Field(70.0, description="One floor box (splice/patch point on a floor)")
     indoor_per_unit: float = Field(
@@ -379,12 +476,31 @@ class Phasing(StrictModel):
     )
 
 
+class Review(StrictModel):
+    """Who checked the values. Shipped presets are drafts: confirm every value with your
+    operator before a design is built. openFTTH certifies nothing."""
+
+    status: Literal["draft", "reviewed"] = "draft"
+    reviewed_by: str | None = Field(None, description="Name and role of the reviewing engineer")
+    date: str | None = Field(None, description="Date of the review (YYYY-MM-DD)")
+    note: str = "Draft: confirm every value with your operator before construction."
+
+    @model_validator(mode="after")
+    def _who_and_when(self) -> Review:
+        if self.status == "reviewed" and not (self.reviewed_by and self.date):
+            raise ValueError(
+                "a reviewed rulebook names who reviewed it (reviewed_by) and when (date)"
+            )
+        return self
+
+
 class Rulebook(StrictModel):
     version: Literal[1] = 1
     name: str
     description: str = ""
-    country: str | None = None
-    currency: str = "EUR"
+    country: str | None = Field(None, pattern=r"^[A-Z]{2}$")
+    currency: str = Field("EUR", pattern=r"^[A-Z]{3}$")
+    review: Review = Review()
     pon: Pon = Pon()
     fibers: Fibers = Fibers()
     homes: Homes = Homes()
@@ -429,6 +545,21 @@ class Rulebook(StrictModel):
     phasing: Phasing = Phasing()
 
     @model_validator(mode="after")
+    def _consistent(self) -> Rulebook:
+        if self.pon.arch() != "p2p":
+            missing = [s for s in self.cascade_stages() if s not in self.loss_db.splitter]
+            if missing:
+                raise ValueError(
+                    f"loss_db.splitter has no loss for 1:{missing[0]}, a split the design uses"
+                )
+            if self.fat.max_homes > self.pon.split_ratio:
+                raise ValueError(
+                    f"fat.max_homes {self.fat.max_homes} is more than one PON "
+                    f"(1:{self.pon.split_ratio}) can serve"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _budget_fits_class(self) -> Rulebook:
         nm = self.pon.worst_case_nm
         if nm not in self.loss_db.fiber_per_km:
@@ -438,6 +569,11 @@ class Rulebook(StrictModel):
             raise ValueError(
                 f"budget_db {self.pon.budget_db:g} dB is above class {self.pon.pon_class} "
                 f"({hi:g} dB); the optics cannot reach it"
+            )
+        if not lo <= self.pon.min_loss_db < self.pon.budget_db:
+            raise ValueError(
+                f"min_loss_db {self.pon.min_loss_db:g} dB must be at least the class minimum "
+                f"({lo:g} dB) and below budget_db ({self.pon.budget_db:g} dB)"
             )
         return self
 

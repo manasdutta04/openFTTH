@@ -137,6 +137,22 @@ def schema(
         typer.echo(text)
 
 
+@rules_app.command("sources")
+def rules_sources(
+    out: Annotated[
+        Path | None, typer.Option(help="Rewrite the generated table in this RULEBOOK.md")
+    ] = None,
+) -> None:
+    """Print where every rulebook value comes from (or refresh the table in RULEBOOK.md)."""
+    from .rules.sources import sources_markdown, write_sources_table
+
+    if out:
+        write_sources_table(out)
+        console.print(f"wrote the sources table in {out}")
+    else:
+        typer.echo(sources_markdown())
+
+
 @rules_app.command("list")
 def rules_list() -> None:
     """List shipped rulebook presets."""

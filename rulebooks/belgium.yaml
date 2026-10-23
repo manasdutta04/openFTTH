@@ -7,6 +7,12 @@ description: Flanders draft. Underground in footpaths, centralised 1:32 split, 2
 country: BE
 currency: EUR
 
+review:                     # nobody has reviewed these values yet; openFTTH certifies nothing
+  status: draft
+  reviewed_by: null
+  date: null
+  note: "Draft: confirm every value with your operator before construction."
+
 pon:
   class: B+                 # source: G.984.2
   budget_db: 28.0

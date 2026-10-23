@@ -315,6 +315,8 @@ def build_boq(design: Design, rules: Rulebook, dug: set[str] | None = None) -> B
         rules.crossings.road_drill_per_m * 8.0,
         "assumed 8 m per crossing",
     )
+    if rules.review.status == "draft":
+        notes.insert(0, f"Rulebook {rules.name} is a draft: {rules.review.note}")
     notes.append(
         "Phase 0: crossings are counted only where a cable follows a primary/secondary road edge; detailed crossing detection comes with the duct layer."
     )

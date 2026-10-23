@@ -7,6 +7,12 @@ description: Norway draft. Mixed aerial/underground, cascaded 1:4 × 1:8 split, 
 country: "NO"
 currency: NOK
 
+review:                     # nobody has reviewed these values yet; openFTTH certifies nothing
+  status: draft
+  reviewed_by: null
+  date: null
+  note: "Draft: confirm every value with your operator before construction."
+
 pon:
   class: C+                 # assumed: longer reach rural PONs
   budget_db: 32.0           # source: G.984.2 class C+ max ODN loss

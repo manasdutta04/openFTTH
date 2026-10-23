@@ -6,6 +6,12 @@ name: generic-xgspon
 description: Centralised 1:32 split XGS-PON (10G symmetric), class N1, underground in footpaths. Same network rules as generic-gpon, with the XGS-PON optical budget.
 currency: EUR
 
+review:                     # nobody has reviewed these values yet; openFTTH certifies nothing
+  status: draft
+  reviewed_by: null
+  date: null
+  note: "Draft: confirm every value with your operator before construction."
+
 pon:
   technology: xgspon        # 10G symmetric; use gpon+xgspon to run both on one ODN
   class: N1                 # source: ITU-T G.9807.1, class N1

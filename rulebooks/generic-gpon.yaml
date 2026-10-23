@@ -6,6 +6,12 @@ name: generic-gpon
 description: Centralised 1:32 split GPON, class B+, underground in footpaths. A neutral starting point.
 currency: EUR
 
+review:                     # nobody has reviewed these values yet; openFTTH certifies nothing
+  status: draft
+  reviewed_by: null
+  date: null
+  note: "Draft: confirm every value with your operator before construction."
+
 pon:
   class: B+                 # source: ITU-T G.984.2 amendment 1, class B+
   budget_db: 28.0           # source: G.984.2 B+ max ODN loss

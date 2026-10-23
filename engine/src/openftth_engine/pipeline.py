@@ -2214,6 +2214,7 @@ def deliver(s: Session, title: str | None = None) -> ToolResult:
         "units_connected": boq.units_connected,
         "cost_per_connection": boq.cost_per_connection,
         "take_rate": s.rules.fibers.take_rate,
+        "rulebook_review": s.rules.review.model_dump(),
         "totals": boq.totals,
         **({"phases": phases} if phases else {}),
     }
@@ -3126,7 +3127,8 @@ def plan_sheets(s: Session, scale: int = 1000, paper: str = "A3") -> ToolResult:
         "rulebook": s.rules.name,
         "version": _fingerprint(s.design),
         "work_order": f"{wo['id']} {wo['title']}" if wo else "",
-        "status": "Draft: for review" if not wo or wo["state"] == "open" else "Posted",
+        "status": ("Draft: for review" if not wo or wo["state"] == "open" else "Posted")
+        + ("; draft rulebook" if s.rules.review.status == "draft" else ""),
     }
     d = s.project.deliver_dir
     try:
