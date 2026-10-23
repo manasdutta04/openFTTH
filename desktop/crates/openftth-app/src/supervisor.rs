@@ -73,6 +73,20 @@ fn bundled_node() -> String {
         .unwrap_or_else(|| "node".into())
 }
 
+/// A resource folder shipped beside the app (`<exe dir>/<name>`) or in the checkout above it.
+pub fn resource_dir(name: &str) -> Option<PathBuf> {
+    let exe_dir = env::current_exe().ok()?.parent()?.to_path_buf();
+    let mut dir: Option<&Path> = Some(exe_dir.as_path());
+    while let Some(d) = dir {
+        let candidate = d.join(name);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 /// Bundled layout: `<exe dir>/harness/dist/index.js`. Checkout layout: `<repo>/harness/src/index.ts`.
 fn locate_harness() -> Option<(PathBuf, PathBuf)> {
     if let Ok(p) = env::var("OPENFTTH_HARNESS") {

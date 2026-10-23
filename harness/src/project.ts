@@ -89,6 +89,10 @@ export const EDIT_TOOLS = [
   "check_rules",
   "check_operator",
   "open_work_order",
+  // Deliverables the engineer makes from the Export menu.
+  "plan_sheets",
+  "reports",
+  "export_profile",
 ] as const;
 export type SteerTool = (typeof STEER_TOOLS)[number];
 

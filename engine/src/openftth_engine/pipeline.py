@@ -3158,6 +3158,51 @@ def plan_sheets(s: Session, scale: int = 1000, paper: str = "A3") -> ToolResult:
     return result
 
 
+def export_profile(s: Session, name: str = "generic-gis") -> ToolResult:
+    """Write the design in another schema through an export profile (exports/<name>.yaml or a
+    path): deliverables/exports/<name>/ with the files and an export.json manifest."""
+    from .deliver.exchange import export_with_profile, list_export_profiles, load_export_profile
+
+    s.project.set_stage("deliver")
+    try:
+        profile = load_export_profile(name)
+    except FileNotFoundError:
+        return _rejected(
+            "export_profile",
+            f"no export profile {name!r}; known: {', '.join(list_export_profiles()) or 'none'}",
+        )
+    except ValueError as exc:
+        return _rejected("export_profile", f"the profile {name!r} is not valid: {exc}")
+    if not s.design.by_kind("fat"):
+        return _rejected("export_profile", "the design has no network yet; design it first")
+    twin = _twin(s)
+    out = s.project.deliver_dir / "exports" / profile.name
+    manifest = export_with_profile(s.design, profile, out, twin.crs)
+    counts = {k: v["features"] for k, v in manifest["layers"].items()}
+    empty = sorted(k for k, n in counts.items() if not n)
+    result = ToolResult(
+        tool="export_profile",
+        summary=f"exports/{profile.name}: {len(counts)} layers, {sum(counts.values())} features "
+        f"({profile.driver}, {manifest['crs']})",
+        decisions=[
+            Decision(
+                stage="deliver",
+                tool="export_profile",
+                reason=f"Design written through the export profile {profile.name!r}: "
+                f"{profile.driver} in {manifest['crs']}, each field renamed, cast and coded as the "
+                "profile says"
+                + (f"; no elements for {', '.join(empty)}" if empty else "")
+                + ". export.json lists the files.",
+                values={"profile": profile.name, "layers": counts, "crs": manifest["crs"]},
+                source="rulebook",
+            )
+        ],
+        data={"folder": f"exports/{profile.name}", **manifest},
+    )
+    s.project.commit(result, s.design)
+    return result
+
+
 def export_gpkg(s: Session) -> ToolResult:
     from .deliver.gpkg import export_gpkg as _export
 

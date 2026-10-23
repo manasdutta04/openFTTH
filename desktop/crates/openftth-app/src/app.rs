@@ -866,6 +866,41 @@ project {}",
             }
             self.export_folder(&stem, &parts);
         }
+        // Make deliverables now, without a crew turn: the engine writes them into the project.
+        menu_separator(ui, &p);
+        let free = !self.st.crew_working();
+        if menu_item(ui, &p, "Make plan sheets (A3, 1:1000)", None, free) {
+            self.st.edit("plan_sheets", serde_json::json!({"scale": 1000, "paper": "A3"}));
+        }
+        if menu_item(ui, &p, "Make plan sheets (A1, 1:2000)", None, free) {
+            self.st.edit("plan_sheets", serde_json::json!({"scale": 2000, "paper": "A1"}));
+        }
+        if menu_item(ui, &p, "Make cable schedule and port report", None, free) {
+            self.st.edit("reports", serde_json::json!({}));
+        }
+        let profiles = export_profiles();
+        ui.add_enabled_ui(free && !profiles.is_empty(), |ui| {
+            ui.menu_button(Self::menu_title("Export through a profile", &p), |ui| {
+                widgets::menu_begin(ui, 260.0);
+                for name in &profiles {
+                    if menu_item(ui, &p, name, None, true) {
+                        self.st.edit("export_profile", serde_json::json!({"name": name}));
+                    }
+                }
+            })
+            .response
+            .on_hover_cursor(CursorIcon::PointingHand);
+        });
+        let exports = deliver.join("exports");
+        if menu_item(
+            ui,
+            &p,
+            "Copy profile exports to a folder…",
+            None,
+            exports.is_dir(),
+        ) {
+            self.export_folder(&stem, &[("exports", exports)]);
+        }
         if missing > 0 {
             menu_separator(ui, &p);
             let busy = self.st.busy();
@@ -1956,6 +1991,26 @@ fn s_str(v: &serde_json::Value) -> String {
 }
 
 /// Copy a directory tree; returns the number of files copied.
+/// The export profiles shipped beside the app (`exports/*.yaml`), by name.
+fn export_profiles() -> Vec<String> {
+    let Some(dir) = crate::supervisor::resource_dir("exports") else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            (path.extension().is_some_and(|x| x == "yaml"))
+                .then(|| path.file_stem()?.to_str().map(str::to_string))
+                .flatten()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
 fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<usize> {
     std::fs::create_dir_all(dst)?;
     let mut n = 0;

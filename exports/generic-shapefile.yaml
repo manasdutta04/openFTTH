@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=./schema.json
+# Shapefiles in the design's own metric CRS (UTM), field names of at most 10 characters, and the
+# lifecycle as a short code list: the shape most CAD/GIS hand-overs still ask for.
+format: openftth.export
+version: 1
+name: generic-shapefile
+description: One shapefile per element kind in the design's UTM zone, 10-character fields, coded status.
+driver: shapefile
+crs: local
+layers:
+  - kind: fdh
+    layer: CABINET
+    fields:
+      ID: {from: uuid}
+      NAME: {from: props.name}
+      PORTS: {from: props.port_capacity, type: int}
+      PORTS_USED: {from: props.total_connections, type: int}
+      STATUS: {from: lifecycle, codes: {planned: PLN, in_construction: CON, as_built: ASB, in_service: SRV}}
+  - kind: fat
+    layer: FAT
+    fields:
+      ID: {from: uuid}
+      NAME: {from: props.name}
+      PORTS: {from: props.port_capacity, type: int}
+      PORTS_USED: {from: props.total_connections, type: int}
+      PON: {from: openftth.pon_id}
+      STATUS: {from: lifecycle, codes: {planned: PLN, in_construction: CON, as_built: ASB, in_service: SRV}}
+  - kind: chamber
+    layer: CHAMBER
+    fields:
+      ID: {from: uuid}
+      NAME: {from: props.manhole_id}
+      SIZE: {from: props.manhole_type, codes: {small: S, large: L}}
+      STATUS: {from: lifecycle, codes: {planned: PLN, in_construction: CON, as_built: ASB, in_service: SRV}}
+  - kind: feeder
+    layer: FEEDER
+    fields:
+      ID: {from: uuid}
+      NAME: {from: props.name}
+      FIBRES: {from: props.fiber_count, type: int}
+      LENGTH_M: {from: props.length_m, type: real}
+      STATUS: {from: lifecycle, codes: {planned: PLN, in_construction: CON, as_built: ASB, in_service: SRV}}
+  - kind: distribution
+    layer: DISTRIB
+    fields:
+      ID: {from: uuid}
+      NAME: {from: props.name}
+      FIBRES: {from: props.fiber_count, type: int}
+      LENGTH_M: {from: props.length_m, type: real}
+      STATUS: {from: lifecycle, codes: {planned: PLN, in_construction: CON, as_built: ASB, in_service: SRV}}

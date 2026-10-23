@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=./schema.json
+# One CSV per element kind with the geometry as WKT in WGS 84: for spreadsheets and databases.
+format: openftth.export
+version: 1
+name: generic-csv
+description: One CSV per element kind, geometry as WKT in WGS 84.
+driver: csv
+crs: EPSG:4326
+layers:
+  - kind: fdh
+    layer: cabinets
+    fields:
+      id: {from: uuid}
+      name: {from: props.name}
+      ports: {from: props.port_capacity, type: int}
+      ports_used: {from: props.total_connections, type: int}
+  - kind: fat
+    layer: fats
+    fields:
+      id: {from: uuid}
+      name: {from: props.name}
+      ports: {from: props.port_capacity, type: int}
+      ports_used: {from: props.total_connections, type: int}
+      pon: {from: openftth.pon_id}
+      mdu: {from: openftth.mdu, type: bool}
+  - kind: distribution
+    layer: distribution_cables
+    fields:
+      id: {from: uuid}
+      name: {from: props.name}
+      fibres: {from: props.fiber_count, type: int}
+      length_m: {from: props.length_m, type: real}
+  - kind: home
+    layer: homes
+    fields:
+      id: {from: uuid}
+      units: {from: openftth.units, type: int}
+      fat_id: {from: openftth.fat_id}

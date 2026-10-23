@@ -103,7 +103,7 @@ Get-ChildItem (Join-Path $pyStage "Lib\site-packages") -Recurse -Directory |
 
 # ---- resources, laid out as in the repository --------------------------------------------------
 Step "resources"
-foreach ($d in @("rulebooks", "operators", "profiles")) {
+foreach ($d in @("rulebooks", "operators", "profiles", "exports")) {
     Copy-Item -Recurse (Join-Path $repo $d) (Join-Path $stage $d)
 }
 New-Item -ItemType Directory -Force (Join-Path $stage "crews") | Out-Null

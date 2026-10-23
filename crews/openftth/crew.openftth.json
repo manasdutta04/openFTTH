@@ -112,6 +112,8 @@
           "export_gpkg",
           "plan_sheets",
           "reports",
+          "export_profile",
+          "list_export_profiles",
           "design_summary",
           "versions",
           "diff_versions",

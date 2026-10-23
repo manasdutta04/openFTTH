@@ -113,12 +113,22 @@ def schema(
     profile: Annotated[
         bool, typer.Option("--profile", help="The import profile schema instead")
     ] = False,
+    export: Annotated[
+        bool, typer.Option("--export", help="The export profile schema instead")
+    ] = False,
 ) -> None:
     """Print (or write) the rulebook (or operator pack) JSON schema from the pydantic model."""
+    from .deliver.exchange import ExportProfile
     from .ingest.profiles import ImportProfile
     from .network import OperatorPack
 
-    model = ImportProfile if profile else (OperatorPack if operator else Rulebook)
+    model = (
+        ExportProfile
+        if export
+        else ImportProfile
+        if profile
+        else (OperatorPack if operator else Rulebook)
+    )
     text = json.dumps(model.model_json_schema(by_alias=True), indent=2) + "\n"
     if out:
         out.write_text(text, encoding="utf-8")

@@ -1,0 +1,117 @@
+{
+  "$defs": {
+    "FieldMap": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "description": "Where the value comes from: uuid, kind, lifecycle, props.<key> or openftth.<key>",
+          "title": "From",
+          "type": "string"
+        },
+        "type": {
+          "default": "text",
+          "enum": [
+            "text",
+            "int",
+            "real",
+            "bool"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "codes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Design value \u2192 the schema's code (a code list)",
+          "title": "Codes",
+          "type": "object"
+        }
+      },
+      "required": [
+        "from"
+      ],
+      "title": "FieldMap",
+      "type": "object"
+    },
+    "LayerMap": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "layer": {
+          "title": "Layer",
+          "type": "string"
+        },
+        "fields": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FieldMap"
+          },
+          "title": "Fields",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "layer",
+        "fields"
+      ],
+      "title": "LayerMap",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "default": "openftth.export",
+      "pattern": "^openftth\\.export$",
+      "title": "Format",
+      "type": "string"
+    },
+    "version": {
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "driver": {
+      "enum": [
+        "gpkg",
+        "shapefile",
+        "csv"
+      ],
+      "title": "Driver",
+      "type": "string"
+    },
+    "crs": {
+      "default": "EPSG:4326",
+      "description": "Output CRS (an EPSG code) or `local` for the design's metric CRS",
+      "title": "Crs",
+      "type": "string"
+    },
+    "layers": {
+      "items": {
+        "$ref": "#/$defs/LayerMap"
+      },
+      "title": "Layers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "driver",
+    "layers"
+  ],
+  "title": "ExportProfile",
+  "type": "object"
+}

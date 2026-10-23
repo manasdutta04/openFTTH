@@ -344,6 +344,29 @@ def splice_schedule() -> dict[str, Any]:
 
 
 @mcp.tool()
+def export_profile(name: str = "generic-gis") -> dict[str, Any]:
+    """Write the design in an operator's or another program's schema through an export profile
+    (layer and field names, types, code lists, CRS): GeoPackage, Shapefile or CSV. `name` is a
+    shipped profile (see list_export_profiles) or a path to a profile YAML."""
+    return _out(pipeline.export_profile(_s(), name))
+
+
+@mcp.tool()
+def list_export_profiles() -> dict[str, Any]:
+    """The shipped export profiles with their format and description."""
+    from .deliver.exchange import list_export_profiles as names
+    from .deliver.exchange import load_export_profile
+
+    return {
+        "profiles": [
+            {"name": n, "driver": p.driver, "crs": p.crs, "description": p.description}
+            for n in names()
+            for p in [load_export_profile(n)]
+        ]
+    }
+
+
+@mcp.tool()
 def reports() -> dict[str, Any]:
     """Write the cable schedule (every cable with its ends, size, length and metres per kind of
     route), the port report (cabinets, FATs and closures with ports used and free) and, with

@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=./schema.json
+# A plain GIS export: one GeoPackage, one layer per element kind, readable field names, WGS 84.
+# Copy this file to map the design to an operator's schema: rename layers and fields, pick
+# where each value comes from, and add code lists.
+format: openftth.export
+version: 1
+name: generic-gis
+description: One GeoPackage in WGS 84, a layer per element kind, readable field names.
+driver: gpkg
+crs: EPSG:4326
+layers:
+  - kind: pop
+    layer: pop
+    fields:
+      id: {from: uuid}
+      name: {from: props.name}
+      status: {from: lifecycle}
+  - kind: fdh
+    layer: cabinet
+    fields:
+      id: {from: uuid}
+      name: {from: props.name}
+      ports: {from: props.port_capacity, type: int}
+      ports_used: {from: props.total_connections, type: int}
+      pons: {from: openftth.pons, type: int}
+      units: {from: openftth.units, type: int}
+      status: {from: lifecycle}
+  - kind: fat
+    layer: fat
+    fields:
+      id: {from: uuid}
+      name: {from: props.name}
+      ports: {from: props.port_capacity, type: int}
+      ports_used: {from: props.total_connections, type: int}
+      pon: {from: openftth.pon_id}
+      cabinet_id: {from: openftth.fdh_id}
+      units: {from: openftth.units, type: int}
+      status: {from: lifecycle}
+  - kind: chamber
+    layer: chamber
+    fields:
+      id: {from: uuid}
+      name: {from: props.manhole_id}
+      size: {from: props.manhole_type}
+      closure: {from: openftth.closure, type: bool}
+      status: {from: lifecycle}
+  - kind: feeder
+    layer: feeder_cable
+    fields:
+      id: {from: uuid}
+      name: {from: props.name}
+      fibres: {from: props.fiber_count, type: int}
+      cables: {from: props.cable_count, type: int}
+      length_m: {from: props.length_m, type: real}
+      status: {from: lifecycle}
+  - kind: distribution
+    layer: distribution_cable
+    fields:
+      id: {from: uuid}
+      name: {from: props.name}
+      fibres: {from: props.fiber_count, type: int}
+      cables: {from: props.cable_count, type: int}
+      length_m: {from: props.length_m, type: real}
+      cabinet_id: {from: openftth.fdh_id}
+      status: {from: lifecycle}
+  - kind: drop
+    layer: drop_cable
+    fields:
+      id: {from: uuid}
+      fibres: {from: props.fiber_count, type: int}
+      length_m: {from: props.length_m, type: real}
+      fat_id: {from: openftth.fat_id}
+      status: {from: lifecycle}
+  - kind: home
+    layer: home
+    fields:
+      id: {from: uuid}
+      units: {from: openftth.units, type: int}
+      fat_id: {from: openftth.fat_id}
+      pon: {from: openftth.pon_id}
+      status: {from: lifecycle}
