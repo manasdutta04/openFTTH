@@ -1,3 +1,6 @@
+// A release build is a windowed app: no console window opens with it.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! openFTTH desktop app. Spawns the harness sidecar (or attaches to one), then opens the window:
 //! chat column on the left, workspace (Twin, Versions, Backstage) on the right.
 

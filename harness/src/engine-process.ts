@@ -43,6 +43,7 @@ export async function startEngine(cfg: EngineConfig, opts: StartOptions): Promis
     env: { ...process.env, OPENFTTH_APPROVALS_URL: opts.approvalsUrl, OPENFTTH_COMMS_TOKEN: opts.commsToken, PYTHONIOENCODING: "utf-8" },
     stdio: ["ignore", "pipe", "pipe"],
     shell: process.platform === "win32" && !cmd.endsWith(".exe"),
+    windowsHide: true,
   });
   const log = opts.log ?? (() => {});
   child.stdout?.on("data", (d) => log(String(d).trimEnd()));
@@ -157,7 +158,7 @@ function parseLoose(text: string): unknown {
 /** Kill a child and, on Windows (where a shell wrapper owns the real process), its whole tree. */
 export function killTree(child: ChildProcess): void {
   if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" }).on("error", () => child.kill());
+    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => child.kill());
   } else {
     child.kill();
   }

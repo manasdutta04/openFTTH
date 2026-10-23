@@ -24,7 +24,15 @@ impl Sidecar {
         rand::rng().fill_bytes(&mut bytes);
         let token = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let node = env::var("OPENFTTH_NODE").unwrap_or_else(|_| bundled_node());
-        let mut child = Command::new(&node)
+        let mut cmd = Command::new(&node);
+        #[cfg(windows)]
+        {
+            // The harness runs in the background: no console window for it.
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd
             .arg("--no-warnings")
             .arg(&script)
             .current_dir(&cwd)

@@ -8,7 +8,9 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-export function spawnCli(command: string, args: string[], opts: SpawnOptions): ChildProcess {
+export function spawnCli(command: string, args: string[], spawnOpts: SpawnOptions): ChildProcess {
+  // Crew CLIs run in the background of the desktop app: never a console window.
+  const opts: SpawnOptions = { ...spawnOpts, windowsHide: true };
   const exe = resolveExecutable(command);
   if (/\.(cmd|bat)$/i.test(exe)) {
     return spawn("cmd.exe", ["/d", "/s", "/c", `"${[exe, ...args].map(quoteForCmd).join(" ")}"`], { ...opts, windowsVerbatimArguments: true });
