@@ -8,8 +8,7 @@ Each rulebook path (dotted; `*` in a pattern matches anything) has a source:
 - `assumed`: a placeholder the user must replace with their own (prices, local rules).
 
 `docs/RULEBOOK.md` carries the generated table (`openftth-engine rules sources`); a test makes
-sure every value of every shipped preset has an entry here. None of this certifies a design:
-a qualified engineer reviews the rulebook and signs the final package.
+sure every value of every shipped preset has an entry here.
 """
 
 from __future__ import annotations

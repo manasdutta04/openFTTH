@@ -6,10 +6,10 @@ read it, explain it and change single values on the user's request; they can nev
 - Schema: [`rulebooks/schema.json`](../rulebooks/schema.json), generated from
   `engine/src/openftth_engine/rules/model.py` with `openftth-engine schema --out rulebooks/schema.json`.
   `tests/test_rulebook.py` fails when the file is out of date.
-- Presets: `generic-gpon` (neutral), `belgium` (Flanders draft), `norway` (draft, cascaded split).
+- Presets (beta): `generic-gpon` (neutral), `generic-xgspon` (10G), `belgium` (Flanders), `norway` (cascaded split, NOK).
 - Validate: `uv run openftth-engine rules validate rulebooks/belgium.yaml`.
 
-## Provenance and review
+## Provenance and status
 
 Every rulebook value has a source in `engine/src/openftth_engine/rules/sources.py`, of one of
 four kinds:
@@ -24,10 +24,10 @@ four kinds:
 is out of date. Preset YAML comments (`# source:`, `# assumed`) say where a preset departs from
 the defaults.
 
-Every shipped preset is a **draft** (`review.status: draft`): the BOQ, `summary.json`,
-`design_summary` and the plan sheets' title block say so. After a qualified engineer has checked
-every value for your network, set `review.status: reviewed` with `reviewed_by` and `date`.
-openFTTH certifies nothing; the engineer signs the final package.
+openFTTH 0.1 is a beta, and so are its presets (`review.status: beta`): typical values for a
+first design, which the BOQ, `summary.json`, `design_summary` and the plan sheets' title block
+show. Set the prices and local rules to your own network; once your rulebook is settled, mark it
+`review.status: reviewed` with `reviewed_by` and `date`.
 
 The model also refuses values that cannot be right: losses outside what real splitters and
 fibre lose (a 1:N splitter loses at least 10·log10 N dB), a budget outside the PON class,

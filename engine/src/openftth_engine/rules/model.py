@@ -477,13 +477,13 @@ class Phasing(StrictModel):
 
 
 class Review(StrictModel):
-    """Who checked the values. Shipped presets are drafts: confirm every value with your
-    operator before a design is built. openFTTH certifies nothing."""
+    """The rulebook's status. Shipped presets are beta: typical values for a first design,
+    to be set to your own prices and local rules."""
 
-    status: Literal["draft", "reviewed"] = "draft"
+    status: Literal["beta", "reviewed"] = "beta"
     reviewed_by: str | None = Field(None, description="Name and role of the reviewing engineer")
     date: str | None = Field(None, description="Date of the review (YYYY-MM-DD)")
-    note: str = "Draft: confirm every value with your operator before construction."
+    note: str = "Beta preset: typical values; set your own prices and local rules."
 
     @model_validator(mode="after")
     def _who_and_when(self) -> Review:

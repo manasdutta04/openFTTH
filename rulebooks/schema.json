@@ -760,12 +760,12 @@
     },
     "Review": {
       "additionalProperties": false,
-      "description": "Who checked the values. Shipped presets are drafts: confirm every value with your\noperator before a design is built. openFTTH certifies nothing.",
+      "description": "The rulebook's status. Shipped presets are beta: typical values for a first design,\nto be set to your own prices and local rules.",
       "properties": {
         "status": {
-          "default": "draft",
+          "default": "beta",
           "enum": [
-            "draft",
+            "beta",
             "reviewed"
           ],
           "title": "Status",
@@ -798,7 +798,7 @@
           "title": "Date"
         },
         "note": {
-          "default": "Draft: confirm every value with your operator before construction.",
+          "default": "Beta preset: typical values; set your own prices and local rules.",
           "title": "Note",
           "type": "string"
         }
@@ -1047,10 +1047,10 @@
     "review": {
       "$ref": "#/$defs/Review",
       "default": {
-        "status": "draft",
+        "status": "beta",
         "reviewed_by": null,
         "date": null,
-        "note": "Draft: confirm every value with your operator before construction."
+        "note": "Beta preset: typical values; set your own prices and local rules."
       }
     },
     "pon": {

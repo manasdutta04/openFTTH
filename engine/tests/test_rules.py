@@ -35,13 +35,13 @@ PRESETS = ("generic-gpon", "generic-xgspon", "belgium", "norway")
 
 
 @pytest.mark.parametrize("name", PRESETS)
-def test_every_preset_value_has_a_source_and_the_preset_is_a_draft(name):
+def test_every_preset_value_has_a_source_and_the_preset_is_beta(name):
     from openftth_engine.rules import load_rulebook
     from openftth_engine.rules.sources import unsourced
 
     rules = load_rulebook(name)
     assert unsourced(rules) == []
-    assert rules.review.status == "draft", "no shipped preset claims a review"
+    assert rules.review.status == "beta"
 
 
 def test_the_sources_table_in_the_docs_is_current():
@@ -97,3 +97,20 @@ def test_a_reviewed_rulebook_names_who_reviewed_it_and_when():
         Rulebook.model_validate(data)
     data["review"].update(reviewed_by="A. Engineer, network design", date="2026-10-23")
     assert Rulebook.model_validate(data).review.status == "reviewed"
+
+
+@pytest.mark.parametrize("name", PRESETS)
+def test_a_preset_in_another_currency_prices_every_section_itself(name):
+    """The model's default prices are EUR: a preset in NOK (say) that leaves a price section
+    out would silently price it in EUR."""
+    from pathlib import Path
+
+    import yaml
+
+    path = Path(__file__).resolve().parents[2] / "rulebooks" / f"{name}.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if raw.get("currency", "EUR") == "EUR":
+        return
+    for section in ("surfaces", "crossings", "units", "labour", "aerial", "facade", "inside"):
+        assert section in raw, f"{name} prices in {raw['currency']} but leaves {section} out"
+    assert "facade" in raw["surfaces"], "the facade price per metre"

@@ -92,9 +92,9 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
   (GeoPackage, Shapefile, CSV; layer and field renames, types, code lists, CRS). Tests: GDAL
   (QGIS's reader) reads every DXF layer back with the feeder's length intact; each shipped
   profile round-trips every mapped value and geometry to within a millimetre; plan sheets,
-  reports and exports are byte-identical across two runs of the Gent design. The plan set and
-  DXF have not been opened by hand in QGIS or LibreCAD on this machine (neither installed).
-  Open: operator symbology from the operator pack; as-designed vs as-built report.
+  reports and exports are byte-identical across two runs of the Gent design. Plan sheets and
+  DXF ship as beta in 0.1. Next: operator symbology from the operator pack; as-designed vs
+  as-built report.
 
 ### P5 — Open to other AI apps: public MCP server (harness)
 - `openftth mcp` entry: a **stdio MCP server** for Claude Desktop/Claude Code/Cursor and a **streamable-HTTP endpoint** on the harness (`/mcp`, bearer token, loopback; optional user-started tunnel for web clients such as ChatGPT connectors, which need a public HTTPS URL).

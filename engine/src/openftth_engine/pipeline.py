@@ -3128,7 +3128,7 @@ def plan_sheets(s: Session, scale: int = 1000, paper: str = "A3") -> ToolResult:
         "version": _fingerprint(s.design),
         "work_order": f"{wo['id']} {wo['title']}" if wo else "",
         "status": ("Draft: for review" if not wo or wo["state"] == "open" else "Posted")
-        + ("; draft rulebook" if s.rules.review.status == "draft" else ""),
+        + ("; beta rulebook" if s.rules.review.status == "beta" else ""),
     }
     d = s.project.deliver_dir
     try:

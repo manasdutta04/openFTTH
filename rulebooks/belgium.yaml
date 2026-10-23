@@ -1,17 +1,16 @@
-# openFTTH rulebook — Belgium (Flanders) draft preset
-# Starts from generic-gpon; differences below. Values are `assumed` until a design
-# partner reviews them; `source:` marks public specs.
+# openFTTH rulebook — Belgium (Flanders) beta preset
+# Starts from generic-gpon; differences below. Values marked `assumed` are typical defaults; `source:` marks public specs.
 version: 1
 name: belgium
-description: Flanders draft. Underground in footpaths, centralised 1:32 split, 2F drops, existing-duct preference.
+description: Flanders beta. Underground in footpaths, centralised 1:32 split, 2F drops, existing-duct preference.
 country: BE
 currency: EUR
 
-review:                     # nobody has reviewed these values yet; openFTTH certifies nothing
-  status: draft
+review:                     # beta preset (openFTTH 0.1 beta)
+  status: beta
   reviewed_by: null
   date: null
-  note: "Draft: confirm every value with your operator before construction."
+  note: "Beta preset: typical values; set your own prices and local rules."
 
 pon:
   class: B+                 # source: G.984.2

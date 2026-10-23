@@ -4,6 +4,9 @@
 
 **open** says it is open source and free to run. **FTTH** says exactly what it designs.
 
+> **Beta (0.1).** openFTTH is in public beta for Windows. The rulebook presets, plan sheets and
+> exports are beta too: try them, and please report what breaks.
+
 openFTTH is an open-source, local-first desktop app where you talk to an AI crew and it
 designs a whole fibre-to-the-home network. Give it a map, an address list or a client GIS
 export. It hands back a construction-ready design: routes, chambers, splitters, splice

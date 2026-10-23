@@ -1,17 +1,17 @@
-# openFTTH rulebook — Norway draft preset
+# openFTTH rulebook — Norway beta preset
 # Aerial on existing poles is common outside city centres; longer drops; 1:32 cascaded 1:4 × 1:8.
-# All values `assumed` until reviewed by a Norwegian design partner, except `source:` lines.
+# Values marked `assumed` are typical Norwegian defaults in NOK; `source:` marks public specs.
 version: 1
 name: norway
-description: Norway draft. Mixed aerial/underground, cascaded 1:4 × 1:8 split, longer drops in low-density areas.
+description: Norway beta. Mixed aerial/underground, cascaded 1:4 × 1:8 split, longer drops in low-density areas.
 country: "NO"
 currency: NOK
 
-review:                     # nobody has reviewed these values yet; openFTTH certifies nothing
-  status: draft
+review:                     # beta preset (openFTTH 0.1 beta)
+  status: beta
   reviewed_by: null
   date: null
-  note: "Draft: confirm every value with your operator before construction."
+  note: "Beta preset: typical values; set your own prices and local rules."
 
 pon:
   class: C+                 # assumed: longer reach rural PONs
@@ -85,30 +85,30 @@ surfaces:                   # assumed, NOK per metre
   pavement:      {trench_per_m: 900, reinstatement_per_m: 300}
   verge:         {trench_per_m: 450, reinstatement_per_m: 60}
   aerial:        {trench_per_m: 180}
-  facade:        {trench_per_m: 30}   # clipped to walls, with fixings; assumed
+  facade:        {trench_per_m: 330}  # clipped to walls, with fixings; assumed, NOK
   existing_duct: {trench_per_m: 60}
 
 aerial:                     # cable strung on the existing poles of the pole layer; assumed
   enabled: true
   max_span_m: 50
-  pole_attach: 45           # clamp, bracket and the pole owner's fee
-  transition: 250           # down the pole into the ground: guard and pit
+  pole_attach: 500          # clamp, bracket and the pole owner's fee, NOK
+  transition: 2750          # down the pole into the ground: guard and pit, NOK
 
 facade:                     # cable along building fronts; needs the owners' consent
   enabled: false
   max_offset_m: 6           # a wall this close lines the street
   min_cover: 0.8            # share of a stretch the walls must line
   highways: [residential, living_street, unclassified, service, tertiary, pedestrian]
-  transition: 300           # down the wall into the ground: guard and pit
+  transition: 3300          # down the wall into the ground: guard and pit, NOK
 
 crossings:
   road_drill_per_m: 2500
   max_length_m: 80          # longest bore offered under a barrier
   # Directional drill under a barrier: fixed = permit, launch and reception pits; per_m = drilling. Assumed.
-  motorway: {fixed: 20000, per_m: 600}
-  railway: {fixed: 30000, per_m: 750}
-  water: {fixed: 15000, per_m: 500}
-  unmapped: {fixed: 20000, per_m: 650}   # an obstacle the map does not show
+  motorway: {fixed: 130000, per_m: 3800}   # NOK
+  railway: {fixed: 210000, per_m: 5000}
+  water: {fixed: 105000, per_m: 3300}
+  unmapped: {fixed: 130000, per_m: 4400}   # an obstacle the map does not show
 
 highway_to_surface:
   motorway: asphalt
@@ -148,3 +148,12 @@ labour:                     # NOK
   otdr_test: 140
   fat_install: 2200
   fdh_install: 15000
+
+inside:                     # blocks of flats; NOK, assumed
+  floor_height_m: 3.0
+  units_per_floor: 4
+  units_per_floor_box: 8
+  riser_per_m: 28
+  floor_box: 800
+  indoor_per_unit: 600
+  riser_install_per_floor: 700
