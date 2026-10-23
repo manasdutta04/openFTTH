@@ -44,7 +44,11 @@ const DELIVERABLES: [(&str, &str, &str); 13] = [
     ("Splice schedule (JSON)", "splice_schedule.json", "JSON"),
     ("Cable schedule (CSV)", "cable_schedule.csv", "CSV"),
     ("Port report (CSV)", "port_report.csv", "CSV"),
-    ("Materials by build phase (CSV)", "materials_by_phase.csv", "CSV"),
+    (
+        "Materials by build phase (CSV)",
+        "materials_by_phase.csv",
+        "CSV",
+    ),
     ("Plan sheets (PDF)", "plans.pdf", "PDF"),
     ("CAD drawing (DXF)", "plans.dxf", "DXF"),
     ("GeoPackage", "design.gpkg", "GeoPackage"),
@@ -870,10 +874,16 @@ project {}",
         menu_separator(ui, &p);
         let free = !self.st.crew_working();
         if menu_item(ui, &p, "Make plan sheets (A3, 1:1000)", None, free) {
-            self.st.edit("plan_sheets", serde_json::json!({"scale": 1000, "paper": "A3"}));
+            self.st.edit(
+                "plan_sheets",
+                serde_json::json!({"scale": 1000, "paper": "A3"}),
+            );
         }
         if menu_item(ui, &p, "Make plan sheets (A1, 1:2000)", None, free) {
-            self.st.edit("plan_sheets", serde_json::json!({"scale": 2000, "paper": "A1"}));
+            self.st.edit(
+                "plan_sheets",
+                serde_json::json!({"scale": 2000, "paper": "A1"}),
+            );
         }
         if menu_item(ui, &p, "Make cable schedule and port report", None, free) {
             self.st.edit("reports", serde_json::json!({}));
@@ -884,7 +894,8 @@ project {}",
                 widgets::menu_begin(ui, 260.0);
                 for name in &profiles {
                     if menu_item(ui, &p, name, None, true) {
-                        self.st.edit("export_profile", serde_json::json!({"name": name}));
+                        self.st
+                            .edit("export_profile", serde_json::json!({"name": name}));
                     }
                 }
             })
