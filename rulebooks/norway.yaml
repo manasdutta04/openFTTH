@@ -41,7 +41,8 @@ loss_db:
   splice: 0.1
   margin: 2.0
   splitter: {2: 3.7, 4: 7.2, 8: 10.5, 16: 13.8, 32: 17.1, 64: 20.5}
-  fiber_per_km: {1310: 0.35, 1490: 0.25, 1550: 0.22}
+  fiber_per_km: {1270: 0.37, 1310: 0.35, 1490: 0.25, 1550: 0.22, 1577: 0.23}
+  coexistence: 1.0  # assumed: WDM1r coexistence element, only with gpon+xgspon
 
 connectors_per_path: {odf: 2, fdh_in: 1, fdh_out: 1, fat: 1, ont: 1}
 

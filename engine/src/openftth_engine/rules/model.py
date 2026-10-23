@@ -11,7 +11,21 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PonClass = Literal["B+", "C+"]
+PonClass = Literal["B+", "C+", "N1", "N2", "E1", "E2"]
+PonTechnology = Literal["gpon", "xgspon", "gpon+xgspon"]
+
+#: Nominal ODN loss range of each class (min, max dB): ITU-T G.984.2 (GPON B+, C+) and
+#: G.9807.1 (XGS-PON N1, N2, E1, E2).
+CLASS_LOSS: dict[str, tuple[float, float]] = {
+    "B+": (13.0, 28.0),
+    "C+": (17.0, 32.0),
+    "N1": (14.0, 29.0),
+    "N2": (16.0, 31.0),
+    "E1": (18.0, 33.0),
+    "E2": (20.0, 35.0),
+}
+GPON_CLASSES = ("B+", "C+")
+XGS_CLASSES = ("N1", "N2", "E1", "E2")
 SurfaceClass = Literal["asphalt", "pavement", "verge", "aerial", "existing_duct"]
 Placement = Literal["pole", "wall", "chamber", "cabinet"]
 
@@ -21,7 +35,17 @@ class StrictModel(BaseModel):
 
 
 class Pon(StrictModel):
-    pon_class: PonClass = Field("B+", alias="class", description="ITU-T G.984.2 ODN class")
+    technology: PonTechnology = Field(
+        "gpon",
+        description="gpon (G.984), xgspon (G.9807.1, 10G symmetric) or gpon+xgspon: both on one "
+        "ODN through a coexistence element, whose loss (loss_db.coexistence) every path pays",
+    )
+    pon_class: PonClass = Field(
+        "B+",
+        alias="class",
+        description="ODN loss class: B+ or C+ for GPON, N1, N2, E1 or E2 for XGS-PON (with both "
+        "on one ODN, the tighter of the two classes in use)",
+    )
     budget_db: float = Field(28.0, description="Max ODN loss for the class (B+ = 28 dB)")
     min_loss_db: float = Field(13.0, description="Min ODN loss for the class (B+ = 13 dB)")
     max_differential_db: float = Field(
@@ -33,8 +57,10 @@ class Pon(StrictModel):
         description="Cascaded split stages, e.g. [4, 8]. None means a single centralised "
         "splitter in the FDH.",
     )
-    worst_case_nm: Literal[1310, 1490, 1550] = Field(
-        1310, description="Wavelength used for the worst-case budget check"
+    worst_case_nm: Literal[1270, 1310, 1490, 1550, 1577] = Field(
+        1310,
+        description="Wavelength used for the worst-case budget check: 1310 nm (GPON upstream), "
+        "1270 nm (XGS-PON upstream, the worse of the two when XGS-PON is on the ODN)",
     )
     architecture: Literal["centralised", "cascaded", "p2p"] | None = Field(
         None,
@@ -60,6 +86,21 @@ class Pon(StrictModel):
             raise ValueError("a cascaded architecture needs two `cascade` stages, e.g. [4, 8]")
         if self.architecture == "centralised" and self.cascade:
             raise ValueError("a centralised architecture has no `cascade`; set it to null")
+        return self
+
+    @model_validator(mode="after")
+    def _class_fits_technology(self) -> Pon:
+        if self.technology == "gpon" and self.pon_class not in GPON_CLASSES:
+            raise ValueError(f"class {self.pon_class} is an XGS-PON class; GPON uses B+ or C+")
+        if self.technology == "xgspon" and self.pon_class not in XGS_CLASSES:
+            raise ValueError(
+                f"class {self.pon_class} is a GPON class; XGS-PON uses N1, N2, E1 or E2"
+            )
+        if self.technology != "gpon" and self.worst_case_nm in (1490, 1550):
+            raise ValueError(
+                "with XGS-PON on the ODN the worst case is its 1270 nm upstream (or 1310 nm); "
+                "set worst_case_nm to 1270"
+            )
         return self
 
     @model_validator(mode="after")
@@ -110,7 +151,12 @@ class LossDb(StrictModel):
         default_factory=lambda: {2: 3.7, 4: 7.2, 8: 10.5, 16: 13.8, 32: 17.1, 64: 20.5}
     )
     fiber_per_km: dict[int, float] = Field(
-        default_factory=lambda: {1310: 0.35, 1490: 0.25, 1550: 0.22}
+        default_factory=lambda: {1270: 0.37, 1310: 0.35, 1490: 0.25, 1550: 0.22, 1577: 0.23}
+    )
+    coexistence: float = Field(
+        1.0,
+        description="Insertion loss of the coexistence element (WDM1r) when GPON and XGS-PON "
+        "share an ODN",
     )
 
 
@@ -300,7 +346,24 @@ class Rulebook(StrictModel):
     units: UnitCosts = UnitCosts()
     labour: Labour = Labour()
 
+    @model_validator(mode="after")
+    def _budget_fits_class(self) -> Rulebook:
+        nm = self.pon.worst_case_nm
+        if nm not in self.loss_db.fiber_per_km:
+            raise ValueError(f"loss_db.fiber_per_km has no attenuation for {nm} nm (worst_case_nm)")
+        lo, hi = CLASS_LOSS[self.pon.pon_class]
+        if self.pon.budget_db > hi:
+            raise ValueError(
+                f"budget_db {self.pon.budget_db:g} dB is above class {self.pon.pon_class} "
+                f"({hi:g} dB); the optics cannot reach it"
+            )
+        return self
+
     # ---- derived helpers used by solvers/validators -------------------------------------
+
+    def coexistence_loss(self) -> float:
+        """Loss of the coexistence element when GPON and XGS-PON share the ODN (else none)."""
+        return self.loss_db.coexistence if self.pon.technology == "gpon+xgspon" else 0.0
 
     def splitter_loss(self) -> float:
         """Total splitter loss on one path, from the cascade or the single split ratio (none for

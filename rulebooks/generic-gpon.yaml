@@ -40,7 +40,8 @@ loss_db:
   splice: 0.1               # source: typical fusion splice design value
   margin: 2.0               # assumed: design margin
   splitter: {2: 3.7, 4: 7.2, 8: 10.5, 16: 13.8, 32: 17.1, 64: 20.5}  # source: typical PLC splitter datasheets (max IL)
-  fiber_per_km: {1310: 0.35, 1490: 0.25, 1550: 0.22}  # source: ITU-T G.652.D typical
+  fiber_per_km: {1270: 0.37, 1310: 0.35, 1490: 0.25, 1550: 0.22, 1577: 0.23}  # source: ITU-T G.652.D typical
+  coexistence: 1.0  # source: ITU-T G.984.5 WDM1r, typical insertion loss; only with gpon+xgspon
 
 connectors_per_path: {odf: 2, fdh_in: 1, fdh_out: 1, fat: 1, ont: 1}
 

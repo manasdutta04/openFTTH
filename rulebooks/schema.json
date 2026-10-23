@@ -419,6 +419,12 @@
           },
           "title": "Fiber Per Km",
           "type": "object"
+        },
+        "coexistence": {
+          "default": 1.0,
+          "description": "Insertion loss of the coexistence element (WDM1r) when GPON and XGS-PON share an ODN",
+          "title": "Coexistence",
+          "type": "number"
         }
       },
       "title": "LossDb",
@@ -427,12 +433,27 @@
     "Pon": {
       "additionalProperties": false,
       "properties": {
+        "technology": {
+          "default": "gpon",
+          "description": "gpon (G.984), xgspon (G.9807.1, 10G symmetric) or gpon+xgspon: both on one ODN through a coexistence element, whose loss (loss_db.coexistence) every path pays",
+          "enum": [
+            "gpon",
+            "xgspon",
+            "gpon+xgspon"
+          ],
+          "title": "Technology",
+          "type": "string"
+        },
         "class": {
           "default": "B+",
-          "description": "ITU-T G.984.2 ODN class",
+          "description": "ODN loss class: B+ or C+ for GPON, N1, N2, E1 or E2 for XGS-PON (with both on one ODN, the tighter of the two classes in use)",
           "enum": [
             "B+",
-            "C+"
+            "C+",
+            "N1",
+            "N2",
+            "E1",
+            "E2"
           ],
           "title": "Class",
           "type": "string"
@@ -479,11 +500,13 @@
         },
         "worst_case_nm": {
           "default": 1310,
-          "description": "Wavelength used for the worst-case budget check",
+          "description": "Wavelength used for the worst-case budget check: 1310 nm (GPON upstream), 1270 nm (XGS-PON upstream, the worse of the two when XGS-PON is on the ODN)",
           "enum": [
+            1270,
             1310,
             1490,
-            1550
+            1550,
+            1577
           ],
           "title": "Worst Case Nm",
           "type": "integer"
@@ -761,6 +784,7 @@
     "pon": {
       "$ref": "#/$defs/Pon",
       "default": {
+        "technology": "gpon",
         "class": "B+",
         "budget_db": 28.0,
         "min_loss_db": 13.0,
@@ -825,10 +849,13 @@
           "8": 10.5
         },
         "fiber_per_km": {
+          "1270": 0.37,
           "1310": 0.35,
           "1490": 0.25,
-          "1550": 0.22
-        }
+          "1550": 0.22,
+          "1577": 0.23
+        },
+        "coexistence": 1.0
       }
     },
     "connectors_per_path": {

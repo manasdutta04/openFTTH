@@ -116,12 +116,14 @@ def path_loss_db(rules: Rulebook, path_m: float, splices: int) -> dict[str, floa
     connectors = rules.connectors_on_path() * rules.loss_db.connector
     splice = splices * rules.loss_db.splice
     splitter = rules.splitter_loss()
-    total = fiber + connectors + splice + splitter + rules.loss_db.margin
+    coexistence = rules.coexistence_loss()
+    total = fiber + connectors + splice + splitter + coexistence + rules.loss_db.margin
     return {
         "fiber": fiber,
         "connectors": connectors,
         "splices": splice,
         "splitter": splitter,
+        "coexistence": coexistence,
         "margin": rules.loss_db.margin,
         "total": total,
     }
@@ -196,8 +198,34 @@ def check_power_budget(design: Design, rules: Rulebook) -> tuple[list[Violation]
     return out, stats
 
 
+def check_zones(design: Design) -> list[Violation]:
+    """Equipment standing in a keep-out zone: nothing may be placed there (an engineer's
+    reason is on the zone)."""
+    zones = [z for z in design.by_kind("zone") if z.openftth.get("zone") == "keep_out"]
+    if not zones:
+        return []
+    out: list[Violation] = []
+    for kind in ("pop", "fdh", "fat", "chamber"):
+        for f in design.by_kind(kind):
+            if f.placement == "indoor":
+                continue
+            for z in zones:
+                if z.geometry.contains(f.geometry):
+                    out.append(
+                        Violation(
+                            "zone",
+                            f.element_uuid,
+                            f"{f.props.get('name') or f.props.get('manhole_id') or kind} stands in a keep-out zone"
+                            + (f" ({z.props['reason']})" if z.props.get("reason") else ""),
+                            {"zone": z.element_uuid},
+                        )
+                    )
+                    break
+    return out
+
+
 def run_all_checks(design: Design, rules: Rulebook) -> tuple[list[Violation], dict[str, Any]]:
-    v = check_capacity(design, rules) + check_distances(design, rules)
+    v = check_capacity(design, rules) + check_distances(design, rules) + check_zones(design)
     pb, stats = check_power_budget(design, rules)
     return v + pb, stats
 
