@@ -29,6 +29,12 @@ LicenseFile=..\..\LICENSE
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; The full wizard: welcome, licence, folder, shortcuts, ready, finish (with Launch openFTTH).
+DisableWelcomePage=no
+DisableDirPage=auto
+DisableReadyPage=no
+UninstallDisplayName=openFTTH
+AppCopyright=openFTTH contributors, MIT licence
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
