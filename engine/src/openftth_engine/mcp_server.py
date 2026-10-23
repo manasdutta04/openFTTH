@@ -130,7 +130,11 @@ def design_summary() -> dict[str, Any]:
             (w for w in _s().project.meta.get("work_orders", []) if w["state"] == "open"), None
         ),
         "operator": _s().project.meta.get("operator", "generic"),
-        "rulebook": {"name": _s().rules.name, **_s().rules.review.model_dump()},
+        "rulebook": {
+            "name": _s().rules.name,
+            "status": _s().rules.review.status,
+            "note": _s().rules.review.note,
+        },
     }
 
 
