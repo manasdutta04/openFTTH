@@ -111,6 +111,7 @@
           "splice_schedule",
           "export_gpkg",
           "plan_sheets",
+          "reports",
           "design_summary",
           "versions",
           "diff_versions",

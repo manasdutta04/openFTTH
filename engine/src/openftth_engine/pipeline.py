@@ -21,7 +21,7 @@ from pyproj import Transformer
 from shapely.geometry import LineString, Point, mapping
 
 from .deliver import build_boq, render_map
-from .deliver.boq import boq_to_csv
+from .deliver.boq import Boq, boq_to_csv
 from .ingest.inputs import Inputs, load_inputs, profile_for
 from .ingest.profiles import ImportProfile
 from .interchange import Design, Feature, Metadata, stable_uuid
@@ -2084,6 +2084,85 @@ def _phase_designs(design: Design) -> dict[int, Design]:
     return out
 
 
+def _phase_boqs(s: Session) -> dict[int, Boq]:
+    """One BOQ per build phase; a trench shared by two phases is dug in the earlier one."""
+    out: dict[int, Boq] = {}
+    dug: set[str] = set()
+    for k, part in sorted(_phase_designs(s.design).items()):
+        out[k] = build_boq(part, s.rules, dug)
+    return out
+
+
+def _phase_fdhs(s: Session, phase: int) -> int:
+    return sum(1 for f in s.design.by_kind("fdh") if f.openftth.get("phase") == phase)
+
+
+def reports(s: Session) -> ToolResult:
+    """The cable schedule, the port report and (with build phases) the materials by phase, as
+    CSV files beside the BOQ."""
+    from .deliver.reports import (
+        cable_schedule_rows,
+        materials_by_phase_rows,
+        port_report_rows,
+        to_csv,
+    )
+
+    s.project.set_stage("deliver")
+    if not s.design.by_kind("fat"):
+        return _rejected("reports", "the design has no network yet; design it first")
+    d = s.project.deliver_dir
+    cables = cable_schedule_rows(s.design)
+    ports = port_report_rows(s.design, s.rules)
+    (d / "cable_schedule.csv").write_text(to_csv(cables), encoding="utf-8")
+    (d / "port_report.csv").write_text(to_csv(ports), encoding="utf-8")
+    phases = _phase_boqs(s)
+    materials = materials_by_phase_rows(build_boq(s.design, s.rules), phases) if phases else []
+    if materials:
+        (d / "materials_by_phase.csv").write_text(to_csv(materials), encoding="utf-8")
+    else:
+        (d / "materials_by_phase.csv").unlink(missing_ok=True)
+    over = [r["site"] for r in ports if r["over_limit"]]
+    free = {t: sum(r["free"] for r in ports if r["type"] == t) for t in ("cabinet", "FAT")}
+    files = ["cable_schedule.csv", "port_report.csv"] + (
+        ["materials_by_phase.csv"] if materials else []
+    )
+    reason = (
+        f"{len(cables)} cables scheduled with their ends, size and the metres on each kind of "
+        f"route; {len(ports)} sites in the port report with {free['cabinet']} free cabinet ports "
+        f"and {free['FAT']} free FAT ports"
+        + (
+            f"; {len(over)} cabinet(s) over the {s.rules.fdh.max_fill_pct:g}% fill limit: "
+            + ", ".join(over)
+            if over
+            else ""
+        )
+        + (f"; materials split over {len(phases)} build phases." if phases else ".")
+    )
+    result = ToolResult(
+        tool="reports",
+        summary=", ".join(files),
+        decisions=[
+            Decision(
+                stage="deliver",
+                tool="reports",
+                reason=reason,
+                values={
+                    "cables": len(cables),
+                    "sites": len(ports),
+                    "free_ports": free,
+                    "over_limit": over,
+                    "phases": len(phases),
+                },
+                source="solver",
+            )
+        ],
+        warnings=[f"{site} is over the cabinet fill limit" for site in over],
+        data={"files": files, "cables": len(cables), "sites": len(ports), "over_limit": over},
+    )
+    s.project.commit(result, s.design)
+    return result
+
+
 def deliver(s: Session, title: str | None = None) -> ToolResult:
     s.project.set_stage("deliver")
     twin = _twin(s)
@@ -2092,15 +2171,13 @@ def deliver(s: Session, title: str | None = None) -> ToolResult:
     (d / "boq.json").write_text(boq.model_dump_json(indent=2) + "\n", encoding="utf-8")
     (d / "boq.csv").write_text(boq_to_csv(boq), encoding="utf-8")
     phases = []
-    dug: set[str] = set()  # a trench shared by two phases is dug in the earlier one
-    for k, part in sorted(_phase_designs(s.design).items()):
-        pb = build_boq(part, s.rules, dug)
+    for k, pb in _phase_boqs(s).items():
         (d / f"boq_phase_{k}.csv").write_text(boq_to_csv(pb), encoding="utf-8")
         phases.append(
             {
                 "phase": k,
                 "units": pb.units_served,
-                "fdhs": len(part.by_kind("fdh")),
+                "fdhs": _phase_fdhs(s, k),
                 "total": pb.grand_total,
                 "cost_per_unit": pb.cost_per_unit,
                 "totals": pb.totals,

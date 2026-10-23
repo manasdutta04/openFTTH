@@ -344,6 +344,14 @@ def splice_schedule() -> dict[str, Any]:
 
 
 @mcp.tool()
+def reports() -> dict[str, Any]:
+    """Write the cable schedule (every cable with its ends, size, length and metres per kind of
+    route), the port report (cabinets, FATs and closures with ports used and free) and, with
+    build phases, the materials by phase, as CSV files."""
+    return _out(pipeline.reports(_s()))
+
+
+@mcp.tool()
 def plan_sheets(scale: int = 1000, paper: str = "A3") -> dict[str, Any]:
     """Write the printable plan set (plans.pdf: a key plan, then one sheet per grid cell with
     legend, scale bar, north arrow and title block) and the whole design as a DXF drawing

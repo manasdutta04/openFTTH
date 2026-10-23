@@ -37,11 +37,14 @@ const CONTROL_W: f32 = 46.0;
 const EDGE: f32 = 5.0;
 
 /// The files the engine writes to `<project>/deliverables/`: menu label, file name, filter name.
-const DELIVERABLES: [(&str, &str, &str); 10] = [
+const DELIVERABLES: [(&str, &str, &str); 13] = [
     ("Bill of quantities (CSV)", "boq.csv", "CSV"),
     ("Bill of quantities (JSON)", "boq.json", "JSON"),
     ("Splice schedule (CSV)", "splice_schedule.csv", "CSV"),
     ("Splice schedule (JSON)", "splice_schedule.json", "JSON"),
+    ("Cable schedule (CSV)", "cable_schedule.csv", "CSV"),
+    ("Port report (CSV)", "port_report.csv", "CSV"),
+    ("Materials by build phase (CSV)", "materials_by_phase.csv", "CSV"),
     ("Plan sheets (PDF)", "plans.pdf", "PDF"),
     ("CAD drawing (DXF)", "plans.dxf", "DXF"),
     ("GeoPackage", "design.gpkg", "GeoPackage"),
