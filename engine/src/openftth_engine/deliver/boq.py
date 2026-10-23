@@ -29,12 +29,22 @@ class Boq(BaseModel):
     grand_total: float
     units_served: int
     cost_per_unit: float | None
+    units_connected: int = 0
+    cost_per_connection: float | None = None
     assumptions: list[str] = Field(default_factory=list)
 
 
-def build_boq(design: Design, rules: Rulebook) -> Boq:
+def build_boq(design: Design, rules: Rulebook, dug: set[str] | None = None) -> Boq:
+    """The bill of quantities. The network (trench, cables, cabinets, FATs) is built for every
+    home passed; the connection of a home (its drop, the flat cabling, its splice at the FAT and
+    its test) only for the share `fibers.take_rate` expected to take a service.
+
+    `dug`: street edges an earlier build phase already trenched; they are not trenched again,
+    and this design's edges are added to it."""
     lines: list[BoqLine] = []
     notes: list[str] = []
+    take = min(1.0, max(0.0, float(rules.fibers.take_rate)))
+    at_take = f"× take rate {take:.0%}" if take < 1 else None
 
     def add(
         cat: str, item: str, qty: float, unit: str, unit_cost: float, note: str | None = None
@@ -56,7 +66,7 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
     # ---- civil: trench by surface (shared between feeder and distribution), chambers ----
     trench: dict[str, float] = {}
     bores: dict[str, list[float]] = {}  # barrier → length of each crossing under it
-    seen_edges: set[str] = set()
+    seen_edges: set[str] = set(dug) if dug is not None else set()
     for cable in design.by_type("cable.underground"):
         if cable.openftth.get("kind") == "drop":
             continue
@@ -68,6 +78,8 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
                 bores.setdefault(str(surface).split(":", 1)[1], []).append(metres)
             else:
                 trench[surface] = trench.get(surface, 0.0) + metres
+    if dug is not None:
+        dug |= seen_edges
     for barrier in sorted(bores):
         price = getattr(rules.crossings, barrier)
         label = {"water": "river or canal", "unmapped": "unmapped obstacle"}.get(barrier, barrier)
@@ -89,10 +101,11 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
     add(
         "civil",
         "drop trench (home to street)",
-        drop_offset,
+        drop_offset * take,
         "m",
         rules.surfaces.cost("verge"),
-        "assumed: verge/garden trench for the off-street part of each drop",
+        "assumed: verge/garden trench for the off-street part of each drop"
+        + (f"; {at_take}" if at_take else ""),
     )
     chambers = Counter(c.props.get("manhole_type", "small") for c in design.by_kind("chamber"))
     add("civil", "chamber small", chambers.get("small", 0), "pc", rules.units.chamber_small)
@@ -119,7 +132,14 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
             rules.units.cable_base_per_m + fibers * rules.units.cable_per_fiber_m,
             "incl. slack",
         )
-    add("cables", f"drop cable {rules.fibers.drop}F", drop_m, "m", rules.units.drop_per_m)
+    add(
+        "cables",
+        f"drop cable {rules.fibers.drop}F",
+        drop_m * take,
+        "m",
+        rules.units.drop_per_m,
+        at_take,
+    )
 
     # ---- passives -----------------------------------------------------------------------
     fats = design.by_kind("fat")
@@ -134,7 +154,9 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
             "pc",
             getattr(rules.units, f"fdh_{cap}", rules.units.fdh_576),
         )
-    pons = {h.openftth.get("pon_id") for h in design.by_kind("home") if h.openftth.get("pon_id")}
+    # PONs belong to FATs: a building's dedicated FATs can hang off two cabinets, so counting
+    # the homes' single pon_id would miss one.
+    pons = {f.openftth.get("pon_id") for f in design.by_kind("fat") if f.openftth.get("pon_id")}
     stages = rules.cascade_stages()
     arch = rules.pon.arch()
     if arch == "p2p":
@@ -181,19 +203,58 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
     else:
         add("passives", "ODF ports", len(pons), "port", rules.units.odf_per_port)
 
+    # ---- inside plant: risers, floor boxes and flat cabling in buildings with several units ---
+    ins = rules.inside
+    mdus = [h for h in design.by_kind("home") if float(h.openftth.get("riser_m", 0) or 0) > 0]
+    if mdus:
+        riser_m = sum(float(h.openftth["riser_m"]) for h in mdus)
+        floors = sum(int(h.openftth.get("floors", 0)) for h in mdus)
+        boxes = sum(
+            max(
+                int(h.openftth.get("floors", 0)),
+                -(-int(h.openftth.get("units", 1)) // max(1, ins.units_per_floor_box)),
+            )
+            for h in mdus
+        )
+        flats = sum(int(h.openftth.get("units", 1)) for h in mdus)
+        add(
+            "inside plant", "riser cable", riser_m, "m", ins.riser_per_m, f"{len(mdus)} building(s)"
+        )
+        add("inside plant", "floor box", boxes, "pc", ins.floor_box, "one per floor at least")
+        add(
+            "inside plant",
+            "flat cabling and outlet",
+            flats * take,
+            "pc",
+            ins.indoor_per_unit,
+            at_take,
+        )
+        add("labour", "riser install", floors, "floor", ins.riser_install_per_floor)
+
     # ---- labour -------------------------------------------------------------------------
+    # Splices made while building the network, and the one per home made when it connects.
     if arch == "p2p":
-        splices = units * 3  # drop@FAT, distribution@FDH and feeder@FDH, all per unit
-        why = "3 per unit: FAT, FDH (distribution) and FDH (feeder)"
+        splices = units * 2  # distribution@FDH and feeder@FDH, per unit
+        why = "2 per unit: FDH (distribution) and FDH (feeder)"
     elif arch == "cascaded":
         fat_splitters = sum(int(f.openftth.get("splitters", 1)) for f in fats)
-        splices = units + 2 * fat_splitters + len(pons)
-        why = "1 per unit at the FAT splitter + 2 per FAT splitter (its input at the FAT, its fibre at the FDH) + 1 per PON at the FDH"
+        splices = 2 * fat_splitters + len(pons)
+        why = (
+            "2 per FAT splitter (its input at the FAT, its fibre at the FDH) + 1 per PON at the FDH"
+        )
     else:
-        splices = units * 2 + len(pons)  # drop@FAT + distribution@FDH per unit, feeder@FDH per PON
-        why = "2 per unit (FAT, FDH) + 1 per PON at the FDH"
-    add("labour", "fusion splice", splices, "pc", rules.labour.splice, why)
-    add("labour", "OTDR test", units, "pc", rules.labour.otdr_test)
+        splices = units + len(pons)  # distribution@FDH per unit, feeder@FDH per PON
+        why = "1 per unit at the FDH + 1 per PON"
+    add("labour", "fusion splice (network)", splices, "pc", rules.labour.splice, why)
+    add(
+        "labour",
+        "fusion splice (connection)",
+        units * take,
+        "pc",
+        rules.labour.splice,
+        "1 per connected unit, at the FAT" + (f"; {at_take}" if at_take else ""),
+    )
+    add("labour", "OTDR test", units * take, "pc", rules.labour.otdr_test, at_take)
     add("labour", "FAT install", len(fats), "pc", rules.labour.fat_install)
     add("labour", "FDH install", len(fdhs), "pc", rules.labour.fdh_install)
 
@@ -218,6 +279,12 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
         totals[line.category] = round(totals.get(line.category, 0.0) + line.total, 2)
     grand = round(sum(totals.values()), 2)
     cpu = round(grand / units, 2) if units else None
+    connected = int(round(units * take))
+    if take < 1:
+        notes.append(
+            f"Take rate {take:.0%}: the network passes all {units} units; drops, flat cabling, "
+            f"connection splices and tests are counted for {connected} connected units."
+        )
     return Boq(
         currency=rules.currency,
         lines=lines,
@@ -225,6 +292,8 @@ def build_boq(design: Design, rules: Rulebook) -> Boq:
         grand_total=grand,
         units_served=units,
         cost_per_unit=cpu,
+        units_connected=connected,
+        cost_per_connection=round(grand / connected, 2) if connected else None,
         assumptions=notes,
     )
 

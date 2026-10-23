@@ -297,6 +297,14 @@ def place_chambers() -> dict[str, Any]:
 
 
 @mcp.tool()
+def plan_phases(phases: int = 0, order: str = "") -> dict[str, Any]:
+    """Group the cabinet areas into build phases of about equal units (order: density, the best
+    business case first, or distance from the POP); every element gets the phase that builds it
+    and the BOQ then comes per phase. 0 / empty take the rulebook's phasing."""
+    return _out(pipeline.plan_phases(_s(), phases or None, order or None))
+
+
+@mcp.tool()
 def check_rules() -> dict[str, Any]:
     """Validate capacity, distances and the per-home optical power budget."""
     return _out(pipeline.validate_design(_s()))

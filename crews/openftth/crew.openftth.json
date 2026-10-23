@@ -69,6 +69,7 @@
           "list_violations",
           "complete_network",
           "add_zone",
+          "plan_phases",
           "set_attribute",
           "reassign",
           "undo_edit",

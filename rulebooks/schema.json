@@ -360,6 +360,56 @@
       "title": "Homes",
       "type": "object"
     },
+    "InsidePlant": {
+      "additionalProperties": false,
+      "description": "Fibre inside a building with several units: a riser from the building entry up through\nthe floors, a floor box on each floor, and a cable from the box to each flat.",
+      "properties": {
+        "floor_height_m": {
+          "default": 3.0,
+          "description": "Storey height used for the riser length",
+          "title": "Floor Height M",
+          "type": "number"
+        },
+        "units_per_floor": {
+          "default": 4,
+          "description": "Flats per floor, to estimate the floors of a building whose levels are unknown",
+          "title": "Units Per Floor",
+          "type": "integer"
+        },
+        "units_per_floor_box": {
+          "default": 8,
+          "description": "Flats one floor box serves",
+          "title": "Units Per Floor Box",
+          "type": "integer"
+        },
+        "riser_per_m": {
+          "default": 2.5,
+          "description": "Riser cable and its fixing, per metre",
+          "title": "Riser Per M",
+          "type": "number"
+        },
+        "floor_box": {
+          "default": 70.0,
+          "description": "One floor box (splice/patch point on a floor)",
+          "title": "Floor Box",
+          "type": "number"
+        },
+        "indoor_per_unit": {
+          "default": 55.0,
+          "description": "Cable from the floor box to one flat with its wall outlet",
+          "title": "Indoor Per Unit",
+          "type": "number"
+        },
+        "riser_install_per_floor": {
+          "default": 60.0,
+          "description": "Labour to install the riser, per floor",
+          "title": "Riser Install Per Floor",
+          "type": "number"
+        }
+      },
+      "title": "InsidePlant",
+      "type": "object"
+    },
     "Labour": {
       "additionalProperties": false,
       "properties": {
@@ -428,6 +478,32 @@
         }
       },
       "title": "LossDb",
+      "type": "object"
+    },
+    "Phasing": {
+      "additionalProperties": false,
+      "description": "Building the network in phases: cabinet areas grouped into `phases` of about equal units.",
+      "properties": {
+        "phases": {
+          "default": 1,
+          "description": "Number of build phases (1: build it all at once)",
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Phases",
+          "type": "integer"
+        },
+        "order": {
+          "default": "density",
+          "description": "Which cabinet areas come first: density (most units per metre of cable, the best business case) or distance (nearest the POP first)",
+          "enum": [
+            "density",
+            "distance"
+          ],
+          "title": "Order",
+          "type": "string"
+        }
+      },
+      "title": "Phasing",
       "type": "object"
     },
     "Pon": {
@@ -1050,6 +1126,25 @@
         "otdr_test": 12.0,
         "fat_install": 180.0,
         "fdh_install": 1200.0
+      }
+    },
+    "inside": {
+      "$ref": "#/$defs/InsidePlant",
+      "default": {
+        "floor_height_m": 3.0,
+        "units_per_floor": 4,
+        "units_per_floor_box": 8,
+        "riser_per_m": 2.5,
+        "floor_box": 70.0,
+        "indoor_per_unit": 55.0,
+        "riser_install_per_floor": 60.0
+      }
+    },
+    "phasing": {
+      "$ref": "#/$defs/Phasing",
+      "default": {
+        "phases": 1,
+        "order": "density"
       }
     }
   },

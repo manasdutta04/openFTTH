@@ -448,6 +448,25 @@ def _load_profile(s: Session) -> ImportProfile | None:
     return None
 
 
+def _levels(value: Any) -> int | None:
+    """A building's levels as a whole number, when the data has a usable one."""
+    try:
+        v = int(float(str(value).split(";")[0]))
+    except (TypeError, ValueError):
+        return None
+    return v if 0 < v < 200 else None
+
+
+def _riser(s: Session, h: Feature, buildings: dict[str, Feature]) -> tuple[int, float]:
+    """(floors, riser metres) for a home with several units; (0, 0) for a house."""
+    units = int(h.openftth.get("units", 1))
+    if units <= 1:
+        return 0, 0.0
+    b = buildings.get(str(h.openftth.get("building", "")))
+    floors = s.rules.inside.floors(units, (b.props.get("levels") if b else None))
+    return floors, round(floors * s.rules.inside.floor_height_m, 1)
+
+
 def import_area_and_osm(s: Session, area_path: str | Path, osm_path: str | Path) -> ToolResult:
     """The classic start: an area polygon and an OpenStreetMap extract."""
     return import_data(s, profile_for(area_path, osm_path), tool="import_osm")
@@ -512,6 +531,7 @@ def import_data(
                     "building_type": str(b.building or "yes"),
                     "street": b.street if isinstance(b.street, str) else None,
                     "street_number": b.housenumber if isinstance(b.housenumber, str) else None,
+                    **({"levels": _levels(b.levels)} if _levels(b.levels) else {}),
                 },
                 openftth={"kind": "building", "osm_id": b.osm_id, **extra},
             )
@@ -1669,13 +1689,25 @@ def route_drops(s: Session) -> ToolResult:
     repaired = _recover_home_links(s)
     _clear_solved(s, "drop")
     fats = {f.element_uuid: f for f in s.design.by_kind("fat")}
+    buildings = {b.element_uuid: b for b in s.design.by_kind("building")}
     total = 0.0
     n = 0
     too_long = 0
+    risers = 0
     for h in s.design.by_kind("home"):
         fat = fats.get(h.openftth.get("fat_id", ""))
         if fat is None:
             continue
+        # A building with several flats: its riser is part of every flat's path, with one more
+        # splice in the floor box.
+        floors, riser_m = _riser(s, h, buildings)
+        if riser_m:
+            h.openftth["floors"], h.openftth["riser_m"] = floors, riser_m
+            risers += 1
+        else:
+            h.openftth.pop("floors", None)
+            h.openftth.pop("riser_m", None)
+        floor_splice = 1 if riser_m else 0
         if h.openftth.get("mdu"):
             # Dedicated indoor FATs: no street drop; the lead-in is part of the distribution path.
             fdh = next(
@@ -1690,7 +1722,7 @@ def route_drops(s: Session) -> ToolResult:
                 h.openftth.get("offset_m", 0.0)
             )
             feed_m = float(fdh.openftth.get("feeder_path_m", 0.0)) if fdh else 0.0
-            h.openftth["path_to_pop_m"] = round(dist_m + feed_m, 1)
+            h.openftth["path_to_pop_m"] = round(dist_m + feed_m + riser_m, 1)
             tree = s.trees.get(fat.openftth.get("fdh_id", ""))
             closures = _closures_on_path(tree, int(fat.openftth["node"])) if tree else 0
             feeder_tree = _feeder_tree(s, fdh)
@@ -1699,7 +1731,7 @@ def route_drops(s: Session) -> ToolResult:
                 if (feeder_tree and fdh)
                 else 0
             )
-            h.openftth["splices_on_path"] = 3 + closures + _extra_splices(s.rules)
+            h.openftth["splices_on_path"] = 3 + closures + _extra_splices(s.rules) + floor_splice
             continue
         hn, fn = int(h.openftth["node"]), int(fat.openftth["node"])
         path = _drop_path(twin, hn, fn)
@@ -1719,7 +1751,7 @@ def route_drops(s: Session) -> ToolResult:
         )
         dist_m = float(fat.openftth.get("distribution_path_m", 0.0))
         feed_m = float(fdh.openftth.get("feeder_path_m", 0.0)) if fdh else 0.0
-        h.openftth["path_to_pop_m"] = round(length + dist_m + feed_m, 1)
+        h.openftth["path_to_pop_m"] = round(length + dist_m + feed_m + riser_m, 1)
         # Splices on the path: FAT, FDH (×2: distribution in, feeder in) + one per closure passed.
         tree = s.trees.get(fat.openftth.get("fdh_id", ""))
         closures = _closures_on_path(tree, fn) if tree else 0
@@ -1729,7 +1761,7 @@ def route_drops(s: Session) -> ToolResult:
             if (feeder_tree and fdh)
             else 0
         )
-        h.openftth["splices_on_path"] = 3 + closures + _extra_splices(s.rules)
+        h.openftth["splices_on_path"] = 3 + closures + _extra_splices(s.rules) + floor_splice
         s.design.add(
             Feature(
                 element_uuid=s.uid("cable.underground", f"drop:{h.element_uuid}"),
@@ -1896,6 +1928,136 @@ def validate_design(s: Session) -> ToolResult:
     )
 
 
+# ---- phasing ----------------------------------------------------------------------------
+
+
+def plan_phases(s: Session, phases: int | None = None, order: str | None = None) -> ToolResult:
+    """Group the cabinet areas into build phases of about equal units, densest areas (or the
+    nearest the POP) first, and stamp every element with the phase that builds it: a feeder
+    section, a chamber or a crossing goes in the earliest phase that needs it."""
+    s.project.set_stage("solve")
+    r = s.rules
+    n = int(phases or r.phasing.phases)
+    how = order or r.phasing.order
+    if n < 1 or how not in ("density", "distance"):
+        return _rejected(
+            "plan_phases", "phases is a whole number from 1, order is density or distance"
+        )
+    before = s.design.copy()
+    fdhs = s.design.by_kind("fdh")
+    if not fdhs:
+        return _rejected("plan_phases", "place the cabinets first")
+    dist_m: dict[str, float] = {}
+    for c in s.design.by_kind("distribution"):
+        k = str(c.openftth.get("fdh_id", ""))
+        dist_m[k] = dist_m.get(k, 0.0) + float(c.props.get("length_m", 0.0))
+
+    def density(f: Feature) -> float:
+        return int(f.openftth.get("units", 0)) / max(1.0, dist_m.get(f.element_uuid, 0.0))
+
+    if how == "density":
+        ranked = sorted(fdhs, key=lambda f: (-density(f), f.element_uuid))
+    else:
+        ranked = sorted(
+            fdhs, key=lambda f: (float(f.openftth.get("feeder_path_m", 0.0)), f.element_uuid)
+        )
+    total = sum(int(f.openftth.get("units", 0)) for f in ranked) or 1
+    phase_of: dict[str, int] = {}
+    done = 0
+    for f in ranked:
+        phase_of[f.element_uuid] = min(n, 1 + int(done * n / total))
+        done += int(f.openftth.get("units", 0))
+    for f in fdhs:
+        f.openftth["phase"] = phase_of[f.element_uuid]
+    fat_phase: dict[str, int] = {}
+    for f in s.design.by_kind("fat"):
+        fat_phase[f.element_uuid] = phase_of.get(str(f.openftth.get("fdh_id", "")), 1)
+        f.openftth["phase"] = fat_phase[f.element_uuid]
+    home_phase: dict[str, int] = {}
+    for h in s.design.by_kind("home"):
+        # A building with dedicated FATs under two cabinets is connected in the earlier phase.
+        ids = h.openftth.get("fat_ids") or [h.openftth.get("fat_id")]
+        home_phase[h.element_uuid] = min((fat_phase.get(str(i), n) for i in ids), default=1)
+        h.openftth["phase"] = home_phase[h.element_uuid]
+    for d in s.design.by_kind("drop"):
+        d.openftth["phase"] = home_phase.get(str(d.openftth.get("home", "")), 1)
+    for c in s.design.by_kind("distribution"):
+        c.openftth["phase"] = phase_of.get(str(c.openftth.get("fdh_id", "")), 1)
+    # Feeder: walk up from each cabinet to its POP; a section takes the earliest phase below it.
+    feeders = s.design.by_kind("feeder")
+    up = {str(c.props.get("to_label")): c for c in feeders}
+    for c in feeders:
+        c.openftth["phase"] = n
+    for f in sorted(fdhs, key=lambda f: f.openftth["phase"]):
+        node = f"N{f.openftth['node']}"
+        seen: set[str] = set()
+        while node in up and node not in seen:
+            seen.add(node)
+            c = up[node]
+            c.openftth["phase"] = min(int(c.openftth["phase"]), int(f.openftth["phase"]))
+            node = str(c.props.get("from_label"))
+    # Chambers, crossings and POPs: the earliest phase among the cables at them.
+    node_phase: dict[int, int] = {}
+    edge_phase: dict[str, int] = {}
+    for c in feeders + s.design.by_kind("distribution"):
+        ph = int(c.openftth["phase"])
+        for key in c.openftth.get("edges", {}):
+            edge_phase[key] = min(edge_phase.get(key, n), ph)
+            for x in key.split("-"):
+                node_phase[int(x)] = min(node_phase.get(int(x), n), ph)
+    for ch in s.design.by_kind("chamber"):
+        ch.openftth["phase"] = node_phase.get(int(ch.openftth.get("node", -1)), 1)
+    for x in s.design.by_kind("crossing"):
+        x.openftth["phase"] = edge_phase.get(str(x.openftth.get("edge", "")), 1)
+    for p in s.design.by_kind("pop"):
+        p.openftth["phase"] = 1
+    per: dict[int, dict[str, int]] = {}
+    for f in fdhs:
+        k = int(f.openftth["phase"])
+        per.setdefault(k, {"fdhs": 0, "units": 0})
+        per[k]["fdhs"] += 1
+        per[k]["units"] += int(f.openftth.get("units", 0))
+    lines = "; ".join(
+        f"phase {k}: {v['fdhs']} cabinet(s), {v['units']} units" for k, v in sorted(per.items())
+    )
+    result = ToolResult(
+        tool="plan_phases",
+        summary=f"{n} build phase(s) by {how}: {lines}",
+        decisions=[
+            Decision(
+                stage="solve",
+                tool="plan_phases",
+                reason=f"Cabinet areas grouped into {n} phase(s) of about equal units, "
+                + (
+                    "the most units per metre of distribution cable first (the best business case)"
+                    if how == "density"
+                    else "the nearest the POP first"
+                )
+                + "; a feeder section, chamber or crossing is built in the earliest phase that needs it.",
+                values={
+                    "phases": n,
+                    "order": how,
+                    "per_phase": {str(k): v for k, v in per.items()},
+                },
+                source="rulebook",
+            )
+        ],
+        data={"phases": n, "order": how, "per_phase": per},
+    )
+    return _commit(s, result, before)
+
+
+def _phase_designs(design: Design) -> dict[int, Design]:
+    """The design split by build phase (elements without a phase are not built by any)."""
+    out: dict[int, Design] = {}
+    for f in design:
+        ph = f.openftth.get("phase")
+        if ph is None:
+            continue
+        out.setdefault(int(ph), Design(design.metadata.model_copy())).add(f)
+    return out
+
+
 def deliver(s: Session, title: str | None = None) -> ToolResult:
     s.project.set_stage("deliver")
     twin = _twin(s)
@@ -1903,6 +2065,28 @@ def deliver(s: Session, title: str | None = None) -> ToolResult:
     d = s.project.deliver_dir
     (d / "boq.json").write_text(boq.model_dump_json(indent=2) + "\n", encoding="utf-8")
     (d / "boq.csv").write_text(boq_to_csv(boq), encoding="utf-8")
+    phases = []
+    dug: set[str] = set()  # a trench shared by two phases is dug in the earlier one
+    for k, part in sorted(_phase_designs(s.design).items()):
+        pb = build_boq(part, s.rules, dug)
+        (d / f"boq_phase_{k}.csv").write_text(boq_to_csv(pb), encoding="utf-8")
+        phases.append(
+            {
+                "phase": k,
+                "units": pb.units_served,
+                "fdhs": len(part.by_kind("fdh")),
+                "total": pb.grand_total,
+                "cost_per_unit": pb.cost_per_unit,
+                "totals": pb.totals,
+            }
+        )
+    for old in d.glob("boq_phase_*.csv"):
+        if int(old.stem.rsplit("_", 1)[1]) not in {p["phase"] for p in phases}:
+            old.unlink()
+    if phases:
+        # The app reads the phases with the BOQ itself.
+        with_phases = {**json.loads(boq.model_dump_json()), "phases": phases}
+        (d / "boq.json").write_text(_json(with_phases), encoding="utf-8")
     png = render_map(s.design, twin, d / "map.png", title or f"openFTTH — {s.pid} ({s.rules.name})")
     summary = {
         "project": s.pid,
@@ -1924,7 +2108,11 @@ def deliver(s: Session, title: str | None = None) -> ToolResult:
         "boq_total": boq.grand_total,
         "currency": boq.currency,
         "cost_per_unit": boq.cost_per_unit,
+        "units_connected": boq.units_connected,
+        "cost_per_connection": boq.cost_per_connection,
+        "take_rate": s.rules.fibers.take_rate,
         "totals": boq.totals,
+        **({"phases": phases} if phases else {}),
     }
     (d / "summary.json").write_text(_json(summary), encoding="utf-8")
     decisions = [
@@ -1985,6 +2173,7 @@ def design_all(
         size_cables(s),
         assign_fibers(s),
         validate_design(s),
+        *([plan_phases(s)] if rules.phasing.phases > 1 else []),
         deliver(s),
         splice_schedule(s),
         export_gpkg(s),

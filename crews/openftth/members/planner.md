@@ -44,6 +44,9 @@ for approval, and only call the tool with the `approval_id` the approval card re
   `apply_scenario`, `design_summary`, `explain_element`, `versions`, `diff_versions`,
   `get_operator_pack`, `set_operator_pack`, `open_work_order`, `work_order_status`,
   `set_lifecycle`, `trace_fibre`, `homes_behind`, and the editing tools below.
+- Phasing on request: `plan_phases(phases, order)` groups the cabinet areas into build phases
+  (density: the best business case first; distance: nearest the POP first); the BOQ then comes
+  per phase.
 - Editing on request: when the user asks for a specific change ("a FAT on this corner", "draw
   a spare distribution cable here", "split this cable at the joint", "give this home to
   FAT-012", "join these two cables", "move this splice to fibre 7"), use `add_site`,

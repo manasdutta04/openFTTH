@@ -301,6 +301,45 @@ class Labour(StrictModel):
     fdh_install: float = 1200.0
 
 
+class InsidePlant(StrictModel):
+    """Fibre inside a building with several units: a riser from the building entry up through
+    the floors, a floor box on each floor, and a cable from the box to each flat."""
+
+    floor_height_m: float = Field(3.0, description="Storey height used for the riser length")
+    units_per_floor: int = Field(
+        4,
+        description="Flats per floor, to estimate the floors of a building whose levels are unknown",
+    )
+    units_per_floor_box: int = Field(8, description="Flats one floor box serves")
+    riser_per_m: float = Field(2.5, description="Riser cable and its fixing, per metre")
+    floor_box: float = Field(70.0, description="One floor box (splice/patch point on a floor)")
+    indoor_per_unit: float = Field(
+        55.0, description="Cable from the floor box to one flat with its wall outlet"
+    )
+    riser_install_per_floor: float = Field(
+        60.0, description="Labour to install the riser, per floor"
+    )
+
+    def floors(self, units: int, levels: int | None) -> int:
+        """A building's floors: its mapped levels, else estimated from its flats (at least 2)."""
+        if levels and levels > 0:
+            return int(levels)
+        return max(2, -(-int(units) // max(1, self.units_per_floor)))
+
+
+class Phasing(StrictModel):
+    """Building the network in phases: cabinet areas grouped into `phases` of about equal units."""
+
+    phases: int = Field(
+        1, ge=1, le=20, description="Number of build phases (1: build it all at once)"
+    )
+    order: Literal["density", "distance"] = Field(
+        "density",
+        description="Which cabinet areas come first: density (most units per metre of cable, the "
+        "best business case) or distance (nearest the POP first)",
+    )
+
+
 class Rulebook(StrictModel):
     version: Literal[1] = 1
     name: str
@@ -345,6 +384,8 @@ class Rulebook(StrictModel):
     )
     units: UnitCosts = UnitCosts()
     labour: Labour = Labour()
+    inside: InsidePlant = InsidePlant()
+    phasing: Phasing = Phasing()
 
     @model_validator(mode="after")
     def _budget_fits_class(self) -> Rulebook:

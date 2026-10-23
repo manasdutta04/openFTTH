@@ -75,13 +75,20 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
             "per unit",
             None,
         );
-        metric(
-            ui,
-            &p,
-            &boq["units_served"].as_i64().unwrap_or(0).to_string(),
-            "units served",
-            None,
-        );
+        let passed = boq["units_served"].as_i64().unwrap_or(0);
+        metric(ui, &p, &passed.to_string(), "units passed", None);
+        // With a take rate below 100 %, only the connected units get a drop and flat cabling.
+        let connected = boq["units_connected"].as_i64().unwrap_or(passed);
+        if connected < passed {
+            metric(ui, &p, &connected.to_string(), "units connected", None);
+            metric(
+                ui,
+                &p,
+                &fmt_money(boq["cost_per_connection"].as_f64().unwrap_or(0.0), currency),
+                "per connection",
+                None,
+            );
+        }
         if let Some(d) = &st.design {
             let trench: f64 = d
                 .by_kind("feeder")
@@ -128,6 +135,35 @@ pub fn boq_tab(ui: &mut Ui, st: &AppState) {
         }
     });
     ui.add_space(10.0);
+    // Build phases: what each phase builds and costs (a trench shared by two phases is dug in the
+    // earlier one).
+    if let Some(phases) = boq["phases"].as_array().filter(|a| a.len() > 1) {
+        ui.label(caps("Build phases", p.text3));
+        ui.add_space(2.0);
+        for ph in phases {
+            ui.horizontal(|ui| {
+                ui.label(text(
+                    format!("Phase {}", ph["phase"].as_i64().unwrap_or(0)),
+                    12.0,
+                    Weight::Semibold,
+                    p.text,
+                ));
+                ui.label(text(
+                    format!(
+                        "{} cabinet(s) · {} units · {} · {} per unit",
+                        ph["fdhs"].as_i64().unwrap_or(0),
+                        ph["units"].as_i64().unwrap_or(0),
+                        fmt_money(ph["total"].as_f64().unwrap_or(0.0), currency),
+                        fmt_money(ph["cost_per_unit"].as_f64().unwrap_or(0.0), currency),
+                    ),
+                    12.0,
+                    Weight::Regular,
+                    p.text2,
+                ));
+            });
+        }
+        ui.add_space(10.0);
+    }
     if let Some(totals) = boq["totals"].as_object() {
         let grand = boq["grand_total"].as_f64().unwrap_or(1.0).max(1.0);
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
