@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import geopandas as gpd
 import networkx as nx
 
 from . import pipeline as _pipeline
@@ -40,6 +41,7 @@ from .validate import run_all_checks
 
 #: Tools whose versions undo and redo step through: they only change the design file.
 UNDOABLE = (
+    "add_zone",
     "add_site",
     "delete_element",
     "delete_elements",
@@ -55,7 +57,8 @@ UNDOABLE = (
 
 SITE_KINDS = ("fat", "fdh", "chamber", "pop")
 CABLE_KINDS = ("feeder", "distribution", "drop")
-DELETABLE = ("fat", "fdh", "chamber", "pop", "feeder", "distribution", "drop", "crossing")
+DELETABLE = ("fat", "fdh", "chamber", "pop", "feeder", "distribution", "drop", "crossing", "zone")
+ZONE_KINDS = ("keep_out", "no_dig")
 
 #: What set_attribute may change, per kind, and how the value is checked.
 EDITABLE: dict[str, tuple[str, ...]] = {
@@ -175,6 +178,8 @@ def add_site(s: Session, kind: str, lon: float, lat: float, reason: str) -> Tool
     started = _begin(s)
     twin = _twin(s)
     node, snap = _snap(s, lon, lat)
+    if node in _pipeline._keep_out(s, twin)[0]:
+        return _rejected("add_site", "that spot is in a keep-out zone: nothing may stand there")
     if any(int(f.openftth.get("node", -1)) == node for f in s.design.by_kind(kind)):
         return _rejected("add_site", f"a {kind} already stands on that street node")
     r = s.rules
@@ -325,6 +330,7 @@ def delete_element(s: Session, element_uuid: str, reason: str) -> ToolResult:
     started = _begin(s)
     s.design.remove(element_uuid)
     cut = _cut_connections(s, {element_uuid})
+    sub = _after_zones(s) if kind == "zone" else []
     result = ToolResult(
         tool="delete_element",
         summary=f"{name} deleted"
@@ -345,6 +351,8 @@ def delete_element(s: Session, element_uuid: str, reason: str) -> ToolResult:
         result.warnings.append(
             f"{name} was routed by the engine: routing it again brings it back; forbid the street or move a site to change the route for good"
         )
+    if sub:
+        result = _merge(result, sub)
     return _record_edit(s, _checked(s, result), started)
 
 
@@ -368,9 +376,11 @@ def delete_elements(s: Session, element_uuids: list[str], reason: str) -> ToolRe
             return _rejected("delete_elements", refusal)
     started = _begin(s)
     names = [_label(s.design.get(u)) for u in doomed]
+    zones_going = any(s.design.get(u).kind == "zone" for u in doomed)
     for u in doomed:
         s.design.remove(u)
     cut = _cut_connections(s, going)
+    sub = _after_zones(s) if zones_going else []
     shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
     result = ToolResult(
         tool="delete_elements",
@@ -393,6 +403,8 @@ def delete_elements(s: Session, element_uuids: list[str], reason: str) -> ToolRe
         result.warnings.append(
             f"{skipped} selected element(s) left as they are (homes, buildings and streets are not deleted by hand)"
         )
+    if sub:
+        result = _merge(result, sub)
     return _record_edit(s, _checked(s, result), started)
 
 
@@ -1335,6 +1347,9 @@ def complete_network(s: Session, reason: str) -> ToolResult:
 
 def move_site(s: Session, element_uuid: str, lon: float, lat: float, reason: str) -> ToolResult:
     """The engine's move_site, on the undo stack like every other edit."""
+    node, _d = _snap(s, lon, lat)
+    if node in _pipeline._keep_out(s, _twin(s))[0]:
+        return _rejected("move_site", "that spot is in a keep-out zone: nothing may stand there")
     before_version = s.project.head()
     out = _pipeline.move_site(s, element_uuid, lon, lat, reason)
     if out.summary.startswith("rejected"):
@@ -1342,11 +1357,109 @@ def move_site(s: Session, element_uuid: str, lon: float, lat: float, reason: str
     return _push(s, _checked(s, out), before_version)
 
 
+# ---- zones ------------------------------------------------------------------------------------
+
+
+def _after_zones(s: Session) -> list[ToolResult]:
+    """After a zone changed: rebuild the street twin (trench edges inside zones leave it) and, on
+    a designed area, place FATs and cabinets again outside keep-out zones (the engineer's own
+    sites stay) and route, size and number the network again."""
+    s.twin = None
+    s.deferred = []
+    try:
+        # A fresh twin, and every home snapped to a street node that is still in it.
+        _pipeline.build_twin_tool(s)
+        if s.design.by_kind("fat"):
+            _pipeline.cluster_homes(s)
+            _pipeline.place_fdh(s)
+            assign_pon(s)
+    finally:
+        pre, s.deferred = s.deferred, None
+    return pre + (_rerun(s) if s.design.by_kind("fat") else [])
+
+
+def add_zone(s: Session, kind: str, points: list[list[float]], reason: str) -> ToolResult:
+    """Draw a zone through [lon, lat] points: `keep_out` (no trench and no equipment inside: a
+    park, a heritage square, private land) or `no_dig` (no new trench; existing ducts through it
+    stay usable). The design is solved again around it."""
+    why = _reason("add_zone", reason)
+    if not why:
+        return _rejected("add_zone", "a reason is required; every manual edit records why")
+    if kind not in ZONE_KINDS:
+        return _rejected("add_zone", f"a zone is {' or '.join(ZONE_KINDS)}, not {kind}")
+    if not points or len(points) < 3:
+        return _rejected("add_zone", "a zone needs at least three points")
+    from shapely.geometry import Polygon
+    from shapely.validation import make_valid
+
+    poly = make_valid(Polygon([(float(x), float(y)) for x, y in points]))
+    if poly.is_empty or poly.geom_type not in ("Polygon", "MultiPolygon"):
+        return _rejected("add_zone", "those points do not enclose an area")
+    area_m2 = float(gpd.GeoSeries([poly], crs=4326).to_crs(_twin(s).crs).area.iloc[0])
+    if area_m2 < 1.0:
+        return _rejected("add_zone", "the zone encloses no area")
+    started = _begin(s)
+    word = "Keep-out" if kind == "keep_out" else "No-dig"
+    n = 1 + sum(1 for z in s.design.by_kind("zone") if z.openftth.get("zone") == kind)
+    uuid = s.uid("service_area", f"zone:user:{kind}:{poly.wkb_hex}")
+    s.design.add(
+        Feature(
+            element_uuid=uuid,
+            element_type="service_area",
+            geometry=poly,
+            props={"name": f"{word} zone {n}", "reason": why, "area_m2": round(area_m2, 1)},
+            openftth={"kind": "zone", "zone": kind, "origin": "user"},
+        )
+    )
+    sub = _after_zones(s)
+    result = _merge(
+        ToolResult(
+            tool="add_zone",
+            summary=f"{word} zone {n} drawn ({area_m2:,.0f} m²)",
+            decisions=[
+                Decision(
+                    stage="solve",
+                    tool="add_zone",
+                    element=uuid,
+                    reason=f"{word} zone drawn by the engineer: {why}. "
+                    + (
+                        "No trench is dug and no equipment stands inside it."
+                        if kind == "keep_out"
+                        else "No new trench is dug inside it; existing ducts stay usable."
+                    ),
+                    values={"area_m2": round(area_m2, 1), "kind": kind},
+                    source="user",
+                )
+            ],
+            data={"element": uuid, "kind": "zone"},
+        ),
+        sub,
+    )
+    pinned_inside = [
+        _label(f)
+        for k in ("pop", "fdh", "fat")
+        for f in s.design.by_kind(k)
+        if f.openftth.get("placed_by") == "engineer" and poly.contains(f.geometry)
+    ]
+    if kind == "keep_out" and pinned_inside:
+        result.warnings.append(
+            f"{', '.join(pinned_inside)} you placed stand(s) inside the zone; move them out"
+        )
+    return _record_edit(s, _checked(s, result), started)
+
+
 # ---- undo and redo ----------------------------------------------------------------------------
 
 
+def _zone_key(design) -> list[tuple[str, str]]:
+    return sorted((z.element_uuid, z.geometry.wkb_hex) for z in design.by_kind("zone"))
+
+
 def _restore(s: Session, version: str) -> None:
+    zones_before = _zone_key(s.design)
     s.design = s.project.design_at(version)
+    if _zone_key(s.design) != zones_before:
+        s.twin = None  # the route graph depends on the zones
     s.trees = {}
     pops = s.design.by_kind("pop")
     if pops:

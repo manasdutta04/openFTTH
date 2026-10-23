@@ -132,6 +132,17 @@ def _group_by_building(homes: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return out.sort_values("osm_id", kind="stable").reset_index(drop=True)
 
 
+def _zone_kind(value) -> str:
+    """`keep_out` (no trench and no equipment) when a zone's kind says so, else `no_dig` (no new
+    trench; existing ducts through it stay usable)."""
+    v = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return (
+        "keep_out"
+        if v in ("keep_out", "keepout", "exclusion", "excluded", "no_equipment")
+        else "no_dig"
+    )
+
+
 def _to_int(v) -> int | None:
     try:
         n = int(float(str(v).replace(",", ".")))
@@ -419,7 +430,8 @@ def load_inputs(profile: ImportProfile, rules: Rulebook) -> Inputs:
                     "reason": [
                         str(r) if r not in (None, "") else "no-dig zone"
                         for r in _col(gdf, b, "reason")
-                    ]
+                    ],
+                    "kind": [_zone_kind(k) for k in _col(gdf, b, "kind")],
                 },
                 geometry=gdf.geometry.values,
                 crs=4326,
@@ -428,7 +440,7 @@ def load_inputs(profile: ImportProfile, rules: Rulebook) -> Inputs:
     no_dig = (
         gpd.GeoDataFrame(pd.concat(nd_parts, ignore_index=True), geometry="geometry", crs=4326)
         if nd_parts
-        else _empty(["reason"])
+        else _empty(["reason", "kind"])
     )
     counts.update(
         {

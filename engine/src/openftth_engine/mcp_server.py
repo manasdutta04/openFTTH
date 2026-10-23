@@ -468,6 +468,14 @@ def reassign(
 
 
 @mcp.tool()
+def add_zone(kind: str, points: list[list[float]], reason: str) -> dict[str, Any]:
+    """Draw a zone through [lon, lat] corner points: keep_out (no trench and no equipment
+    inside) or no_dig (no new trench; existing ducts usable). The design is solved again around
+    it; delete_element removes a zone."""
+    return _out(edit.add_zone(_s(), kind, points, reason))
+
+
+@mcp.tool()
 def complete_network(reason: str) -> dict[str, Any]:
     """Finish a network laid out by hand: route feeder and distribution along the cables the
     engineer drew, add drops for every assigned home, place chambers, size cables and number

@@ -265,6 +265,12 @@ impl CommandPalette {
         );
         action("Measure a distance", "M", Command::Tool("measure"), open);
         action(
+            "Draw a keep-out or no-dig zone",
+            "K",
+            Command::Tool("zone"),
+            open,
+        );
+        action(
             "Manual mode: edit the map by hand",
             "E",
             Command::Mode(true),

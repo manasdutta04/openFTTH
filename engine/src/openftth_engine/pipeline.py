@@ -339,23 +339,75 @@ def _no_dig_ids(s: Session) -> set[str]:
     return {str(x["osm_id"]) for x in _steering(s, "no_dig")}
 
 
+def _zones(s: Session) -> gpd.GeoDataFrame:
+    """Every zone (WGS 84) with its `kind` (no_dig or keep_out) and `reason`: the zone elements
+    of the design, or for a project imported before zones were elements, the imported ones."""
+    feats = s.design.by_kind("zone")
+    if feats:
+        return gpd.GeoDataFrame(
+            {
+                "kind": [str(f.openftth.get("zone", "no_dig")) for f in feats],
+                "reason": [str(f.props.get("reason", "")) for f in feats],
+                "id": [f.element_uuid for f in feats],
+            },
+            geometry=[f.geometry for f in feats],
+            crs=4326,
+        )
+    cached = s.cache.get("no_dig_zones")
+    if cached is not None and not cached.empty:
+        out = cached.copy()
+        if "kind" not in out.columns:
+            out["kind"] = "no_dig"
+        return out
+    return gpd.GeoDataFrame({"kind": [], "reason": []}, geometry=[], crs=4326)
+
+
+def _keep_out(s: Session, twin: Twin) -> tuple[set[int], Any]:
+    """The street nodes inside keep-out zones (no equipment there) and the zones' union in the
+    twin's CRS (None without any)."""
+    zones = _zones(s)
+    zones = zones[zones["kind"] == "keep_out"]
+    if zones.empty:
+        return set(), None
+    polys = zones.to_crs(twin.crs).geometry.union_all()
+    nodes = list(twin.graph.nodes)
+    pts = shapely.points(np.asarray([twin.xy[n] for n in nodes], dtype=float))
+    inside = shapely.contains(polys, pts)
+    return {int(n) for n, hit in zip(nodes, inside, strict=True) if hit}, polys
+
+
+def _nearest_allowed(twin: Twin, x: float, y: float, blocked: set[int]) -> tuple[int, float]:
+    """The nearest street node to (x, y) outside the keep-out zones."""
+    node, d = twin.nearest_node(x, y)
+    if node not in blocked:
+        return node, d
+    assert twin._tree_nodes is not None
+    k = min(len(twin._tree_nodes), 256)
+    dists, idxs = twin.kdtree.query([x, y], k=k)
+    for dd, i in zip(dists, idxs, strict=False):
+        n = int(twin._tree_nodes[i])
+        if n not in blocked:
+            return n, float(dd)
+    return node, d
+
+
 def _finish_twin(s: Session, twin: Twin) -> Twin:
-    """Apply the engineer's no-dig streets and the imported no-dig zones to a fresh twin."""
+    """Apply the engineer's no-dig streets and the no-dig and keep-out zones to a fresh twin."""
     no_dig = _no_dig_ids(s)
     if no_dig:
         twin.forbid_ways(no_dig)
     else:
         twin.streets["no_dig"] = False
-    zones = s.cache.get("no_dig_zones")
-    if zones is not None and not zones.empty:
+    zones = _zones(s)
+    if not zones.empty:
         edges, length = twin.forbid_zones(zones)
         twin.decisions.append(
             Decision(
                 stage="twin",
                 tool="build_twin",
-                reason=f"{edges} street edge(s), {length:.0f} m, lie in no-dig zones and left the "
-                "route graph; existing ducts through them stay usable.",
-                values={"edges": edges, "length_m": round(length, 1)},
+                reason=f"{edges} street edge(s), {length:.0f} m, lie in {len(zones)} no-dig or "
+                "keep-out zone(s) and left the route graph; existing ducts through them stay usable.",
+                values={"edges": edges, "length_m": round(length, 1), "zones": len(zones)},
                 source="user",
             )
         )
@@ -418,6 +470,20 @@ def import_data(
 
     for kind in ("building", "service_area", "existing_pole", "existing_manhole", "existing_duct"):
         s.design.remove_where(kind=kind)
+    s.design.remove_where(kind="zone", origin="import")
+    for i, z in enumerate(inp.no_dig.itertuples(index=False)):
+        s.design.add(
+            Feature(
+                element_uuid=s.uid("service_area", f"zone:import:{i}"),
+                element_type="service_area",
+                geometry=z.geometry,
+                props={
+                    "name": f"{'Keep-out' if z.kind == 'keep_out' else 'No-dig'} zone {i + 1}",
+                    "reason": z.reason,
+                },
+                openftth={"kind": "zone", "zone": z.kind, "origin": "import"},
+            )
+        )
     area = inp.area
     area_series = gpd.GeoSeries([area], crs=4326)
     area_m2 = float(area_series.to_crs(area_series.estimate_utm_crs()).area.iloc[0])
@@ -665,7 +731,8 @@ def _set_pops(s: Session, given: list[list[float]], wanted: int) -> ToolResult:
         r.pops.max_units,
         fixed=twin.xy[fixed_nodes] if fixed_nodes else None,
     )
-    nodes = fixed_nodes or [int(twin.nearest_node(x, y)[0]) for x, y in split.centres]
+    blocked, _zones_m = _keep_out(s, twin)
+    nodes = fixed_nodes or [int(_nearest_allowed(twin, x, y, blocked)[0]) for x, y in split.centres]
     if not fixed_nodes:
         decisions.append(
             Decision(
@@ -749,7 +816,7 @@ def _set_single_pop(s: Session, lon: float | None = None, lat: float | None = No
     if lon is None or lat is None:
         area = s.cache.get("area") or s.design.by_kind("service_area")[0].geometry
         c = gpd.GeoSeries([area.centroid], crs=4326).to_crs(twin.crs).iloc[0]
-        node, _ = twin.nearest_node(c.x, c.y)
+        node, _ = _nearest_allowed(twin, c.x, c.y, _keep_out(s, twin)[0])
         decisions.append(
             Decision(
                 stage="solve",
@@ -868,11 +935,12 @@ def cluster_homes(s: Session, time_limit_s: float = WORK_LIMIT) -> ToolResult:
 
     regular = [h for h in homes if int(h.openftth["units"]) <= cap]
     # FATs stand at intersections or in front of a home (wall/pole), not at arbitrary vertices.
+    blocked, _zones_m = _keep_out(s, twin)
     fat_candidates = (
         {n for n, deg in twin.graph.degree if deg >= 3}
         | {int(h.openftth["node"]) for h in regular}
         | set(pinned_at)
-    )
+    ) - blocked
     demands = [
         Demand(
             key=h.element_uuid,
@@ -1032,9 +1100,10 @@ def place_fdh(s: Session, time_limit_s: float = WORK_LIMIT) -> ToolResult:
     cap_max = max(r.fdh.capacities)
     capacity = int(cap_max * r.fdh.max_fill_pct / 100.0)
     # Cabinets sit at intersections: candidate nodes with degree ≥ 3 (fallback: all nodes).
-    candidates = ({n for n, d in twin.graph.degree if d >= 3} or set(twin.graph.nodes)) | set(
-        pinned_at
-    )
+    blocked, _zones_m = _keep_out(s, twin)
+    candidates = (
+        ({n for n, d in twin.graph.degree if d >= 3} or set(twin.graph.nodes)) | set(pinned_at)
+    ) - blocked
     # Distance is priced as distribution cable only: the trench along the street is needed for
     # the drops anyway, so it must not push the solver towards many small cabinets.
     per_m = r.units.cable_base_per_m + 24 * r.units.cable_per_fiber_m

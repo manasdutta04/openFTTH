@@ -47,6 +47,7 @@ pub enum Icon {
     Auto,
     Lock,
     Crew,
+    Zone,
     Maximize,
     Restore,
 }
@@ -95,6 +96,7 @@ const ICONS: &[(&str, &[u8])] = &[
     ("auto", include_bytes!("../assets/icons/auto.a8")),
     ("lock", include_bytes!("../assets/icons/lock.a8")),
     ("crew", include_bytes!("../assets/icons/crew.a8")),
+    ("zone", include_bytes!("../assets/icons/zone.a8")),
 ];
 
 fn mask_name(icon: Icon) -> Option<&'static str> {
@@ -133,6 +135,7 @@ fn mask_name(icon: Icon) -> Option<&'static str> {
         Icon::Auto => Some("auto"),
         Icon::Lock => Some("lock"),
         Icon::Crew => Some("crew"),
+        Icon::Zone => Some("zone"),
         Icon::Maximize | Icon::Restore => None,
     }
 }

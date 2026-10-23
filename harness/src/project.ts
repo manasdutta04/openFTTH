@@ -84,6 +84,7 @@ export const EDIT_TOOLS = [
   "undo_edit",
   "redo_edit",
   "complete_network",
+  "add_zone",
   // The free checks and opening a work order: the engineer's own actions, no crew turn.
   "check_rules",
   "check_operator",

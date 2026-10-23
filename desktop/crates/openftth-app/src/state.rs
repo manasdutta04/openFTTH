@@ -123,6 +123,8 @@ pub struct Layers {
     pub crossings: bool,
     /// Rings on the elements that break a rule.
     pub issues: bool,
+    /// Keep-out and no-dig zones.
+    pub zones: bool,
 }
 
 impl Default for Layers {
@@ -140,6 +142,7 @@ impl Default for Layers {
             existing: true,
             crossings: true,
             issues: true,
+            zones: true,
         }
     }
 }

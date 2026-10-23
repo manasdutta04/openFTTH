@@ -137,6 +137,8 @@ struct GeomCache {
     streets_key: (usize, usize),
     streets: Vec<CLine>,
     buildings: Vec<CPoly>,
+    /// Keep-out and no-dig zones (the bool: keep-out).
+    zones: Vec<(CPoly, bool)>,
     cables: Vec<CLine>,
     points: Vec<CPoint>,
     uuid_index: HashMap<String, usize>,
@@ -182,6 +184,7 @@ impl GeomCache {
             streets_key: streets_key(streets),
             streets: Vec::new(),
             buildings: Vec::new(),
+            zones: Vec::new(),
             cables: Vec::new(),
             points: Vec::new(),
             uuid_index: HashMap::new(),
@@ -211,7 +214,22 @@ impl GeomCache {
             for (i, e) in d.elements.iter().enumerate() {
                 c.uuid_index.insert(e.element_uuid.clone(), i);
                 let kind = e.kind();
-                if kind == "building" {
+                if kind == "zone" {
+                    let keep_out =
+                        e.openftth.get("zone").and_then(|v| v.as_str()) == Some("keep_out");
+                    let rings: Vec<&Vec<[f64; 2]>> = match &e.geometry {
+                        Geometry::Polygon(r) => r.first().into_iter().collect(),
+                        Geometry::MultiPolygon(m) => m.iter().filter_map(|r| r.first()).collect(),
+                        _ => Vec::new(),
+                    };
+                    for ring in rings {
+                        let pts = project_line(ring);
+                        if pts.len() >= 3 {
+                            let bbox = Bbox::of(&pts);
+                            c.zones.push((CPoly { pts, bbox, idx: i }, keep_out));
+                        }
+                    }
+                } else if kind == "building" {
                     let rings: Vec<&Vec<[f64; 2]>> = match &e.geometry {
                         Geometry::Polygon(r) => r.first().into_iter().collect(),
                         Geometry::MultiPolygon(m) => m.iter().filter_map(|r| r.first()).collect(),
@@ -510,6 +528,30 @@ impl TwinView {
                 if edge != Stroke::NONE {
                     shapes.push(Shape::closed_line(pts, edge));
                 }
+            }
+        }
+
+        // Zones: a thick dashed outline (red keep-out, amber no-dig); a click on it selects it.
+        if layers.zones {
+            for (z, keep_out) in &cache.zones {
+                if !z.bbox.intersects(&view) {
+                    continue;
+                }
+                let c = if *keep_out { p.red } else { p.amber };
+                let mut pts: Vec<Pos2> = z.pts.iter().map(tf).collect();
+                if pts.first() != pts.last() {
+                    pts.push(pts[0]);
+                }
+                if selected_set.contains(uuid_of(z.idx)) {
+                    shapes.push(Shape::line(
+                        pts.clone(),
+                        Stroke::new(7.0, p.accent.gamma_multiply(0.35)),
+                    ));
+                }
+                if let Some(q) = probe {
+                    consider(polyline_distance(&pts, q), 6.0, z.idx);
+                }
+                shapes.extend(Shape::dashed_line(&pts, Stroke::new(2.4, c), 9.0, 5.0));
             }
         }
 
@@ -941,7 +983,7 @@ impl TwinView {
                         return;
                     }
                     ui.add_space(4.0);
-                    let rows: [(&str, &str, &mut bool); 12] = [
+                    let rows: [(&str, &str, &mut bool); 13] = [
                         ("Feeder", "feeder", &mut layers.feeder),
                         ("Distribution", "distribution", &mut layers.distribution),
                         ("Drops", "drop", &mut layers.drops),
@@ -954,6 +996,7 @@ impl TwinView {
                         ("Existing network", "existing_duct", &mut layers.existing),
                         ("Crossings", "crossing", &mut layers.crossings),
                         ("Rule issues", "issue", &mut layers.issues),
+                        ("Zones", "zone", &mut layers.zones),
                     ];
                     for (label, kind, on) in rows {
                         let (r, resp) = ui
@@ -969,6 +1012,7 @@ impl TwinView {
                             "building" => p.map_building_edge,
                             "street" => p.text3,
                             "issue" => p.red,
+                            "zone" => p.amber,
                             k => p.kind(k),
                         }
                         .gamma_multiply(alpha);
@@ -990,6 +1034,20 @@ impl TwinView {
                             }
                             "issue" => {
                                 painter.circle_stroke(sw.center(), 4.0, Stroke::new(1.8, c));
+                            }
+                            "zone" => {
+                                painter.extend(Shape::dashed_line(
+                                    &[
+                                        sw.left_top(),
+                                        sw.right_top(),
+                                        sw.right_bottom(),
+                                        sw.left_bottom(),
+                                        sw.left_top(),
+                                    ],
+                                    Stroke::new(1.4, c),
+                                    3.0,
+                                    2.0,
+                                ));
                             }
                             "existing_duct" => {
                                 painter.extend(Shape::dashed_line(

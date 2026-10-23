@@ -68,6 +68,7 @@
           "edit_splice",
           "list_violations",
           "complete_network",
+          "add_zone",
           "set_attribute",
           "reassign",
           "undo_edit",

@@ -24,6 +24,7 @@ pub enum Tool {
     Reassign,
     Measure,
     AddPop,
+    Zone,
 }
 
 impl Tool {
@@ -38,6 +39,7 @@ impl Tool {
             Tool::Reassign => "Reassign",
             Tool::Measure => "Measure",
             Tool::AddPop => "Add POP",
+            Tool::Zone => "Draw zone",
         }
     }
 
@@ -52,6 +54,7 @@ impl Tool {
             Tool::Reassign => "R",
             Tool::Measure => "M",
             Tool::AddPop => "P",
+            Tool::Zone => "K",
         }
     }
 
@@ -66,6 +69,7 @@ impl Tool {
             Tool::Split => Icon::Split,
             Tool::Reassign => Icon::Reassign,
             Tool::Measure => Icon::Measure,
+            Tool::Zone => Icon::Zone,
         }
     }
 
@@ -84,6 +88,7 @@ impl Tool {
             "split" => Tool::Split,
             "reassign" => Tool::Reassign,
             "measure" => Tool::Measure,
+            "zone" => Tool::Zone,
             "select" => Tool::Select,
             _ => return None,
         })
@@ -99,6 +104,7 @@ impl Tool {
             Tool::Split => "Click a cable where it should be split: a chamber is added there",
             Tool::Reassign => "Select homes or FATs (Shift-click, Shift-drag a box), then click the FAT or cabinet they go to",
             Tool::Measure => "Click points to measure in a straight line · Backspace drops the last point · nothing is written to the design",
+            Tool::Zone => "Click the corners of the zone · Enter or double-click closes it · keep-out: no trench, no equipment · no-dig: no new trench",
         }
     }
 }
@@ -140,6 +146,8 @@ pub struct Editor {
     pub tool: Tool,
     pub reason: String,
     pub cable_kind: &'static str,
+    /// What a drawn zone forbids: `keep_out` or `no_dig`.
+    pub zone_kind: &'static str,
     pub points: Vec<(f64, f64)>,
 }
 
@@ -150,6 +158,7 @@ impl Default for Editor {
             tool: Tool::Select,
             reason: "manual edit".into(),
             cable_kind: "distribution",
+            zone_kind: "keep_out",
             points: Vec::new(),
         }
     }
@@ -319,6 +328,7 @@ impl Editor {
                         Tool::Split,
                         Tool::Reassign,
                         Tool::Measure,
+                        Tool::Zone,
                     ] {
                         let active = self.tool == tool;
                         let resp =
@@ -420,6 +430,25 @@ impl Editor {
                                 }
                             }
                         }
+                        if self.tool == Tool::Zone {
+                            for (kind, label) in [("keep_out", "keep-out"), ("no_dig", "no-dig")] {
+                                let on = self.zone_kind == kind;
+                                if ui
+                                    .selectable_label(
+                                        on,
+                                        crate::widgets::text(
+                                            label,
+                                            12.0,
+                                            Weight::Medium,
+                                            if on { p.accent } else { p.text2 },
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    self.zone_kind = kind;
+                                }
+                            }
+                        }
                         ui.add_space(6.0);
                         if self.tool == Tool::Measure {
                             let total: f64 =
@@ -452,14 +481,15 @@ impl Editor {
                                 egui::TextEdit::singleline(&mut self.reason).desired_width(180.0),
                             );
                         }
-                        if self.tool == Tool::Draw {
+                        if matches!(self.tool, Tool::Draw | Tool::Zone) {
                             let n = self.points.len();
+                            let need = if self.tool == Tool::Zone { 3 } else { 2 };
                             if crate::widgets::button_enabled(
                                 ui,
                                 p,
                                 &format!("Finish ({n})"),
                                 crate::widgets::Kind::Prominent,
-                                n >= 2,
+                                n >= need,
                             )
                             .clicked()
                             {
@@ -493,6 +523,10 @@ impl Editor {
 
     /// Send the cable being drawn.
     pub fn finish_cable(&mut self, st: &mut AppState) {
+        if self.tool == Tool::Zone {
+            self.finish_zone(st);
+            return;
+        }
         if self.points.len() < 2 {
             return;
         }
@@ -522,7 +556,7 @@ impl Editor {
         if resp.response.hovered() {
             resp.response.ctx.set_cursor_icon(CursorIcon::Crosshair);
         }
-        if self.tool == Tool::Draw && resp.response.double_clicked() {
+        if matches!(self.tool, Tool::Draw | Tool::Zone) && resp.response.double_clicked() {
             self.finish_cable(st);
             return true;
         }
@@ -561,7 +595,7 @@ impl Editor {
                     json!({ "kind": kind, "lon": lon, "lat": lat, "reason": reason }),
                 );
             }
-            Tool::Draw => self.points.push((lon, lat)),
+            Tool::Draw | Tool::Zone => self.points.push((lon, lat)),
             Tool::Split => match resp.clicked.as_deref() {
                 Some(id) if ["feeder", "distribution", "drop"].contains(&kind_of(id).as_str()) => {
                     st.edit(
@@ -609,7 +643,7 @@ impl Editor {
             self.measure_overlay(ui, rect, view, p);
             return;
         }
-        if self.tool != Tool::Draw || self.points.is_empty() {
+        if !matches!(self.tool, Tool::Draw | Tool::Zone) || self.points.is_empty() {
             return;
         }
         let painter = ui.painter_at(rect);
@@ -621,7 +655,14 @@ impl Editor {
         if let Some(cur) = ui.ctx().pointer_hover_pos().filter(|q| rect.contains(*q)) {
             pts.push(cur);
         }
-        let color = p.kind(self.cable_kind);
+        let color = if self.tool == Tool::Zone {
+            zone_colour(p, self.zone_kind)
+        } else {
+            p.kind(self.cable_kind)
+        };
+        if self.tool == Tool::Zone && pts.len() >= 3 {
+            pts.push(pts[0]); // the zone closes back on its first corner
+        }
         painter.extend(Shape::dashed_line(&pts, Stroke::new(2.5, color), 8.0, 5.0));
         for (i, q) in pts.iter().enumerate().take(self.points.len()) {
             painter.circle_filled(*q, 4.5, color);
@@ -777,5 +818,35 @@ fn segment(
         resp.on_hover_cursor(CursorIcon::PointingHand)
     } else {
         resp
+    }
+}
+
+/// A zone's colour on the map: red for keep-out, amber for no-dig.
+pub fn zone_colour(p: &Palette, kind: &str) -> Color32 {
+    if kind == "keep_out" {
+        p.red
+    } else {
+        p.amber
+    }
+}
+
+impl Editor {
+    /// Send the zone being drawn (three corners or more).
+    pub fn finish_zone(&mut self, st: &mut AppState) {
+        if self.points.len() < 3 {
+            st.toasts.info("A zone needs at least three corners");
+            return;
+        }
+        if st.editing() || st.busy() {
+            st.toasts
+                .info("The last change is still being applied; press Enter again in a moment");
+            return;
+        }
+        let pts: Vec<[f64; 2]> = self.points.iter().map(|(lon, lat)| [*lon, *lat]).collect();
+        st.edit(
+            "add_zone",
+            json!({ "kind": self.zone_kind, "points": pts, "reason": self.reason() }),
+        );
+        self.points.clear();
     }
 }

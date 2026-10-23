@@ -1742,6 +1742,7 @@ project {}",
                         (i.key_pressed(Key::R), Tool::Reassign),
                         (i.key_pressed(Key::M), Tool::Measure),
                         (i.key_pressed(Key::P), Tool::AddPop),
+                        (i.key_pressed(Key::K), Tool::Zone),
                     ],
                     i.key_pressed(Key::Delete),
                     i.key_pressed(Key::Enter),
@@ -1762,10 +1763,10 @@ project {}",
             if join && self.editor.manual {
                 self.join_selection();
             }
-            if enter && self.editor.tool == Tool::Draw {
+            if enter && matches!(self.editor.tool, Tool::Draw | Tool::Zone) {
                 self.editor.finish_cable(&mut self.st);
             }
-            if back && matches!(self.editor.tool, Tool::Draw | Tool::Measure) {
+            if back && matches!(self.editor.tool, Tool::Draw | Tool::Measure | Tool::Zone) {
                 self.editor.points.pop();
             }
         }

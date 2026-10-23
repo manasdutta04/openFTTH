@@ -87,7 +87,10 @@ ROLE_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
         "id": ("id", "manhole_id", "fid", "objectid"),
         "type": ("type", "size", "kind"),
     },
-    "no_dig_zones": {"reason": ("reason", "reden", "raison", "note", "comment", "until")},
+    "no_dig_zones": {
+        "reason": ("reason", "reden", "raison", "note", "comment", "until"),
+        "kind": ("kind", "type", "soort", "zone"),
+    },
 }
 
 ROLE_HINTS: dict[str, tuple[str, ...]] = {
