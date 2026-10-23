@@ -344,16 +344,18 @@ fn status_line(ui: &mut Ui, st: &AppState) {
         .map(|(k, v)| (k.clone(), v.clone()));
     let (who, colour, doing) = match (started, busy_member) {
         (Some(c), _) => {
+            // The automatic design: named after the crew member who owns the step.
+            let key = if c.folk.is_empty() {
+                crate::state::auto_owner(&c.tool)
+            } else {
+                c.folk.as_str()
+            };
             let who = if c.folk.is_empty() {
-                "openFTTH engine".to_string()
+                format!("{} (auto)", st.folk_name(key))
             } else {
-                st.folk_name(&c.folk)
+                st.folk_name(key)
             };
-            let colour = if c.folk.is_empty() {
-                p.accent
-            } else {
-                p.folk(&c.folk)
-            };
+            let colour = p.folk(key);
             (Some(who), colour, format!("is {}…", tool_phrase(&c.tool)))
         }
         (None, Some((k, state))) => {

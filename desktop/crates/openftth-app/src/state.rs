@@ -716,11 +716,15 @@ impl AppState {
                     let folk = s(&f.data["folk"]);
                     let tool = s(&f.data["tool"]);
                     let (key, label, colour) = match folk.as_str() {
-                        "" => (
-                            "engine".to_string(),
-                            "openFTTH engine".to_string(),
-                            self.palette.accent,
-                        ),
+                        // The automatic design: the crew member who owns the step shows it.
+                        "" => {
+                            let k = auto_owner(&tool);
+                            (
+                                k.to_string(),
+                                format!("{} (auto)", self.folk_name(k)),
+                                self.palette.folk(k),
+                            )
+                        }
                         "you" => (
                             "you".to_string(),
                             "You".to_string(),
@@ -741,19 +745,15 @@ impl AppState {
                 }
                 if matches!(f.data["state"].as_str(), Some("done") | Some("failed")) {
                     let key = match s(&f.data["folk"]).as_str() {
-                        "" => "engine".to_string(),
+                        "" => auto_owner(&s(&f.data["tool"])).to_string(),
                         k => k.to_string(),
                     };
                     if let Some(summary) = f.data["summary"].as_str() {
                         self.cursors.step_done(&key, summary);
                     }
-                    // The automatic design runs its steps back to back: only the last one ends it.
-                    if key != "engine"
-                        || s(&f.data["tool"]) == "export_gpkg"
-                        || f.data["state"] == "failed"
-                    {
-                        self.cursors.finished(&key);
-                    }
+                    // Each step of the automatic design ends its member's turn: the cursor rests where
+                    // it stopped and wakes when that member's next step starts.
+                    self.cursors.finished(&key);
                 }
                 if s(&f.data["folk"]) != "you" {
                     self.crew_active_at = Some(Instant::now());
@@ -1496,5 +1496,17 @@ mod version_tests {
         assert!(newer("1.0.0", "0.9.9"));
         assert!(!newer("0.1.0", "0.1.0"));
         assert!(!newer("0.1.0", "0.2.0"));
+    }
+}
+
+/// The crew member who owns an engine tool, as in the crew manifest: the automatic design runs
+/// the same tools without an AI, and each step is shown by the member whose job it is.
+pub fn auto_owner(tool: &str) -> &'static str {
+    match tool {
+        "import_osm" | "import_data" | "fetch_osm" | "check_inputs" | "build_twin" => "surveyor",
+        "check_rules" | "check_operator" => "checker",
+        "boq" | "splice_schedule" | "export_gpkg" | "plan_sheets" | "reports"
+        | "export_profile" => "drafter",
+        _ => "planner",
     }
 }
