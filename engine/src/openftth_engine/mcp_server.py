@@ -100,7 +100,10 @@ def list_presets_tool() -> list[str]:
 @mcp.tool()
 def get_rulebook() -> dict[str, Any]:
     """Return the active rulebook with every design number the solvers use."""
-    return _s().rules.model_dump(by_alias=True)
+    data = _s().rules.model_dump(by_alias=True)
+    # The crew needs the rulebook's status and note, not the empty sign-off fields of a beta preset.
+    data["review"] = {k: v for k, v in data["review"].items() if v is not None}
+    return data
 
 
 @mcp.tool()
