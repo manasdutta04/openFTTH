@@ -137,3 +137,25 @@ def test_determinism_same_inputs_same_bundle(gent_run, rules, tmp_path):
     )
     for p in sorted((Path(out) / "design").glob("*.geojson")):
         assert p.read_bytes() == (again / "design" / p.name).read_bytes(), p.name
+    # The deliverables made from the two identical designs are identical too.
+    from openftth_engine.pipeline import export_profile, open_session, plan_sheets, reports
+
+    for path in (Path(out), again):
+        s = open_session(path, rules, project_id="gent-test")
+        assert plan_sheets(s, 1000, "A3").data["sheets"] > 2
+        reports(s)
+        export_profile(s, "generic-csv")
+    files = [
+        "boq.csv",
+        "plans.pdf",
+        "plans.dxf",
+        "cable_schedule.csv",
+        "port_report.csv",
+        *(
+            f"exports/generic-csv/{p.name}"
+            for p in (again / "deliverables" / "exports" / "generic-csv").iterdir()
+        ),
+    ]
+    for name in files:
+        a = (Path(out) / "deliverables" / name).read_bytes()
+        assert a == (again / "deliverables" / name).read_bytes(), name

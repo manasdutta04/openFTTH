@@ -83,6 +83,18 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
 - Reports: BOQ (exists), splice and port reports, cable schedule, materials by phase, as-designed vs as-built.
 - Exchange profiles: export/import mappings to operator schemas (GeoPackage/Shapefile/CSV field renames, code lists), round-trip tested.
 - Gate: a printable plan set + DXF opens in QGIS/LibreCAD; an export profile round-trips.
+  *Done (2026-10-23):* `plan_sheets` writes plans.pdf (key plan with the sheet grid, then one
+  A3 or A1 sheet per grid cell with network: legend, scale bar, grid north, title block with
+  project, sheet n of N, scale, CRS, rulebook, design id, work order and status; labels that
+  would overlap are left out and counted) and plans.dxf (own R12 writer, one layer per kind,
+  in the design's UTM metres). `reports` writes the cable schedule, the port report and the
+  materials by build phase. `export_profile` writes the design through `exports/*.yaml`
+  (GeoPackage, Shapefile, CSV; layer and field renames, types, code lists, CRS). Tests: GDAL
+  (QGIS's reader) reads every DXF layer back with the feeder's length intact; each shipped
+  profile round-trips every mapped value and geometry to within a millimetre; plan sheets,
+  reports and exports are byte-identical across two runs of the Gent design. The plan set and
+  DXF have not been opened by hand in QGIS or LibreCAD on this machine (neither installed).
+  Open: operator symbology from the operator pack; as-designed vs as-built report.
 
 ### P5 — Open to other AI apps: public MCP server (harness)
 - `openftth mcp` entry: a **stdio MCP server** for Claude Desktop/Claude Code/Cursor and a **streamable-HTTP endpoint** on the harness (`/mcp`, bearer token, loopback; optional user-started tunnel for web clients such as ChatGPT connectors, which need a public HTTPS URL).

@@ -20,6 +20,10 @@ plans and the bill of quantities.
 - **The human can still steer.** Move a cabinet, take a building out, forbid digging on a
   street: each is an engine tool call with the reason on record, the routes are planned
   again and the Checker looks again. Every deliverable saves out of File → Export.
+- **Deliverables.** Plan sheets (PDF atlas on A3 or A1) and a CAD drawing (DXF), the bill of
+  quantities (per build phase too), cable schedule, port report, splice schedule, a
+  GeoPackage, and exports in your operator's own layers and fields through an export profile
+  (`exports/*.yaml`). Same design, same files, byte for byte.
 - **Local first.** Everything runs on your machine. Cloud models are optional.
 - **Open to other AI apps.** Turn on openFTTH's MCP link (`http://127.0.0.1:3920/mcp`) and
   Claude Desktop, Claude Code, Cursor, VS Code or any MCP client can open projects, design,
