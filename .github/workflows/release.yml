@@ -1,7 +1,8 @@
 name: Release
 
 # Push a tag like v0.2.0 (matching desktop/Cargo.toml's workspace version) to build the Windows
-# installer and attach it, with its SHA-256, to a draft GitHub Release for review.
+# installer and publish it, with its SHA-256 and docs/releases/<tag>.md as notes, as a GitHub
+# Release (a pre-release below 1.0).
 on:
   push:
     tags: ["v*"]
@@ -60,12 +61,24 @@ jobs:
             dist/openFTTH-Setup-*.exe.sha256
           if-no-files-found: error
 
-      - name: Draft release
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: notes
+        shell: pwsh
+        run: |
+          $f = "docs/releases/${{ github.ref_name }}.md"
+          if (-not (Test-Path $f)) { throw "write $f before tagging" }
+          "file=$f" >> $env:GITHUB_OUTPUT
+
+      # Versions below 1.0 are betas: published as pre-releases.
+      - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          generate_release_notes: true
+          name: openFTTH ${{ github.ref_name }}${{ startsWith(github.ref_name, 'v0.') && ' (beta)' || '' }}
+          body_path: ${{ steps.notes.outputs.file }}
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          draft: false
           files: |
             dist/openFTTH-Setup-*.exe
             dist/openFTTH-Setup-*.exe.sha256
