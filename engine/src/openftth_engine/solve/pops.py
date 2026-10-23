@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import networkx as nx
 import numpy as np
+from ortools.graph.python import min_cost_flow
 
 ROUNDS = 12  # alternations of assignment and re-centring
 
@@ -86,22 +86,30 @@ def _initial(xy: np.ndarray, units: np.ndarray, k: int) -> np.ndarray:
 
 def _assign(xy: np.ndarray, units: np.ndarray, centres: np.ndarray, cap: int) -> list[int]:
     """Min-cost flow: each home's units go to one POP (they never split: a home's units are
-    routed whole by assigning the home to the POP that takes most of its flow), within capacity."""
-    G = nx.DiGraph()
+    routed whole by assigning the home to the POP that takes most of its flow), within capacity.
+    Solved with OR-Tools' network simplex on integer costs, so it is exact, fast on tens of
+    thousands of homes, and the same every run."""
+    n, k = len(xy), len(centres)
     total = int(units.sum())
-    G.add_node("src", demand=-total)
-    G.add_node("sink", demand=total)
-    for j in range(len(centres)):
-        G.add_edge(f"p{j}", "sink", capacity=cap, weight=0)
-    for i in range(len(xy)):
+    src, sink = 0, n + k + 1
+    flow = min_cost_flow.SimpleMinCostFlow()
+    for i in range(n):
         u = int(units[i])
-        G.add_edge("src", f"h{i}", capacity=u, weight=0)
+        flow.add_arc_with_capacity_and_unit_cost(src, 1 + i, u, 0)
         dist = np.hypot(*(centres - xy[i]).T)
-        for j in range(len(centres)):
-            G.add_edge(f"h{i}", f"p{j}", capacity=u, weight=int(round(dist[j])))
-    flow = nx.min_cost_flow(G)
-    owner = []
-    for i in range(len(xy)):
-        out = flow[f"h{i}"]
-        owner.append(max(range(len(centres)), key=lambda j: (out.get(f"p{j}", 0), -j)))
-    return owner
+        for j in range(k):
+            flow.add_arc_with_capacity_and_unit_cost(1 + i, 1 + n + j, u, int(round(dist[j])))
+    for j in range(k):
+        flow.add_arc_with_capacity_and_unit_cost(1 + n + j, sink, cap, 0)
+    flow.set_node_supply(src, total)
+    flow.set_node_supply(sink, -total)
+    status = flow.solve()
+    if status != flow.OPTIMAL:
+        raise RuntimeError(f"POP catchment flow not solved (status {status})")
+    took = np.zeros((n, k), dtype=np.int64)
+    for arc in range(flow.num_arcs()):
+        t, h = flow.tail(arc), flow.head(arc)
+        if 1 <= t <= n and n < h <= n + k:
+            took[t - 1, h - 1 - n] = flow.flow(arc)
+    # The POP that takes most of a home's flow; ties go to the lower index.
+    return [int(np.argmax(row)) for row in took]

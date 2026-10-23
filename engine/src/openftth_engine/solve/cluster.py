@@ -8,6 +8,8 @@ fallback covers time-outs.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import networkx as nx
@@ -15,7 +17,18 @@ import numpy as np
 from ortools.sat.python import cp_model
 from scipy.cluster.vq import kmeans2
 
-CELL_SIZE = 500  # demand points per CP-SAT cell
+# Small cells solve to a proven optimum in seconds (and beat large cells stopped at a limit,
+# measured on 10,000 Brussels homes), so the result does not depend on how long a search ran.
+CELL_SIZE = 150  # demand points per CP-SAT cell
+#: CP-SAT work per cell (deterministic time, not seconds): measured on Brussels, 5 is within
+#: 4% of the cost at 20 and twice as fast; a cell that proves its optimum stops sooner.
+WORK_LIMIT = 5.0
+#: Stop a cell once its cost is within this share of the proven lower bound.
+GAP_LIMIT = 0.005
+#: CP-SAT workers per cell (interleaved, so the search is the same on every machine).
+WORKERS = 4
+#: Cells solved at once. Any number gives the same result: each cell's search is fixed.
+PARALLEL_CELLS = max(1, (os.cpu_count() or 4) // WORKERS)
 K_NEAREST = 40  # candidate sites per demand point (vertices every ≤25 m → ~500 m of street)
 
 
@@ -58,7 +71,7 @@ def capacitated_sites(
     per_m_cost: float,
     *,
     candidate_nodes: set[int] | None = None,
-    time_limit_s: float = 20.0,
+    time_limit_s: float = WORK_LIMIT,
     seed: int = 0,
     k_nearest: int = K_NEAREST,
     min_units: int = 0,
@@ -82,10 +95,15 @@ def capacitated_sites(
     objective = 0.0
     n_cand = 0
     fallbacks = 0
-    for cell in cells:
-        reach = _reach(G, cell, max_dist_m, candidate_nodes, k_nearest, fixed)
-        n_cand += len({c for r in reach.values() for c in r})
-        cell_sites, status, obj = _solve_cell(
+    jobs = [
+        (cell, _reach(G, cell, max_dist_m, candidate_nodes, k_nearest, fixed)) for cell in cells
+    ]
+
+    def solve(
+        job: tuple[list[Demand], dict[str, dict[int, float]]],
+    ) -> tuple[list[Site], str, float]:
+        cell, reach = job
+        return _solve_cell(
             cell,
             reach,
             capacity,
@@ -97,6 +115,13 @@ def capacitated_sites(
             short_unit_cost,
             fixed,
         )
+
+    # CP-SAT releases the GIL while it searches, so cells run side by side on threads; the
+    # results come back in cell order.
+    with ThreadPoolExecutor(max_workers=min(PARALLEL_CELLS, len(jobs))) as pool:
+        solved = list(pool.map(solve, jobs))
+    for (_cell, reach), (cell_sites, status, obj) in zip(jobs, solved, strict=True):
+        n_cand += len({c for r in reach.values() for c in r})
         if status == "FALLBACK":
             fallbacks += 1
         statuses.append(status)
@@ -205,11 +230,16 @@ def _solve_cell(
         )
     )
     solver = cp_model.CpSolver()
-    # Interleaved search with a fixed worker count and seed is deterministic in CP-SAT.
-    solver.parameters.num_workers = 8
+    # Interleaved search with a fixed worker count and seed is deterministic in CP-SAT, as long
+    # as the search stops on a deterministic limit: work done (deterministic time) or the gap to
+    # the proven bound, never wall-clock time, which would make a large area's FATs depend on
+    # how busy the machine was. Wall time is only a safety cap far above the work limit.
+    solver.parameters.num_workers = WORKERS
     solver.parameters.interleave_search = True
     solver.parameters.random_seed = seed
-    solver.parameters.max_time_in_seconds = time_limit_s
+    solver.parameters.max_deterministic_time = time_limit_s
+    solver.parameters.relative_gap_limit = GAP_LIMIT
+    solver.parameters.max_time_in_seconds = 30 * time_limit_s
     status = solver.Solve(model)
     name = solver.StatusName(status)
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):

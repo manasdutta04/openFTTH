@@ -19,6 +19,7 @@ from mcp.server.fastmcp import FastMCP
 from . import edit, pipeline
 from .results import ToolResult
 from .rules import Rulebook, list_presets, load_rulebook
+from .solve.cluster import WORK_LIMIT
 
 RISKY_TOOLS = {
     "route_outside_ducts",
@@ -254,13 +255,13 @@ def set_pop(
 
 
 @mcp.tool()
-def cluster_homes(time_limit_s: float = 20.0) -> dict[str, Any]:
+def cluster_homes(time_limit_s: float = WORK_LIMIT) -> dict[str, Any]:
     """Place FATs by capacitated clustering of homes (CP-SAT) within the max drop distance."""
     return _out(pipeline.cluster_homes(_s(), time_limit_s))
 
 
 @mcp.tool()
-def place_fdh(time_limit_s: float = 20.0) -> dict[str, Any]:
+def place_fdh(time_limit_s: float = WORK_LIMIT) -> dict[str, Any]:
     """Place FDH splitter cabinets over the FATs (CP-SAT) at street intersections."""
     return _out(pipeline.place_fdh(_s(), time_limit_s))
 
@@ -352,7 +353,7 @@ def generate_scenarios(
 
 
 @mcp.tool()
-def apply_scenario(name: str, time_limit_s: float = 20.0) -> dict[str, Any]:
+def apply_scenario(name: str, time_limit_s: float = WORK_LIMIT) -> dict[str, Any]:
     """Adopt a scenario from generate_scenarios: apply its rulebook overrides and re-run the
     solve chain."""
     return _out(pipeline.apply_scenario(_s(), name, time_limit_s))
