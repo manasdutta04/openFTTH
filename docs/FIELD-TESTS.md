@@ -1,4 +1,83 @@
-# Field tests — 2026-10-18
+# Field tests
+
+## Round 2 — 2026-10-23: nineteen areas, two official address registers, a large city
+
+Eight more areas of different character (`fixtures/field/scripts/fetch.py`), two areas designed
+from their government's open address register instead of homes estimated from OSM buildings
+(`scripts/fetch_registers.py`, through an import profile as File → Import data would), and one
+large dense area to measure scale. Default `generic-gpon` rulebook, default CP-SAT work limit,
+`python tools/field_run.py` reproduces it.
+
+| Area | Homes / units | FATs | FDHs | Time | Cost/unit | Violations | Worst ODN loss |
+|---|---|---|---|---|---|---|---|
+| paris-11e | 536 / 7,527 | 296 | 17 | 86 s | 324 | 0 | 22.8 dB |
+| madrid-salamanca | 292 / 5,466 | 210 | 13 | 56 s | 330 | 0 | 22.3 dB |
+| berlin-pberg | 474 / 8,469 | 342 | 21 | 115 s | 344 | 0 | 22.8 dB |
+| amsterdam-jordaan | 1,858 / 8,853 | 306 | 21 | 182 s | 388 | 0 | 22.6 dB |
+| amsterdam-jordaan-register (BAG) | 1,829 / 6,582 | 239 | 16 | 122 s | 432 | 0 | 22.5 dB |
+| nairobi-kilimani | 436 / 3,149 | 141 | 7 | 53 s | 654 | 0 | 22.7 dB |
+| tokyo-setagaya | 1,021 / 1,985 | 110 | 6 | 72 s | 706 | 0 | 23.0 dB |
+| lillehammer-edge | 492 / 1,508 | 92 | 7 | 66 s | 862 | 0 | 22.8 dB |
+| bangalore-indiranagar | 1,951 / 2,932 | 173 | 8 | 126 s | 1,121 | 0 | 23.2 dB |
+| brussels-schaerbeek | 10,155 / 12,246 | 695 | 34 | 722 s | 1,141 | 0 | 23.2 dB |
+| lochristi-village-register (Adressenregister) | 779 / 1,362 | 89 | 6 | 110 s | 1,263 | 0 | 23.1 dB |
+| gent | 1,334 / 1,636 | 99 | 5 | 119 s | 1,407 | 0 | 23.2 dB |
+| gent-small | 524 / 597 | 34 | 3 | 39 s | 1,505 | 0 | 22.2 dB |
+| saopaulo-vilamadalena | 1,448 / 1,614 | 95 | 4 | 68 s | 1,571 | 0 | 22.6 dB |
+| lochristi-village | 927 / 1,237 | 87 | 6 | 92 s | 1,648 | 0 | 23.2 dB |
+| manchester-chorlton | 432 / 562 | 39 | 4 | 44 s | 1,778 | 0 | 22.7 dB |
+| phoenix-grid | 267 / 267 | 34 | 1 | 37 s | 2,798 | 0 | 22.2 dB |
+| galway-rural | 959 / 998 | 132 | 9 | 70 s | 3,128 | 0 | 23.3 dB |
+| houston-katy | 84 / 84 | 9 | 1 | 19 s | 4,026 | 0 | 22.1 dB |
+
+Every area designs with no rule violation and every home inside the 28 dB class B+ budget. Cost is
+the BOQ per unit in EUR under the generic rulebook (new trench everywhere), a relative figure: dense
+blocks of flats land near 330, detached homes 1,100–1,800, scattered rural homes above 3,000.
+Houston's figure says more about the map than the network: OSM has only 84 buildings mapped in
+that square kilometre of suburb, so few homes share each cabinet. With an address register it
+would design like Phoenix.
+
+### What this round found and fixed
+
+1. **The local AI crew never worked.** The Ollama engine posted to `<host>/chat/completions`;
+   Ollama's OpenAI-compatible API is under `/v1`, so every turn failed with 404. The driver test's
+   fake server accepted any path. *Fixed* (`chatBase` in `drivers/openai.ts`; the test now checks
+   the path). Live: a question to the crew over `qwen2.5-coder:7b` answers in 35 s. That 7B model
+   reads the tool list but asks which tool to use instead of calling it, so a local crew needs a
+   larger tool-calling model; the transport works.
+2. **An address register made every flat its own home.** The BAG lists each dwelling: 6,582 homes
+   with a drop each in the Jordaan, 416 s, 784/unit. *Fixed:* addresses with the same building id in
+   the register, else at the same point, are one home with their units added (never by the OSM
+   outline, which often covers a semi-detached pair or a terrace and would merge separate houses).
+   Now 1,829 homes, 122 s, 432/unit, close to OSM's own 1,858 buildings.
+3. **WFS paging stopped early.** PDOK returns fewer features than asked per page, so the first
+   fetch stopped at 978 of 7,733. The fetch now pages until the server's own match count.
+4. **Import profile paths depended on the working folder.** Relative paths now resolve against the
+   profile file, so a profile and its data can be moved or shared together.
+5. **Large areas were not reproducible.** FAT clustering stopped each CP-SAT cell on wall-clock
+   time, so on a large area (every cell FEASIBLE, none proven optimal) the result depended on how
+   busy the machine was. *Fixed:* cells stop on deterministic work or a 0.5 % gap to the proven
+   bound, never on wall time; cells are smaller (150 homes) so most prove their optimum in seconds,
+   and they run four at a time. On Brussels the clustering objective fell from 12.0 M to 0.83 M.
+6. **Several POPs took minutes.** The catchment split ran a pure-Python min-cost flow 13 times over
+   10,000 homes (178 s). *Fixed:* OR-Tools' network simplex, same model and integer costs: 8 s.
+7. **Every element's coordinates were reprojected one GeoSeries at a time.** About a millisecond
+   each, minutes on a large area. *Fixed:* one cached transformer per CRS; output bit-identical.
+8. **Input problems said what was wrong, not what to do.** Every finding of `check_inputs` now
+   carries a `fix`, shown under it in the import wizard, and very large areas are flagged with
+   advice to split them.
+
+### Scale
+
+Brussels (10,155 homes, 12,246 units, 3 POPs) takes 722 s, down from 1,025 s, with a far better
+FAT layout. The steps that remain slow are FAT clustering (about 6 min), cabinet placement (about
+2 min) and drop routing (about 2 min). The 1.0 target of 50,000 homes in under 10 minutes is not
+met yet; the next steps are a better first layout for the clustering search and batching the drop
+and cabinet path searches.
+
+---
+
+## Round 1 — 2026-10-18
 
 The engine was run the way an operator trials a planning tool: real neighbourhoods of very
 different character, straight from OpenStreetMap, no hand-tuning, default `generic-gpon`

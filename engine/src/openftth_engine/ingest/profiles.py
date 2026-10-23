@@ -139,8 +139,15 @@ class ImportProfile(_Strict):
 
     @classmethod
     def load(cls, path: str | Path) -> ImportProfile:
+        """Read a profile. A relative file path in it is relative to the profile's own folder,
+        so a profile and its data can be moved or shared together."""
         with Path(path).open(encoding="utf-8") as fh:
-            return cls.model_validate(yaml.safe_load(fh) or {})
+            profile = cls.model_validate(yaml.safe_load(fh) or {})
+        base = Path(path).resolve().parent
+        for b in profile.bindings:
+            if b.path and not Path(b.path).is_absolute():
+                b.path = str((base / b.path).resolve())
+        return profile
 
 
 def _norm(s: str) -> str:

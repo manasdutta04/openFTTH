@@ -596,15 +596,21 @@ fn report_view(ui: &mut Ui, p: &Palette, r: &Value) {
         let l = i["level"].as_str().unwrap_or("info");
         ui.horizontal(|ui| {
             widgets::dot(ui, colour(l), 3.0);
-            ui.add(
-                egui::Label::new(text(
-                    i["message"].as_str().unwrap_or_default(),
-                    11.5,
-                    Weight::Regular,
-                    p.text2,
-                ))
-                .wrap(),
-            );
+            ui.vertical(|ui| {
+                ui.add(
+                    egui::Label::new(text(
+                        i["message"].as_str().unwrap_or_default(),
+                        11.5,
+                        Weight::Regular,
+                        p.text2,
+                    ))
+                    .wrap(),
+                );
+                // What to do about it, from the engine's own check.
+                if let Some(fix) = i["fix"].as_str().filter(|f| !f.is_empty()) {
+                    ui.add(egui::Label::new(text(fix, 11.0, Weight::Regular, p.text3)).wrap());
+                }
+            });
         });
     }
 }

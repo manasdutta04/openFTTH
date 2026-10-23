@@ -93,6 +93,45 @@ def _read(b: Binding) -> gpd.GeoDataFrame:
     return read_layer(b.path, b.layer, crs=b.crs, x=b.x, y=b.y)
 
 
+def _group_by_building(homes: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """One home per building: addresses with the same building id in the register, else at the
+    same point (flats sharing an entrance), are merged with their units added. The OSM outline
+    is not used: semi-detached and terraced houses are often one outline there, and each house
+    needs its own drop. The home keeps the smallest address id and the point of its first
+    address, so the result is deterministic."""
+    if homes.empty:
+        return homes
+
+    def key(row) -> str:
+        ref = row["building_ref"]
+        if isinstance(ref, str) and ref.strip() and ref.lower() != "nan":
+            return f"ref:{ref.strip()}"
+        return f"pt:{row.geometry.x:.7f},{row.geometry.y:.7f}"
+
+    homes = homes.assign(_key=[key(r) for _, r in homes.iterrows()])
+    homes = homes.sort_values(["_key", "osm_id"], kind="stable")
+    rows = []
+    for _k, g in homes.groupby("_key", sort=True):
+        first = g.iloc[0]
+        units = int(g["units"].sum())
+        rows.append(
+            {
+                "osm_id": first["osm_id"],
+                "units": units,
+                "kind": first["kind"]
+                if len(g) == 1
+                else ("apartments" if units > 1 else first["kind"]),
+                "building_ref": first["building_ref"],
+                "building_id": first["building_id"],
+                "street": first["street"],
+                "housenumber": first["housenumber"],
+                "geometry": first.geometry,
+            }
+        )
+    out = gpd.GeoDataFrame(rows, geometry="geometry", crs=homes.crs)
+    return out.sort_values("osm_id", kind="stable").reset_index(drop=True)
+
+
 def _to_int(v) -> int | None:
     try:
         n = int(float(str(v).replace(",", ".")))
@@ -318,17 +357,31 @@ def load_inputs(profile: ImportProfile, rules: Rulebook) -> Inputs:
         else:
             homes["building_id"] = None
         homes["building_id"] = [b if isinstance(b, str) else None for b in homes["building_id"]]
+        n_addresses = len(homes)
+        homes = _group_by_building(homes)
+        grouped = n_addresses - len(homes)
         decisions.append(
             Decision(
                 stage="ingest",
                 tool="import_data",
                 reason=f"{len(homes)} homes with {int(homes['units'].sum())} units from the "
-                "address register; demand is not estimated from building footprints.",
-                values={"homes": len(homes), "units": int(homes["units"].sum())},
+                "address register; demand is not estimated from building footprints."
+                + (
+                    f" {n_addresses} addresses: those in the same building (by the register's "
+                    "building id, else at the same point) are one home with their units added, "
+                    "so a block of flats gets one connection and each house its own."
+                    if grouped
+                    else ""
+                ),
+                values={
+                    "homes": len(homes),
+                    "units": int(homes["units"].sum()),
+                    "addresses": n_addresses,
+                },
                 source="user",
             )
         )
-        counts["addresses"] = len(homes)
+        counts["addresses"] = n_addresses
         homes = homes[["osm_id", "units", "kind", "building_id", "geometry"]]
     else:
         homes, home_decisions = homes_from_buildings(buildings, rules)

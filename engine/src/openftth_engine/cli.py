@@ -33,10 +33,6 @@ def _version_cb(version: Annotated[bool, typer.Option("--version", is_eager=True
 
 @app.command()
 def design(
-    area: Annotated[Path, typer.Option(help="Design area polygon (GeoJSON/GPKG), EPSG:4326")],
-    osm: Annotated[
-        Path, typer.Option(help="Local OpenStreetMap .osm XML with highways and buildings")
-    ],
     out: Annotated[
         Path, typer.Option(help="Project directory to create/update (becomes a git repo)")
     ],
@@ -46,11 +42,28 @@ def design(
     pop: Annotated[
         str | None, typer.Option(help="POP location as 'lon,lat'; default: area centroid")
     ] = None,
-    time_limit: Annotated[float, typer.Option(help="CP-SAT time limit per cell, seconds")] = 20.0,
+    time_limit: Annotated[
+        float,
+        typer.Option(help="CP-SAT work per cell (deterministic time units, about seconds)"),
+    ] = 5.0,
     fresh: Annotated[bool, typer.Option(help="Delete an existing project directory first")] = False,
+    area: Annotated[
+        Path | None, typer.Option(help="Design area polygon (GeoJSON/GPKG), EPSG:4326")
+    ] = None,
+    osm: Annotated[
+        Path | None,
+        typer.Option(help="Local OpenStreetMap .osm XML with highways and buildings"),
+    ] = None,
+    profile: Annotated[
+        Path | None,
+        typer.Option(help="Import profile YAML (instead of --area/--osm), as File → Import data"),
+    ] = None,
 ) -> None:
     """Run the whole pipeline headless: ingest → twin → solve → validate → deliver."""
     from .pipeline import design_all
+
+    if profile is None and (area is None or osm is None):
+        raise typer.BadParameter("give --area and --osm, or --profile")
 
     rules = load_rulebook(rulebook)
     rulebook_path = _resolve_rulebook(rulebook)
@@ -62,7 +75,14 @@ def design(
         pop_xy = (lon, lat)
     console.rule(f"[bold]openFTTH design · {out.name} · rulebook {rules.name}")
     results = design_all(
-        area, osm, rules, out, pop=pop_xy, time_limit_s=time_limit, rulebook_path=rulebook_path
+        area or "",
+        osm or "",
+        rules,
+        out,
+        pop=pop_xy,
+        time_limit_s=time_limit,
+        rulebook_path=rulebook_path,
+        profile=profile,
     )
     table = Table(title="Pipeline", show_lines=False)
     table.add_column("tool", style="cyan")

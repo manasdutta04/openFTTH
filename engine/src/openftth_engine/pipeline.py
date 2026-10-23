@@ -16,6 +16,8 @@ from typing import Any
 import geopandas as gpd
 import networkx as nx
 import numpy as np
+import shapely
+from pyproj import Transformer
 from shapely.geometry import LineString, Point, mapping
 
 from .deliver import build_boq, render_map
@@ -28,7 +30,7 @@ from .network.operator import OperatorPack
 from .project import Project
 from .results import Decision, ToolResult
 from .rules import Rulebook
-from .solve.cluster import Demand, capacitated_sites, repair_reach
+from .solve.cluster import WORK_LIMIT, Demand, capacitated_sites, repair_reach
 from .solve.pops import split_catchments
 from .solve.routing import RoutedTree, route_tree
 from .twin import Twin, build_twin
@@ -100,8 +102,19 @@ def _pin_decision(tool: str, pinned: list[Feature], what: str) -> Decision:
     )
 
 
+_TO_WGS: dict[int, tuple[Any, Transformer]] = {}
+
+
 def _wgs(twin: Twin, geom) -> Any:
-    return gpd.GeoSeries([geom], crs=twin.crs).to_crs(4326).iloc[0]
+    """A twin geometry (metric CRS) in WGS 84. The transformer is made once per CRS: building a
+    GeoSeries per element cost about a millisecond each, minutes on a large area."""
+    crs = twin.crs
+    hit = _TO_WGS.get(id(crs))
+    if hit is None or hit[0] is not crs:
+        hit = (crs, Transformer.from_crs(crs, 4326, always_xy=True))
+        _TO_WGS[id(crs)] = hit
+    tr = hit[1]
+    return shapely.transform(geom, lambda xy: np.column_stack(tr.transform(xy[:, 0], xy[:, 1])))
 
 
 # Where an object's data comes from, by the tool that first wrote it.
@@ -781,7 +794,7 @@ def _set_single_pop(s: Session, lon: float | None = None, lat: float | None = No
     )
 
 
-def cluster_homes(s: Session, time_limit_s: float = 20.0) -> ToolResult:
+def cluster_homes(s: Session, time_limit_s: float = WORK_LIMIT) -> ToolResult:
     """Place FATs: capacitated clustering of homes within max_drop_m street distance."""
     s.project.set_stage("solve")
     twin = _twin(s)
@@ -1002,7 +1015,7 @@ def _feeder_tree(s: Session, fdh: Feature | None) -> RoutedTree | None:
     return s.trees.get(f"feeder:{pid}") if pid else s.trees.get("feeder")
 
 
-def place_fdh(s: Session, time_limit_s: float = 20.0) -> ToolResult:
+def place_fdh(s: Session, time_limit_s: float = WORK_LIMIT) -> ToolResult:
     """Place FDHs (splitter cabinets) over the FATs, capacity in homes served."""
     s.project.set_stage("solve")
     twin = _twin(s)
@@ -1874,14 +1887,23 @@ def design_all(
     out_dir: str | Path,
     project_id: str | None = None,
     pop: tuple[float, float] | None = None,
-    time_limit_s: float = 20.0,
+    time_limit_s: float = WORK_LIMIT,
     rulebook_path: str | Path | None = None,
+    profile: str | Path | None = None,
 ) -> list[ToolResult]:
+    """The whole pipeline headless, from an area and an OSM extract or from an import profile."""
     s = open_session(out_dir, rules, project_id=project_id or Path(out_dir).name)
     if rulebook_path is not None:
         shutil.copyfile(rulebook_path, s.project.dir / "rulebook.yaml")
+    first = (
+        import_data(s, profile)
+        if profile is not None
+        else import_area_and_osm(s, area_path, osm_path)
+    )
+    if first.summary.startswith("rejected"):
+        raise ValueError(first.summary)
     results = [
-        import_area_and_osm(s, area_path, osm_path),
+        first,
         build_twin_tool(s),
         set_pop(s, *(pop or (None, None))),
         cluster_homes(s, time_limit_s),
@@ -2852,7 +2874,7 @@ def generate_scenarios(
     return result
 
 
-def apply_scenario(s: Session, name: str, time_limit_s: float = 20.0) -> ToolResult:
+def apply_scenario(s: Session, name: str, time_limit_s: float = WORK_LIMIT) -> ToolResult:
     """Adopt a scenario: apply its rulebook overrides, then re-run the solve chain."""
     from .solve.scenarios import SCENARIOS, resolve_overrides
 

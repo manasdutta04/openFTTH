@@ -256,3 +256,44 @@ def test_the_street_margin_widens_until_the_network_joins_up():
     # An area whose streets join up inside the usual margin keeps it.
     whole = import_osm(GENT / "gent.osm", load_area(GENT / "area.geojson"))
     assert whole.street_margin_m == STREET_BUFFER_M
+
+
+def test_addresses_in_one_building_become_one_home_with_their_units():
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    from openftth_engine.ingest.inputs import _group_by_building
+
+    homes = gpd.GeoDataFrame(
+        {
+            "osm_id": ["a3", "a1", "a2", "b1", "c1", "c2"],
+            "units": [1, 1, 2, 1, 1, 1],
+            "kind": ["house"] * 6,
+            "building_ref": ["P1", "P1", "P1", None, None, None],
+            "building_id": [None, None, None, "way/9", None, None],
+            "street": ["x"] * 6,
+            "housenumber": ["1"] * 6,
+        },
+        geometry=[Point(0, 0), Point(0.1, 0), Point(0.2, 0), Point(1, 1), Point(2, 2), Point(2, 2)],
+        crs=4326,
+    )
+    out = _group_by_building(homes)
+    assert list(out["osm_id"]) == ["a1", "b1", "c1"], "smallest id, sorted"
+    assert list(out["units"]) == [4, 1, 2]
+    # Two houses under one OSM outline (a semi-detached pair) stay two homes.
+    pair = homes.iloc[3:4].copy()
+    pair = gpd.GeoDataFrame(
+        [
+            pair.iloc[0].to_dict(),
+            {**pair.iloc[0].to_dict(), "osm_id": "b2", "geometry": Point(1.1, 1)},
+        ],
+        geometry="geometry",
+        crs=4326,
+    )
+    assert len(_group_by_building(pair)) == 2
+    assert out.iloc[0]["kind"] == "apartments"
+    assert out.iloc[0].geometry.equals(Point(0.1, 0)), "the first address's point"
+    again = _group_by_building(homes.iloc[::-1].reset_index(drop=True))
+    assert list(again["osm_id"]) == list(out["osm_id"]) and list(again["units"]) == list(
+        out["units"]
+    )

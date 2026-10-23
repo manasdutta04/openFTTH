@@ -19,24 +19,30 @@ FIELD = ROOT / "fixtures" / "field"
 RUNS = ROOT / "runs" / "field"
 
 
-def areas() -> list[tuple[str, Path, Path]]:
-    out = []
+def areas() -> list[tuple[str, Path, Path | None]]:
+    """(name, area or profile, osm). An area designed from an import profile has no osm here:
+    the profile names its own sources (an official address register, for example)."""
+    out: list[tuple[str, Path, Path | None]] = []
     for geo in sorted(FIELD.glob("*.geojson")):
         osm = FIELD / "raw" / f"{geo.stem}.osm"
         if osm.exists():
             out.append((geo.stem, geo, osm))
+    for profile in sorted(FIELD.glob("*.profile.yaml")):
+        name = profile.name.removesuffix(".profile.yaml")
+        if (FIELD / "raw" / f"{name.removesuffix('-register')}-addresses.geojson").exists():
+            out.append((name, profile, None))
     out.append(("gent", ROOT / "fixtures" / "gent" / "area.geojson", ROOT / "fixtures" / "gent" / "gent.osm"))
     out.append(("gent-small", ROOT / "fixtures" / "gent" / "area-small.geojson", ROOT / "fixtures" / "gent" / "gent.osm"))
     return out
 
 
-def run_one(name: str, geo: Path, osm: Path, rulebook: str, time_limit: float) -> dict:
+def run_one(name: str, geo: Path, osm: Path | None, rulebook: str, time_limit: float) -> dict:
     out = RUNS / name
     t0 = time.time()
+    inputs = ["--profile", str(geo)] if osm is None else ["--area", str(geo), "--osm", str(osm)]
     proc = subprocess.run(
         [
-            "uv", "run", "openftth-engine", "design",
-            "--area", str(geo), "--osm", str(osm), "--rulebook", rulebook,
+            "uv", "run", "openftth-engine", "design", *inputs, "--rulebook", rulebook,
             "--out", str(out), "--time-limit", str(time_limit), "--fresh",
         ],
         cwd=ROOT / "engine",
@@ -71,7 +77,7 @@ def run_one(name: str, geo: Path, osm: Path, rulebook: str, time_limit: float) -
         }
     )
     # The pipeline log line by line, for the notes.
-    rec["log"] = [l for l in proc.stdout.splitlines() if "│" in l][:80]
+    rec["log"] = [line for line in proc.stdout.splitlines() if "│" in line][:80]
     return rec
 
 
@@ -81,7 +87,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default=None, help="one area name, or a comma-separated list")
     ap.add_argument("--rulebook", default="generic-gpon")
-    ap.add_argument("--time-limit", type=float, default=20.0)
+    ap.add_argument("--time-limit", type=float, default=5.0)
     args = ap.parse_args()
     RUNS.mkdir(parents=True, exist_ok=True)
     results_path = RUNS / "results.json"
