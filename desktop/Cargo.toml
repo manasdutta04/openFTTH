@@ -20,7 +20,7 @@ eframe = { version = "0.37", default-features = false, features = ["wgpu", "defa
 egui = "0.37"
 egui_extras = "0.37"
 rfd = "0.17"
-rand = "0.9"
+rand = "0.10"
 
 # Debug builds must still draw a few thousand map elements per frame: optimise the
 # dependencies (egui, epaint, wgpu) fully and our own crates lightly.
