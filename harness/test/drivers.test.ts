@@ -46,7 +46,7 @@ function fakeOpenAi(replies: Array<{ text?: string; tool?: { name: string; args:
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    requests.push(body);
+    requests.push({ ...body, path: req.url });
     const reply = replies.shift() ?? { text: "no more scripted replies" };
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (obj: unknown) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -129,6 +129,7 @@ test("the OpenAI-compatible driver reports a denied risky tool to the model with
   assert.equal(result.toolCalls[0]!.isError, true);
   const toolMsg = srv.requests[1].messages.find((m: any) => m.role === "tool");
   assert.match(toolMsg.content, /approval_required/);
+  assert.equal(srv.requests[0].path, "/v1/chat/completions", "Ollama's OpenAI API is under /v1");
 });
 
 test("the Codex driver runs one exec per turn and resumes the thread", async () => {

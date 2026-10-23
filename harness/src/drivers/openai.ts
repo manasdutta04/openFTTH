@@ -57,7 +57,7 @@ export class OpenAiCompatDriver implements Driver {
   async sendTurn(text: string): Promise<TurnResult> {
     if (this.pending) throw new Error("a turn is already running");
     const s = this.spec;
-    const endpoint = s.engine.baseUrl?.replace(/\/+$/, "");
+    const endpoint = chatBase(s.engine.kind, s.engine.baseUrl);
     if (!endpoint) throw new Error(`${s.engine.kind}: no endpoint configured`);
     if (!s.engine.model) throw new Error(`${s.engine.kind}: no model configured`);
     const tools = await this.ensureTools();
@@ -266,3 +266,13 @@ function normaliseSchema(schema: Record<string, unknown>): Record<string, unknow
 export const openAiDriverFactory = (spec: FolkProcessSpec): Driver => new OpenAiCompatDriver(spec);
 
 export type { EngineToolDef };
+
+/**
+ * Where the OpenAI-style chat API lives. Ollama is configured by its own address (its native
+ * API answers at `/api/...`); its OpenAI-compatible API is under `/v1`.
+ */
+export function chatBase(kind: string, baseUrl: string | null | undefined): string | undefined {
+  const base = baseUrl?.replace(/\/+$/, "");
+  if (!base) return undefined;
+  return kind === "ollama" && !/\/v1$/.test(base) ? `${base}/v1` : base;
+}
