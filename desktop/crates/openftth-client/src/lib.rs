@@ -384,6 +384,10 @@ pub fn latest_release(repo: &str) -> Result<(String, String), ClientError> {
         .header("accept", "application/vnd.github+json")
         .header("user-agent", "openFTTH")
         .call()?;
+    if res.status().as_u16() == 404 {
+        // No release, or the repository is not public (yet).
+        return Err(ClientError::Api(404, "no public release found".into()));
+    }
     let v = finish(res)?;
     let tag = v["tag_name"].as_str().unwrap_or_default().to_string();
     let url = v["html_url"].as_str().unwrap_or_default().to_string();
