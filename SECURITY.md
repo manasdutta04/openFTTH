@@ -73,6 +73,7 @@ where they are; openFTTH reads only the files you choose.
 
 ## How we keep dependencies safe
 
-Every push and a weekly run audit the Rust (`cargo audit`), Node (`pnpm audit`) and Python
-(`pip-audit`) dependency trees for known vulnerabilities. Dependabot proposes updates, and
+`tools/check.ps1 -Audit` (and the manual Security workflow) audits the Rust (`cargo audit`),
+Node (`pnpm audit`) and Python (`pip-audit`) dependency trees for known vulnerabilities before
+each release; dependencies are updated by hand, and
 lock files pin every version.

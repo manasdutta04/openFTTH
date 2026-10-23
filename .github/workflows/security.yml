@@ -1,12 +1,15 @@
 name: Security
 
-# Known-vulnerability audits of every dependency tree, on each push and weekly.
+# Known-vulnerability audits of every dependency tree.
+# Manual only: GitHub Actions minutes are limited, so nothing runs on push, pull request or a
+# timer. Run the same checks locally with tools/check.ps1; start this from the Actions tab
+# (Run workflow) when a hosted run is wanted.
 on:
-  push:
-    branches: [main]
-  pull_request:
-  schedule:
-    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -1,12 +1,15 @@
 name: Release
 
-# Push a tag like v0.2.0 (matching desktop/Cargo.toml's workspace version) to build the Windows
-# installer and publish it, with its SHA-256 and docs/releases/<tag>.md as notes, as a GitHub
+# Releases are made locally with tools/release.ps1 (no Actions minutes). This hosted version
+# runs only when started by hand on a tag (Run workflow, pick the tag): it builds the Windows
+# installer and publishes it, with its SHA-256 and docs/releases/<tag>.md as notes, as a GitHub
 # Release (a pre-release below 1.0).
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
