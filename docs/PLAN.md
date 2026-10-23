@@ -58,7 +58,7 @@ openFTTH/
   rulebooks/       YAML presets + generated schema.json
   crews/openftth/  crew manifest + crew member instructions
   fixtures/gent/   test area
-  docs/            PLAN, PROTOCOL, DESIGN-MODEL, RULEBOOK, DEMO
+  docs/            PLAN, PROTOCOL, DESIGN-MODEL, RULEBOOK, IMPORT, MCP, releases/
   .github/workflows/
 ```
 
@@ -156,8 +156,7 @@ the crew with the engineer in the chat. Planned in [PLAN-NETWORK.md](PLAN-NETWOR
 - Engine: `uv run pytest`; headless design on the fixture in CI with the artefacts uploaded.
 - Harness: Node test runner; SSE resume, approval round-trip and allow-list tests against a fake
   engine CLI; packaged-bundle smoke test outside the repo.
-- App: `cargo test`, `cargo clippy -D warnings`; renderer snapshot tests on a software adapter;
-  manual gate demos scripted in `docs/DEMO.md`.
+- App: `cargo test`, `cargo clippy -D warnings`; renderer snapshot tests on a software adapter.
 
 ## 6. Risks
 - Input data, not AI, is the biggest risk: underground duct records are closed or wrong. Users

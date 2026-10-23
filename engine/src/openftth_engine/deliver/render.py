@@ -1,4 +1,4 @@
-"""Quick PNG map of a design for the CLI, CI artifacts and the Gate 0 demo."""
+"""Quick PNG map of a design, for the CLI and the deliverables."""
 
 from __future__ import annotations
 

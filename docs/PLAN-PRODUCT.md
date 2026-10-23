@@ -15,7 +15,7 @@ Guardrails that stay: the LLM never writes numbers (all edits are engine tools w
 - **Address register drives demand**: when addresses are present, homes = addresses (units from the register) instead of building-outline estimates; OSM becomes fallback per gap, recorded as `source: assumption`.
 - **Existing infrastructure in the twin**: ducts/poles/manholes become cheap graph edges/nodes (`existing_duct` surface already exists in the rulebook) with capacity attributes; no-dig zones remove edges inside polygons.
 - **Data-quality report** tool `check_inputs`: missing streets, homes far from streets, duplicate addresses, CRS doubts, coverage gaps — shown before design.
-- **Online fetch is explicit**: `fetch_osm(area)` tool (Overpass, named and opt-in; reuse `fixtures/field/scripts/fetch.py` logic) so users without an extract can start.
+- **Online fetch is explicit**: `fetch_osm(area)` tool (Overpass, named and opt-in) so users without an extract can start.
 - App: **Import wizard** (File → Import data…): drop files, see detected layers on the map, assign roles, fix column mappings, see the quality report, save profile.
 - Gate: design three areas from non-OSM sources (a CSV address list + shapefile streets in a non-WGS84 CRS; a GeoPackage with existing ducts; the Gent fixture via OSM) with no code changes.
 

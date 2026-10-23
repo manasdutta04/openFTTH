@@ -34,9 +34,9 @@ plans and the bill of quantities.
 
 ## Status
 
-Phase 1 in progress: the design engine works headless; the agent harness and the Windows app
-are being built. Nothing here is usable for real designs yet. See [docs/PLAN.md](docs/PLAN.md)
-for the roadmap and [docs/DEMO.md](docs/DEMO.md) for the current gate demo.
+openFTTH 0.1 is a public beta for Windows: download it from
+[Releases](https://github.com/manasdutta04/openFTTH/releases). See [docs/PLAN.md](docs/PLAN.md)
+for the roadmap.
 
 ## Layout
 
