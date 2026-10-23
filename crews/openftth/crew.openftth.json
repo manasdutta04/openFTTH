@@ -110,6 +110,7 @@
           "boq",
           "splice_schedule",
           "export_gpkg",
+          "plan_sheets",
           "design_summary",
           "versions",
           "diff_versions",

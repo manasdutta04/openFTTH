@@ -3018,6 +3018,69 @@ def splice_schedule(s: Session) -> ToolResult:
     return result
 
 
+def _fingerprint(design: Design) -> str:
+    """A short id of the design's content: the same design always prints the same id, whatever
+    was committed in between."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for f in sorted(design, key=lambda f: f.element_uuid):
+        h.update(f.element_uuid.encode())
+        h.update(f.geometry.wkb if f.geometry is not None else b"")
+        h.update(json.dumps([f.props, f.openftth], sort_keys=True, default=str).encode())
+    return h.hexdigest()[:10]
+
+
+def plan_sheets(s: Session, scale: int = 1000, paper: str = "A3") -> ToolResult:
+    """The printable plan set (plans.pdf: a key sheet and one sheet per grid cell with network)
+    and the whole design as a CAD drawing (plans.dxf), in the twin's projected CRS."""
+    from .deliver.sheets import PAPER_MM
+    from .deliver.sheets import plan_sheets as _sheets
+
+    s.project.set_stage("deliver")
+    if paper not in PAPER_MM:
+        return _rejected("plan_sheets", f"paper must be one of {', '.join(PAPER_MM)}")
+    if not 100 <= int(scale) <= 100000:
+        return _rejected("plan_sheets", "scale must be between 1:100 and 1:100000")
+    twin = _twin(s)
+    wo = _open_work_order(s) or next(reversed(_work_orders(s)), None)
+    info = {
+        "project": s.pid,
+        "rulebook": s.rules.name,
+        "version": _fingerprint(s.design),
+        "work_order": f"{wo['id']} {wo['title']}" if wo else "",
+        "status": "Draft: for review" if not wo or wo["state"] == "open" else "Posted",
+    }
+    d = s.project.deliver_dir
+    try:
+        out = _sheets(s.design, twin, d / "plans.pdf", d / "plans.dxf", info, int(scale), paper)
+    except ValueError as exc:
+        return _rejected("plan_sheets", str(exc))
+    reason = (
+        f"{out['sheets']} sheet(s) on {paper} at 1:{out['scale']:,} (a key plan at "
+        f"1:{out['key_scale']:,} and a {out['grid'][0]}×{out['grid'][1]} grid with the empty cells "
+        f"left out); {out['labels_placed']} labels placed"
+        + (
+            f", {out['labels_dropped']} left out where they would overlap another"
+            if out["labels_dropped"]
+            else ""
+        )
+        + f". The DXF holds the whole design in {out['crs']} metres, one layer per element kind."
+    )
+    result = ToolResult(
+        tool="plan_sheets",
+        summary=f"plans.pdf ({out['sheets']} sheets, {paper} 1:{out['scale']:,}) and plans.dxf",
+        decisions=[
+            Decision(
+                stage="deliver", tool="plan_sheets", reason=reason, values=out, source="solver"
+            )
+        ],
+        data=out,
+    )
+    s.project.commit(result, s.design)
+    return result
+
+
 def export_gpkg(s: Session) -> ToolResult:
     from .deliver.gpkg import export_gpkg as _export
 

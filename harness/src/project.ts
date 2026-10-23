@@ -560,6 +560,7 @@ export const AUTODESIGN_STEPS: Array<{ tool: string; label: string }> = [
   { tool: "boq", label: "Bill of quantities" },
   { tool: "splice_schedule", label: "Splice schedule" },
   { tool: "export_gpkg", label: "GeoPackage" },
+  { tool: "plan_sheets", label: "Plan sheets (PDF, DXF)" },
 ];
 
 /** What the engineer asks the Checker after a change of their own. */

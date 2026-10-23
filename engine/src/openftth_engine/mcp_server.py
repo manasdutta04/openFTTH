@@ -344,6 +344,14 @@ def splice_schedule() -> dict[str, Any]:
 
 
 @mcp.tool()
+def plan_sheets(scale: int = 1000, paper: str = "A3") -> dict[str, Any]:
+    """Write the printable plan set (plans.pdf: a key plan, then one sheet per grid cell with
+    legend, scale bar, north arrow and title block) and the whole design as a DXF drawing
+    (plans.dxf). `scale` is the sheet scale (1000 = 1:1000), `paper` A3 or A1."""
+    return _out(pipeline.plan_sheets(_s(), scale, paper))
+
+
+@mcp.tool()
 def export_gpkg() -> dict[str, Any]:
     """Export the design as a GeoPackage (one layer per element type, side tables as attribute
     tables)."""
